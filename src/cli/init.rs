@@ -13,8 +13,9 @@ const INIT_USAGE: &str = "\
 参数：
   <Btrfs 顶层绝对路径>  已挂载的 Btrfs 顶层（subvolid=5）中的现有绝对目录。
 
-在指定目录下创建或复用 @rstarsleep 子卷，生成管理器目录及默认全局配置。
-保留已有配置文件。需要已安装 btrfs 工具，并具备创建子卷和写入文件的权限。
+在指定目录下创建或复用 @rstarsleep 子卷，生成管理器目录及默认全局配置，
+将内嵌 Arch 插件压缩包写入 plugins/。保留已有配置及插件文件。
+需要已安装 btrfs 工具，并具备创建子卷和写入文件的权限。
 
 示例：
   RStarSleep init /mnt/btrfs

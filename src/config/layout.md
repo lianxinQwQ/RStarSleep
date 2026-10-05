@@ -11,11 +11,13 @@ Btrfs 顶层/
 └── @rstarsleep/                         # 管理器专用子卷
     ├── config/
     │   └── rstarsleep.toml              # 全局配置
+    ├── plugins/                        # 用户存放的插件压缩包
+    │   └── arch.tar.gz                 # init 安装的内嵌 Arch 预设
     └── systems/
         └── <系统标识>/                  # 系统身份不随角色变更
             ├── config/                 # 当前可编辑配置
             │   ├── build/
-            │   │   └── config.toml     # 构建配置，当前仅读取 packages
+            │   │   └── config.toml     # 构建配置，读取 packages 和系统类型
             │   └── subsystem/
             │       └── config.toml     # 子系统运行配置，暂留模板
             ├── versions/
@@ -28,7 +30,9 @@ Btrfs 顶层/
             └── persistent/             # 此系统跨版本共享的持久化目录和文件
 ```
 
-初始化管理器时只创建 `@rstarsleep` 子卷、`config/`、`systems/` 和全局配置。
+初始化管理器时创建 `@rstarsleep` 子卷、`config/`、`systems/`、`plugins/` 和全局配置，
+并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。已有同名普通文件不覆盖；
+缺失的预设包会在再次初始化时补充。
 初始化一个被管理系统时创建其当前配置、版本、缓存和持久化目录及默认配置。
 这些系统目录目前是普通目录；具体版本根、阶段缓存是否使用子卷由对应功能实现。
 初始化不会生成系统版本、配置留档或修改主/子系统角色，也不会覆盖已有配置。
@@ -68,6 +72,7 @@ subsystems = []
 
 ```toml
 schema_version = 1
+system_type = "arch"
 packages = []
 ```
 
@@ -75,6 +80,7 @@ packages = []
 
 ```toml
 schema_version = 1
+system_type = "arch"
 packages = ["linux", "systemd", "vim"]
 ```
 
@@ -125,11 +131,35 @@ let cache = store.build_cache_path("desktop", "v1", "packages")?;
 # }
 ```
 
-读取接口只解释 `packages`，保留列表顺序和重复项，不查询软件包仓库或安装软件。
-其他构建字段暂不解释；全局配置和子系统运行配置也不会被软件包接口读取。
+软件包读取接口只解释 `packages`，保留列表顺序和重复项，不查询软件包仓库或
+安装软件。系统类型使用独立的 `read_system_type()` 接口，读取 `system_type`
+（接受 `distribution` 别名）和可选 `architecture`；不设置架构时使用宿主架构。
+全局配置和子系统运行配置不会被这两个接口读取。
 缺失文件、缺失 `packages`、错误类型、无效 TOML 或空白包名均返回错误，不静默
 替换成空列表。错误包含相关路径或校验原因。`schema_version` 目前作为格式标记
 保留，其兼容性策略在扩展配置读取时实现。
+
+## 插件预设与自动选择
+
+项目根的 `presets/plugins/arch/` 包含 Arch 插件的元数据、Bash 入口和资源。
+Cargo 的 `build.rs` 按稳定顺序打包为 gzip 压缩的 tar，并通过 `include_bytes!`
+嵌入程序；初始化不要求安装时还能访问项目源码或外部预设目录。
+
+用户将插件压缩包放入工作根的 `plugins/`，无需在全局配置注册路径。
+`rstarsleep::controller::plugins::for_system(&store, "desktop")` 从系统构建配置
+读取系统类型及架构，按包内 `plugin.toml` 的 `system_types` 和 `architectures`
+自动选择。省略 `system_types` 时使用元数据的 `id`。匹配不依赖文件名；没有
+匹配或存在多个有效匹配时返回明确错误。无效插件包跳过，其诊断保存在加载结果的
+`discovery_warnings`；没有匹配时，错误同时包含这些诊断。
+
+支持 `.tar`、`.tar.gz`、`.tgz`、`.tar.xz` 和 `.tar.zst`。解包根直接有
+`plugin.toml` 时直接使用；否则只有一个顶层目录，且其中直接有该文件时自动
+提升为插件根。目录计数包含隐藏项，多层包装不自动剥离。条目及链接目标不能
+包含绝对路径或 `..`；脚本入口必须在插件根内。
+
+加载结果保留整个临时环境，释放时自动清理；仅查找和解包，不自动执行插件。
+系统安装和维护的执行层仍按构建设计接入 nspawn。包格式和流程设计见
+`docs/build-design.md`。
 
 系统、版本和流程标识必须以 ASCII 字母或数字开头，其余字符只能使用字母、数字、
 点、下划线和连字符，避免标识被当成路径使用。

@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::{
-    Error, PackageConfig, Result,
+    Error, PackageConfig, Result, SystemTypeConfig,
     init::{BUILD_DEFAULT, GLOBAL_DEFAULT, SUBSYSTEM_DEFAULT},
     io_error, validate_identifier,
 };
@@ -89,6 +89,43 @@ impl ConfigStore {
         self.root.join("config/rstarsleep.toml")
     }
 
+    /// Locate the shared directory where users place distribution plugin archives.
+    /// 定位用户存放发行版插件压缩包的共享目录。
+    ///
+    /// This only resolves a path; it does not access or create the directory.
+    /// 此方法仅计算路径，不访问或创建目录。
+    ///
+    /// # Arguments
+    ///
+    /// - `self`: Store whose workspace owns the plugin directory.
+    ///   所属工作目录包含插件目录的配置存储对象。
+    pub fn plugins_path(&self) -> PathBuf {
+        self.root.join("plugins")
+    }
+
+    /// Read the current system type without interpreting package or runtime settings.
+    /// 读取当前系统类型，不解释软件包及运行配置。
+    ///
+    /// # Arguments
+    ///
+    /// - `self`: Store containing the managed system's build configuration.
+    ///   包含被管理系统构建配置的配置存储对象。
+    /// - `id`: Valid managed-system identifier whose plugin selection is read.
+    ///   待读取插件选择配置的有效被管理系统标识。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing, malformed, or invalid type settings.
+    /// 类型配置缺失、格式错误或值无效时返回错误。
+    pub fn read_system_type(&self, id: &str) -> Result<SystemTypeConfig> {
+        let path = self.system_layout(id)?.config.join("build/config.toml");
+        let text = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
+        let config: SystemTypeConfig =
+            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Resolve a system's paths without requiring the directories to exist.
     /// 计算一个系统的各项路径，不要求这些目录已经存在。
     ///
@@ -125,7 +162,9 @@ impl ConfigStore {
     pub(super) fn initialize_directories(&self) -> Result<()> {
         create_dir_all(&self.root.join("config"))?;
         create_dir_all(&self.root.join("systems"))?;
-        write_default(&self.global_config_path(), GLOBAL_DEFAULT)
+        create_dir_all(&self.plugins_path())?;
+        write_default(&self.global_config_path(), GLOBAL_DEFAULT)?;
+        super::presets::install(&self.plugins_path())
     }
 
     /// Create a managed system's ordinary directories and missing configuration templates.
@@ -395,6 +434,75 @@ mod tests {
         let (_temp, store) = fixture();
         store.initialize_system("desktop").unwrap();
         assert!(store.read_packages("desktop").unwrap().packages.is_empty());
+    }
+
+    /// Verify initialization installs the embedded archive and current type selects it automatically.
+    /// 验证初始化安装内嵌压缩包，并由当前系统类型自动选择。
+    ///
+    /// # Arguments
+    ///
+    /// No parameters.
+    /// 无参数。
+    #[test]
+    fn installs_and_selects_embedded_arch_plugin_without_registry_settings() {
+        let (_temp, store) = fixture();
+        store.initialize_system("desktop").unwrap();
+        assert!(store.plugins_path().join("arch.tar.gz").is_file());
+        assert_eq!(
+            store.read_system_type("desktop").unwrap().system_type,
+            "arch"
+        );
+        let plugin = crate::controller::plugins::for_system(&store, "desktop").unwrap();
+        assert_eq!(plugin.metadata.id, "arch");
+        assert!(plugin.root().join("data/mirrorlist").is_file());
+        assert!(
+            fs::read_to_string(plugin.entry_path())
+                .unwrap()
+                .contains("base_install")
+        );
+    }
+
+    /// Verify repeated initialization preserves a user-provided archive byte for byte.
+    /// 验证重复初始化逐字节保留用户提供的压缩包。
+    ///
+    /// # Arguments
+    ///
+    /// No parameters.
+    /// 无参数。
+    #[test]
+    fn preserves_user_archives_on_reinitialization() {
+        let (_temp, store) = fixture();
+        let archive = store.plugins_path().join("arch.tar.gz");
+        fs::write(&archive, b"user archive").unwrap();
+        store.initialize_directories().unwrap();
+        assert_eq!(fs::read(archive).unwrap(), b"user archive");
+    }
+
+    /// Reject missing or unsafe type fields while retaining the distribution spelling as an alias.
+    /// 拒绝缺失或不安全的类型字段，同时保留 distribution 写法作为别名。
+    ///
+    /// # Arguments
+    ///
+    /// No parameters.
+    /// 无参数。
+    #[test]
+    fn validates_system_types_and_distribution_alias() {
+        let (_temp, store) = fixture();
+        let layout = store.initialize_system("desktop").unwrap();
+        let path = layout.config.join("build/config.toml");
+        for text in [
+            "packages=[]",
+            "system_type='../arch'",
+            "system_type=''",
+            "system_type='arch'\narchitecture='../x86_64'",
+        ] {
+            fs::write(&path, text).unwrap();
+            assert!(store.read_system_type("desktop").is_err());
+        }
+        fs::write(&path, "distribution='arch'\narchitecture='x86_64'").unwrap();
+        let config = store.read_system_type("desktop").unwrap();
+        assert_eq!(config.system_type, "arch");
+        assert_eq!(config.architecture.as_deref(), Some("x86_64"));
     }
 
     /// Verify that recorded package options are read independently and missing records report errors.

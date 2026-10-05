@@ -25,6 +25,10 @@ pub(super) const BUILD_DEFAULT: &str = "\
 # 当前可编辑的系统构建配置。\n\
 schema_version = 1\n\
 \n\
+# Distribution plugin type; selected from archives in the workspace plugins/ directory.\n\
+# 发行版插件类型；从工作目录 plugins/ 内的压缩包自动选择。\n\
+system_type = \"arch\"\n\
+\n\
 # Packages to install; other build options will be added with their features.\n\
 # 要安装的软件包。其余构建选项随对应功能添加。\n\
 packages = []\n";

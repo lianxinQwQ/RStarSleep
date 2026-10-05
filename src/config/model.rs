@@ -3,7 +3,42 @@
 
 use serde::Deserialize;
 
-use super::{Error, Result};
+use super::{Error, Result, validate_identifier};
+
+/// System identity used to select a distribution plugin from the workspace.
+/// 用于从工作目录选择发行版插件的系统类型配置。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SystemTypeConfig {
+    /// Distribution type matched against plugin metadata, such as `arch`.
+    /// 与插件元数据匹配的发行版类型，例如 `arch`。
+    #[serde(alias = "distribution")]
+    pub system_type: String,
+    /// Optional target architecture; omission uses the host architecture.
+    /// 可选目标架构；省略时使用宿主架构。
+    pub architecture: Option<String>,
+}
+
+impl SystemTypeConfig {
+    /// Validate the system type and any explicitly selected architecture.
+    /// 校验系统类型和显式指定的目标架构。
+    ///
+    /// # Arguments
+    ///
+    /// - `self`: Configuration selecting a plugin and its target architecture.
+    ///   用于选择插件及其目标架构的配置。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either value is not a valid identifier.
+    /// 任一值不符合标识规则时返回错误。
+    pub fn validate(&self) -> Result<()> {
+        validate_identifier(&self.system_type)?;
+        if let Some(architecture) = &self.architecture {
+            validate_identifier(architecture)?;
+        }
+        Ok(())
+    }
+}
 
 /// Package options read from the build configuration.
 /// 从构建配置中读取的软件包选项。

@@ -1,0 +1,10 @@
+# Arch Linux build and maintenance plugin.
+# Arch Linux 构建与维护插件。
+schema_version = 1
+api_version = 1
+id = "arch"
+version = "0.1.0"
+system_types = ["arch"]
+entry = "plugin.sh"
+architectures = ["x86_64"]
+cache_format = "arch-root-v1"
