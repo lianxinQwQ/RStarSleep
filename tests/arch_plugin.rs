@@ -26,6 +26,17 @@ impl Fixture {
     /// 无参数。
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
+        for directory in [
+            "etc/pacman.d",
+            "etc/ssh",
+            "var/lib/dbus",
+            "var/lib/systemd",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ] {
+            fs::create_dir_all(temporary.path().join("root").join(directory)).unwrap();
+        }
         let executable = temporary.path().join("pacman");
         fs::write(
             &executable,
@@ -56,6 +67,13 @@ esac
         )
         .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let key = temporary.path().join("pacman-key");
+        fs::write(
+            &key,
+            "#!/usr/bin/env bash\nprintf 'pacman-key %s\\n' \"$*\" >> \"$PACMAN_TRACE\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o755)).unwrap();
         let trace = temporary.path().join("trace");
         fs::write(&trace, "").unwrap();
         Self { temporary, trace }
@@ -68,20 +86,27 @@ esac
     ///
     /// - `self`: Fixture providing the mock executable and temporary query directory.
     ///   提供模拟可执行文件和临时查询目录的测试环境。
-    /// - `arguments`: Plugin operation and its independently passed arguments.
-    ///   插件操作及独立传递的参数。
+    /// - `operation`: Same-named operation file at the plugin root.
+    ///   插件根内的同名操作文件。
+    /// - `arguments`: Independently passed operation arguments.
+    ///   独立传递的操作参数。
     /// - `case`: Mock query behavior, such as a forced database failure.
     ///   模拟查询行为，例如强制数据库失败。
-    fn run(&self, arguments: &[&str], case: &str) -> Output {
+    fn run(&self, operation: &str, arguments: &[&str], case: &str) -> Output {
         let mut paths = vec![self.temporary.path().to_path_buf()];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         Command::new("bash")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch/plugin.sh"))
+            .arg(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("presets/plugins/arch")
+                    .join(format!("{operation}.sh")),
+            )
             .args(arguments)
             .env("PATH", std::env::join_paths(paths).unwrap())
             .env("PACMAN_TRACE", &self.trace)
             .env("PACMAN_MOCK_CASE", case)
             .env("RSTAR_PLUGIN_TMP", self.temporary.path())
+            .env("RSTAR_ROOT", self.temporary.path().join("root"))
             .output()
             .unwrap()
     }
@@ -108,7 +133,7 @@ esac
 #[test]
 fn queries_installation_reasons() {
     let fixture = Fixture::new();
-    let output = fixture.run(&["query_packages"], "");
+    let output = fixture.run("query_packages", &[], "");
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -126,10 +151,10 @@ fn queries_installation_reasons() {
 #[test]
 fn distinguishes_empty_queries_from_database_errors() {
     let fixture = Fixture::new();
-    let empty = fixture.run(&["list_orphans"], "");
+    let empty = fixture.run("list_orphans", &[], "");
     assert!(empty.status.success());
     assert!(empty.stdout.is_empty());
-    let failure = fixture.run(&["list_orphans"], "failure");
+    let failure = fixture.run("list_orphans", &[], "failure");
     assert_eq!(failure.status.code(), Some(2));
     assert!(
         String::from_utf8(failure.stderr)
@@ -148,15 +173,18 @@ fn distinguishes_empty_queries_from_database_errors() {
 #[test]
 fn skips_empty_operations_and_protects_base() {
     let fixture = Fixture::new();
-    assert!(fixture.run(&["install"], "").status.success());
-    assert!(fixture.run(&["remove"], "").status.success());
+    assert!(fixture.run("install", &[], "").status.success());
+    assert!(fixture.run("remove", &[], "").status.success());
     for arguments in [
         vec!["remove", "base"],
         vec!["remove_orphans", "base"],
         vec!["mark_reason", "dependency", "base"],
         vec!["install", "--malicious-option"],
     ] {
-        assert_eq!(fixture.run(&arguments, "").status.code(), Some(64));
+        assert_eq!(
+            fixture.run(arguments[0], &arguments[1..], "").status.code(),
+            Some(64)
+        );
     }
     assert!(fixture.trace().is_empty());
 }
@@ -173,7 +201,7 @@ fn installs_requested_targets_and_resolves_concrete_names() {
     let fixture = Fixture::new();
     assert!(
         fixture
-            .run(&["install", "vim", "emacs"], "")
+            .run("install", &["vim", "emacs"], "")
             .status
             .success()
     );
@@ -182,7 +210,7 @@ fn installs_requested_targets_and_resolves_concrete_names() {
             .trace()
             .contains("-S --needed --asexplicit --noconfirm --ask=4 -- vim emacs")
     );
-    let resolved = fixture.run(&["resolve_packages", "vim", "emacs"], "");
+    let resolved = fixture.run("resolve_packages", &["vim", "emacs"], "");
     assert!(resolved.status.success());
     assert_eq!(String::from_utf8(resolved.stdout).unwrap(), "vim\nemacs\n");
 }
@@ -198,7 +226,7 @@ fn permits_conflict_replacement_in_the_install_transaction() {
     let fixture = Fixture::new();
     assert!(
         fixture
-            .run(&["install", "pipewire-pulse"], "conflict")
+            .run("install", &["pipewire-pulse"], "conflict")
             .status
             .success()
     );
@@ -206,4 +234,180 @@ fn permits_conflict_replacement_in_the_install_transaction() {
     assert!(trace.contains("--ask=4 -- pipewire-pulse"));
     assert!(!trace.contains("--nodeps"));
     assert!(!trace.contains("-Rdd"));
+}
+
+/// Verify split maintenance files retain their arguments and shared helper behavior.
+/// 验证拆分后的维护文件保留参数语义和公共函数行为。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn runs_split_maintenance_operations_with_mock_system_tools() {
+    let fixture = Fixture::new();
+    for (operation, arguments) in [
+        ("base_install", vec![]),
+        ("update", vec![]),
+        ("mark_reason", vec!["explicit", "vim"]),
+        ("mark_reason", vec!["dependency", "vim"]),
+        ("remove", vec!["vim"]),
+        ("remove_orphans", vec!["libdependency"]),
+        ("clean_orphans", vec![]),
+    ] {
+        let output = fixture.run(operation, &arguments, "");
+        assert!(
+            output.status.success(),
+            "{operation} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let trace = fixture.trace();
+    for command in [
+        "pacman-key --init",
+        "pacman-key --populate archlinux",
+        "-Syu --needed --asexplicit --noconfirm -- base",
+        "-D --asdeps -- vim libdependency",
+        "-D --asexplicit -- base",
+        "-Syu --noconfirm",
+        "-D --asexplicit -- vim",
+        "-D --asdeps -- vim",
+        "-R --noconfirm -- vim",
+        "-Rns --noconfirm -- libdependency",
+    ] {
+        assert!(
+            trace.lines().any(|line| line == command),
+            "missing {command}: {trace}"
+        );
+    }
+}
+
+/// Verify templates retain public signing keys but discard private identity and transient state.
+/// 验证模板保留公开签名密钥，但移除私有身份和临时状态。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn cleans_template_machine_state_and_local_signing_keys() {
+    let fixture = Fixture::new();
+    let root = fixture.temporary.path().join("root");
+    for name in [
+        "etc/pacman.d/gnupg/private-keys-v1.d",
+        "usr/share/pacman/keyrings",
+    ] {
+        fs::create_dir_all(root.join(name)).unwrap();
+    }
+    for name in [
+        "etc/machine-id",
+        "var/lib/dbus/machine-id",
+        "var/lib/systemd/random-seed",
+        "etc/hostname",
+        "etc/machine-info",
+        "etc/ssh/ssh_host_ed25519_key",
+        "etc/ssh/ssh_host_ed25519_key.pub",
+        "etc/pacman.d/gnupg/private-keys-v1.d/key",
+        "var/log/.hidden",
+        "tmp/stale",
+        "var/tmp/stale",
+        "usr/share/pacman/keyrings/archlinux.gpg",
+    ] {
+        fs::write(root.join(name), "source state").unwrap();
+    }
+    let output = fixture.run("template_clean", &[], "");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(root.join("etc/machine-id")).unwrap(), "");
+    for name in [
+        "var/lib/dbus/machine-id",
+        "var/lib/systemd/random-seed",
+        "etc/hostname",
+        "etc/machine-info",
+        "etc/ssh/ssh_host_ed25519_key",
+        "etc/ssh/ssh_host_ed25519_key.pub",
+        "etc/pacman.d/gnupg",
+        "var/log/.hidden",
+        "tmp/stale",
+        "var/tmp/stale",
+    ] {
+        assert!(!root.join(name).exists(), "{name}");
+    }
+    assert!(
+        root.join("usr/share/pacman/keyrings/archlinux.gpg")
+            .exists()
+    );
+    assert!(fixture.trace().is_empty());
+}
+
+/// Verify a system clone receives the requested identity and a fresh local signing keyring.
+/// 验证系统副本获得指定身份及新的本地签名密钥环。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn initializes_independent_system_identity() {
+    let fixture = Fixture::new();
+    let root = fixture.temporary.path().join("root");
+    let id = "1234567890abcdef1234567890abcdef";
+    let output = fixture.run("system_init", &[id], "");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in ["etc/machine-id", "var/lib/dbus/machine-id"] {
+        assert_eq!(
+            fs::read_to_string(root.join(name)).unwrap(),
+            format!("{id}\n")
+        );
+    }
+    let trace = fixture.trace();
+    let gpgdir = root.join("etc/pacman.d/gnupg");
+    assert!(trace.contains(&format!("pacman-key --gpgdir {} --init", gpgdir.display())));
+    assert!(trace.contains(&format!(
+        "pacman-key --gpgdir {} --populate archlinux",
+        gpgdir.display()
+    )));
+}
+
+/// Reject invalid identities and redirected state directories before any mutation.
+/// 在任何修改前拒绝无效身份及被重定向的状态目录。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn identity_operations_reject_invalid_inputs_and_directory_links() {
+    let fixture = Fixture::new();
+    for args in [
+        vec![],
+        vec!["bad"],
+        vec!["00000000000000000000000000000000"],
+        vec!["1234567890abcdef1234567890abcdef", "extra"],
+    ] {
+        assert_eq!(
+            fixture.run("system_init", &args, "").status.code(),
+            Some(64)
+        );
+    }
+    assert_eq!(
+        fixture.run("template_clean", &["extra"], "").status.code(),
+        Some(64)
+    );
+    let root = fixture.temporary.path().join("root");
+    let outside = fixture.temporary.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), "retained").unwrap();
+    fs::remove_dir(root.join("var/log")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("var/log")).unwrap();
+    assert_eq!(
+        fixture.run("template_clean", &[], "").status.code(),
+        Some(64)
+    );
+    assert!(outside.join("keep").is_file());
+    assert!(fixture.trace().is_empty());
 }

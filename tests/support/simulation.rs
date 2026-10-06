@@ -21,6 +21,7 @@ pub struct Event {
     pub arguments: Vec<String>,
     pub root: PathBuf,
     pub packages: Vec<String>,
+    pub system_id: String,
 }
 
 /// One attempted CoW boundary between a completed root and a new root.
@@ -44,6 +45,7 @@ pub struct SimulatedBackend {
     pub snapshots: RefCell<Vec<SnapshotEvent>>,
     pub fail_operation: RefCell<Option<&'static str>>,
     pub fail_restore: Cell<bool>,
+    pub fail_restore_to: RefCell<Option<&'static str>>,
     pub remove_kept_on_update: Cell<bool>,
     pub mutate_editable: RefCell<Option<PathBuf>>,
     generation: Cell<u32>,
@@ -228,6 +230,16 @@ impl BuildBackend for SimulatedBackend {
         if !readonly && self.fail_restore.replace(false) {
             return Err(Error::Invalid("injected CoW restore failure".into()));
         }
+        if !readonly
+            && self
+                .fail_restore_to
+                .borrow()
+                .as_ref()
+                .is_some_and(|name| destination.ends_with(name))
+        {
+            self.fail_restore_to.borrow_mut().take();
+            return Err(Error::Invalid("injected CoW restore failure".into()));
+        }
         copy_simulated_snapshot(source, destination);
         fs::write(
             destination.join(MARKER),
@@ -277,13 +289,19 @@ impl BuildBackend for SimulatedBackend {
     ) -> Result<String> {
         self.check_subvolume(root, false)?;
         assert_eq!(plugin.metadata.id, "arch");
-        assert_eq!(context.architecture, "x86_64");
+        assert!(
+            plugin
+                .metadata
+                .architectures
+                .contains(&context.architecture)
+        );
         let frozen = read_build_config_at(&context.config)?;
         self.events.borrow_mut().push(Event {
             operation: operation.into(),
             arguments: args.to_vec(),
             root: root.into(),
             packages: frozen.packages,
+            system_id: context.system_id.clone(),
         });
         if self.fail_operation.borrow().as_ref() == Some(&operation) {
             self.fail_operation.borrow_mut().take();
@@ -303,6 +321,14 @@ impl BuildBackend for SimulatedBackend {
             "base_install" => {
                 packages.insert("base".into(), true);
                 packages.insert("base-dependency".into(), false);
+            }
+            "template_clean" => {
+                fs::create_dir_all(root.join("etc")).unwrap();
+                fs::write(root.join("etc/machine-id"), "").unwrap();
+            }
+            "system_init" => {
+                assert_eq!(args.len(), 1);
+                fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
             }
             "update" => {
                 if self.remove_kept_on_update.replace(false) {

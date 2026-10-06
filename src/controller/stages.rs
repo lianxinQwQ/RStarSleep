@@ -4,8 +4,10 @@ use super::{
     BuildBackend, BuildContext, BuildOutcome, Result,
     cache::{self, Cache, Identity, Record},
     frozen::config_hash,
+    identity,
     plugins::LoadedPlugin,
     records::Attempt,
+    templates,
 };
 use crate::{
     base_system,
@@ -37,6 +39,9 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Independent owned temporary build directory.
     /// 独立所属构建临时目录。
     pub(super) scratch: &'a Path,
+    /// Shared immutable templates, outside per-system caches and scratch space.
+    /// 位于每系统缓存和临时空间之外的共享不可变模板。
+    pub(super) templates: &'a Path,
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
@@ -59,7 +64,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         packages: Option<Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<BuildOutcome> {
-        let base = self.base_step(base.as_ref(), packages.is_some(), owned)?;
+        let base = self.base_step(base.as_ref(), packages.as_ref(), owned)?;
         let packages = self.packages_step(packages.as_ref(), &base, owned)?;
         self.publish(&packages)
     }
@@ -73,21 +78,21 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   共享步骤输入。
     /// - `cached`: This step's own completed prior cache.
     ///   此步骤自身已完成的过往缓存。
-    /// - `maintenance_covered`: Whether a later cached step will perform the system update.
-    ///   后续有缓存步骤是否将承担系统更新。
+    /// - `packages`: Later cache covering maintenance and optionally supplying an existing identity.
+    ///   承担维护的后续缓存，也可提供此系统已有身份。
     /// - `owned`: Scratch roots reserved for cleanup.
     ///   为清理预留的临时根。
     fn base_step(
         &self,
         cached: Option<&Cache>,
-        maintenance_covered: bool,
+        packages: Option<&Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
         let root = self.scratch.join("base-root");
         if let Some(cached) = cached {
             // Later package maintenance supplies the update; inherit this completed step unchanged.
             // 后续软件维护提供系统更新；原样继承本已完成步骤。
-            if maintenance_covered {
+            if packages.is_some() {
                 return self.commit(
                     "base-system",
                     &cached.root,
@@ -101,8 +106,33 @@ impl<B: BuildBackend> Stages<'_, B> {
             base_system::maintain(self.backend, self.plugin, &root, self.context)?;
         } else {
             owned.push(root.clone());
-            self.backend.create_subvolume(&root)?;
-            base_system::install(self.backend, self.plugin, &root, self.context)?;
+            let reused = templates::restore(
+                self.backend,
+                self.plugin,
+                self.templates,
+                &root,
+                &self.context.architecture,
+            )?;
+            let previous_root = packages.map(|cache| cache.root.clone()).or_else(|| {
+                self.attempt
+                    .previous
+                    .as_ref()
+                    .map(|version| self.attempt.layout.versions.join(version).join("root"))
+            });
+            let machine_id =
+                identity::machine_id(&self.attempt.layout.root, previous_root.as_deref())?;
+            self.backend.invoke(
+                self.plugin,
+                "system_init",
+                &[machine_id],
+                &root,
+                self.context,
+            )?;
+            // A reused template may be old; the later cached package stage still covers updates.
+            // 复用模板可能较旧；后续有缓存软件阶段仍负责覆盖更新。
+            if reused && packages.is_none() {
+                base_system::maintain(self.backend, self.plugin, &root, self.context)?;
+            }
         }
         let session = PackageSession {
             backend: self.backend,

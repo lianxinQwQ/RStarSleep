@@ -54,8 +54,9 @@ fn only_latest_attempt_is_considered_for_cache_reuse() {
         .unwrap()
         .remove(0);
     assert_eq!(outcome.version, "v00000003");
-    assert_eq!(backend.count("bootstrap"), 1);
-    assert_eq!(backend.count("update"), 0);
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("system_init"), 1);
+    assert_eq!(backend.count("update"), 1);
 }
 
 /// Verify failed CoW restore aborts before plugins and leaves no copy fallback.
@@ -110,7 +111,11 @@ fn bootstrap_edits_to_current_config_do_not_change_frozen_targets() {
             .events
             .borrow()
             .iter()
-            .all(|event| event.packages == ["editor"])
+            .all(|event| if event.system_id == "template" {
+                event.packages.is_empty()
+            } else {
+                event.packages == ["editor"]
+            })
     );
     let inventory = SimulatedBackend::inventory(&outcome.root);
     assert!(inventory.contains_key("editor"));
@@ -309,7 +314,7 @@ fn uncached_package_step_requires_cow_restore_of_committed_previous_step() {
     let fixture = Fixture::new();
     fixture.system("desktop", &["editor"]);
     let backend = SimulatedBackend::default();
-    backend.fail_restore.set(true);
+    *backend.fail_restore_to.borrow_mut() = Some("root");
     let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
     assert!(error.to_string().contains("CoW restore failure"));
     let base = fixture.cache("v00000001", "base-system");

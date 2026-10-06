@@ -328,11 +328,14 @@ impl Fixture {
         let temporary = tempfile::tempdir().unwrap();
         let archive_path = temporary.path().join("plugin.tar");
         let mut archive = tar::Builder::new(fs::File::create(&archive_path).unwrap());
-        let metadata = b"schema_version=1\napi_version=1\nid='test'\nversion='1'\nentry='plugin.sh'\narchitectures=['x86_64']\ncache_format='test-v1'\nprotected_packages=['base']\n[tools]\nhost=[]\nsystem=[]\n";
-        for (name, contents) in [
-            ("plugin.toml", metadata.as_slice()),
-            ("plugin.sh", b"#!/bin/bash\nexit 99\n".as_slice()),
-        ] {
+        let metadata = b"schema_version=1\napi_version=2\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\nprotected_packages=['base']\n[tools]\nhost=[]\nsystem=[]\n";
+        let mut files = vec![("plugin.toml".to_owned(), metadata.as_slice())];
+        files.extend(
+            plugins::REQUIRED_OPERATIONS
+                .iter()
+                .map(|name| (format!("{name}.sh"), b"#!/bin/bash\nexit 99\n".as_slice())),
+        );
+        for (name, contents) in files {
             let mut header = tar::Header::new_gnu();
             header.set_mode(0o755);
             header.set_size(contents.len() as u64);

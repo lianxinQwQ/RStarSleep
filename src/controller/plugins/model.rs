@@ -85,6 +85,7 @@ pub struct ToolRequirements {
 /// Metadata describing one packaged Bash plugin.
 /// 描述一个打包的 Bash 插件的元数据。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Metadata {
     /// Metadata format version supported by the loader.
     /// 加载器支持的元数据格式版本。
@@ -102,9 +103,6 @@ pub struct Metadata {
     /// 此插件支持的系统类型；省略时使用插件标识。
     #[serde(default)]
     pub system_types: Vec<String>,
-    /// Bash entry path relative to the normalized plugin root.
-    /// 相对于归一化插件根的 Bash 入口路径。
-    pub entry: PathBuf,
     /// Supported target architectures.
     /// 支持的目标架构。
     pub architectures: Vec<String>,
@@ -152,15 +150,22 @@ impl LoadedPlugin {
         &self.root
     }
 
-    /// Locate the validated Bash entry script without executing it.
-    /// 定位已校验的 Bash 入口脚本，不执行脚本。
+    /// Validate and locate the operation's .sh file without executing it.
+    /// 校验并定位操作的 .sh 文件，不执行脚本。
     ///
     /// # Arguments
     ///
-    /// - `self`: Plugin whose metadata specifies the entry relative to its root.
-    ///   元数据指定了根内相对入口路径的插件。
-    pub fn entry_path(&self) -> PathBuf {
-        self.root.join(&self.metadata.entry)
+    /// - `self`: Plugin providing operation files directly at its root.
+    ///   在根内直接提供操作文件的插件。
+    /// - `operation`: Operation identifier; .sh is appended to form its filename.
+    ///   操作标识；附加 .sh 后缀形成文件名。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers or missing/non-regular operation files.
+    /// 标识无效或操作文件缺失、不是普通文件时返回错误。
+    pub fn operation_path(&self, operation: &str) -> Result<PathBuf> {
+        super::validation::operation_path(self.root(), operation)
     }
 
     /// Return the separate writable temporary directory for plugin operations.

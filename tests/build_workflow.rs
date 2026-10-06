@@ -149,8 +149,8 @@ fn cached_base_step_maintains_when_package_step_has_no_cache() {
     fixture.cleaned(&outcome.version);
 }
 
-/// Verify missing base cache is regenerated independently from maintained software.
-/// 验证缺失基础缓存独立于被维护软件重新生成。
+/// Verify missing base cache is restored from a template independently of maintained software.
+/// 验证缺失基础缓存独立于被维护软件从模板恢复。
 /// # Arguments
 ///
 /// No parameters.
@@ -166,8 +166,8 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
         .remove(0);
-    assert_eq!(backend.count("bootstrap"), 1);
-    assert_eq!(backend.count("base_install"), 1);
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("base_install"), 0);
     assert_eq!(backend.count("update"), 1);
     assert!(
         record(&fixture.cache(&outcome.version, "base-system.toml"))
@@ -182,7 +182,7 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
     assert!(
         events
             .iter()
-            .find(|event| event.operation == "bootstrap")
+            .find(|event| event.operation == "system_init")
             .unwrap()
             .root
             .ends_with("base-root")
@@ -202,7 +202,7 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
                 .join(".base-generation")
         )
         .unwrap(),
-        "2"
+        "1"
     );
     assert_eq!(
         fs::read_to_string(outcome.root.join(".base-generation")).unwrap(),
@@ -213,3 +213,6 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
 
 #[path = "build_workflow/failures.rs"]
 mod failures;
+
+#[path = "build_workflow/templates.rs"]
+mod templates;

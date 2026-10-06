@@ -18,7 +18,7 @@ fn passes_frozen_configuration_to_host_operations() {
     let config = plugin.temporary.path().join("frozen config");
     fs::create_dir(&config).unwrap();
     let root = plugin.temporary.path().join("target");
-    fs::write(plugin.entry_path(),
+    fs::write(plugin.operation_path("bootstrap").unwrap(),
         "printf '%s\\0%s\\0%s' \"$RSTAR_CONFIG_DIR\" \"$RSTAR_SYSTEM_ID\" \"$RSTAR_ARCH\" > \"$RSTAR_ROOT/context\"\n").unwrap();
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),

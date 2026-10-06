@@ -165,6 +165,7 @@ impl LoadedPlugin {
                 self.metadata.id
             )));
         }
+        let operation_path = self.operation_path(operation)?;
         let mut command = if operation == "bootstrap" {
             let tools = required_tools(&self.metadata.tools.host, &["bash"]);
             check_host(self, operation, &tools, host_path)?;
@@ -177,7 +178,7 @@ impl LoadedPlugin {
                 .env("RSTAR_PLUGIN_ROOT", self.root())
                 .env("RSTAR_PLUGIN_TMP", self.temporary_path())
                 .env("RSTAR_ROOT", root)
-                .arg(self.entry_path());
+                .arg(operation_path);
             command
         } else {
             check_host(self, operation, &["systemd-nspawn".into()], host_path)?;
@@ -217,7 +218,7 @@ impl LoadedPlugin {
             command
                 .arg("--")
                 .arg("bash")
-                .arg(Path::new(SYSTEM_PLUGIN).join(&self.metadata.entry));
+                .arg(Path::new(SYSTEM_PLUGIN).join(format!("{operation}.sh")));
             command
         };
         if let Some(context) = context {
@@ -226,7 +227,7 @@ impl LoadedPlugin {
                 .env("RSTAR_SYSTEM_ID", &context.system_id);
         }
         command.env("RSTAR_ARCH", architecture);
-        command.arg(operation).args(arguments);
+        command.args(arguments);
         let output = command
             .output()
             .map_err(|source| io_error(&self.archive, source))?;

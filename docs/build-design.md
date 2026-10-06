@@ -13,6 +13,7 @@
 - 首版支持 Arch Linux / pacman，首次安装从官方 bootstrap rootfs 开始。
 - 发行版插件以压缩包分发，包含元数据、Bash 脚本及其他资源；复杂任务可以携带
   辅助二进制。新增发行版不要求重新编译主程序。
+- 每个操作使用插件根内的同名 `.sh` 文件；调用参数只包含操作参数。
 - 用户将插件包存放在工作根的 `plugins/`；系统配置通过 `system_type` 自动选择
   匹配插件，不需要在全局配置注册每个包的路径。
 - 项目根的 `presets/plugins/arch/` 提供 Arch 预设，编译时打包并嵌入程序，
@@ -24,7 +25,8 @@
 - 最新过往构建可以是失败构建，但只能复用其中已成功完成的阶段缓存。
 - 软件维护先更新系统，再根据当前和缓存来源版本的 pkg 表调整软件，最后清理孤儿包。
 
-以下规则对应当前实现；插件 API 与元数据 schema 均为版本 1。
+以下规则对应当前实现；Arch 预设插件 API 为版本 3，元数据 schema 为版本 1。
+API 2 仍支持已有缓存的维护；无基础缓存的创建需要 API 3。
 
 ## 命令行
 
@@ -69,6 +71,8 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 | `src/controller/records.rs` | 独占锁、单调版本分配和构建状态记录 |
 | `src/controller/frozen.rs` | 普通配置归档、稳定摘要、未知配置选项保留 |
 | `src/controller/cache.rs` | 阶段旁记录校验、兼容性判断和快照原子提交 |
+| `src/controller/templates.rs` | 完整插件归档哈希索引、模板锁、固定输入构建和模板原子发布 |
+| `src/controller/identity.rs` | 每系统 machine-id 的持久保存、旧身份接纳和首次生成 |
 | `src/controller/backend.rs` | 原生 Btrfs 子卷/快照命令和插件执行适配 |
 | `src/controller/fs.rs` | 路径检查、目录同步和 TOML 原子写入 |
 | `src/controller/plugins/model.rs` | 插件元数据、加载会话与插件错误 |
@@ -90,29 +94,40 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 ## 插件压缩包
 
 首版支持 tar 系列压缩包，例如 `.tar.gz`、`.tar.xz` 和 `.tar.zst`。
-插件根目录固定包含 `plugin.toml`，其余文件通过元数据指定或由脚本相对引用：
+插件根目录固定包含 `plugin.toml` 和各操作的同名文件，辅助资源由脚本相对引用：
 
 ```text
 arch-plugin.tar.zst
 ├── plugin.toml
-├── plugin.sh
-├── scripts/
+├── bootstrap.sh
+├── base_install.sh
+├── template_clean.sh        # API 3 模板发布前清理系统身份
+├── system_init.sh           # API 3 在副本上初始化独立系统
+├── update.sh
+├── resolve_packages.sh
+├── query_packages.sh
+├── install.sh
+├── remove.sh
+├── mark_reason.sh
+├── list_orphans.sh
+├── remove_orphans.sh
+├── clean_orphans.sh            # Arch 额外提供的操作
+├── lib/common.sh            # 可选公共函数
 ├── bin/                     # 可选辅助二进制，可以按架构组织
 └── data/                    # 配置模板、软件源和其他资源
 ```
 
-元数据包含格式版本、插件身份和版本、入口脚本、支持的目标架构及缓存
+元数据包含格式版本、插件身份和版本、支持的目标架构及缓存
 格式标识。插件版本用于留档，缓存格式标识用于兼容性判断，两者分别记录。
 
 ```toml
 # Metadata at the archive's plugin root.
 # 压缩包插件根目录中的元数据。
 schema_version = 1
-api_version = 1
+api_version = 3
 id = "arch"
-version = "0.1.0"
+version = "0.3.0"
 system_types = ["arch"]
-entry = "plugin.sh"
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
 # Protected explicit base targets.
@@ -126,8 +141,20 @@ host = ["bash", "curl", "tar", "zstd", "gpgv", "cp", "rm", "mktemp", "cat", "dir
 system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname"]
 ```
 
-`entry` 是插件根内的相对路径，由程序通过 Bash 调用。辅助二进制由脚本选择和
-调用，可以分别提供宿主和目标系统所需的架构版本。其动态库或解释器依赖需在
+操作文件名固定为 `<操作名>.sh`，例如 `install.sh`，不通过元数据
+配置入口。API 2 加载时要求原十个必需操作文件，API 3 额外要求两个模板生命周期
+文件，所有操作文件必须存在且为普通文件，不接受目录或
+符号链接。每次调用前再次校验当前操作文件。公共函数可以放在 `lib/common.sh`
+供各操作脚本引用。
+
+API 2 删除了 `entry` 字段，不接受 API 1 插件或旧入口声明。已有插件需拆分操作
+文件、移除 `entry`、更新 `api_version` 并重新打包。`init` 保留已有同名插件包，
+所以升级程序后需主动替换旧的 `plugins/arch.tar.gz`。
+API 3 新增 `template_clean` 和 `system_init`，未升级的 API 2 插件仍可维护已有
+兼容缓存，但不能进入无基础缓存的创建分支。
+
+辅助二进制由操作脚本选择和调用，可以分别提供宿主和目标系统所需的架构版本。
+其动态库或解释器依赖需在
 对应运行环境中具备，或者随插件提供；打包成压缩包本身不使二进制跨架构运行。
 
 ## 临时解包与目录修正
@@ -142,10 +169,10 @@ system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname
 
 目录计数包含隐藏项；目录提升使用目录移动，不遗漏隐藏文件。根元数据存在但
 内容无效时直接报错，不改用其他位置的元数据。元数据解析后继续校验 API 版本、
-插件身份、目标架构和入口脚本。
+插件身份、目标架构和全部必需操作文件。
 
 归档解包需拒绝绝对路径、逃出临时根的路径和设备节点；链接不得造成越界写入。
-不应用归档携带的宿主所有者和特殊权限。解包及校验失败时不运行入口脚本。
+不应用归档携带的宿主所有者和特殊权限。解包及校验失败时不运行操作脚本。
 
 插件根作为 Bash 的资源根和默认工作目录。单独提供临时写入目录，构建完成或
 失败后，在插件进程退出和容器挂载释放后清理整个临时会话。持久数据、系统根和
@@ -162,12 +189,12 @@ system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname
 
 检查不仅要求文件存在，还要求它是可执行文件。bootstrap 检查宿主的声明工具，
 系统任务通过 nspawn 中的固定 POSIX 探测检查目标系统的声明工具，不使用宿主
-PATH 代替。Bash 入口执行器始终检查 Bash；系统任务还检查宿主 systemd-nspawn，
+PATH 代替。操作执行器始终检查 Bash；系统任务还检查宿主 systemd-nspawn，
 目标根需有 `/bin/sh` 用于探测。宿主依赖不会在 bootstrap 后错误要求存在于
 目标系统，目标依赖也不会阻止在空根目录上进行 bootstrap。
 
 所有缺失项在一次错误中报告，并包含插件身份、操作及宿主/目标环境。
-检查脚本不运行插件或声明的工具。检查失败或工具缺失时，不执行插件入口；
+检查脚本不运行插件或声明的工具。检查失败或工具缺失时，不执行操作文件；
 程序不自动安装缺失工具。
 
 ## 插件任务接口
@@ -180,6 +207,8 @@ PATH 代替。Bash 入口执行器始终检查 Bash；系统任务还检查宿�
 | 元数据 | 接口版本、发行版身份、支持架构、缓存格式及能力声明 |
 | `bootstrap` | 在空系统根上下载、校验并解包官方 rootfs |
 | `base_install` | 定义并安装基础包，完成 bootstrap 包状态的整理 |
+| `template_clean`（API 3） | 清理模板中每台机器的身份、密钥和运行状态 |
+| `system_init`（API 3） | 在模板副本上应用独立系统身份和系统特定配置 |
 | `update` | 执行该发行版的完整系统更新 |
 | `resolve_packages` / `query_packages` | 将配置解析为实际包名，查询已安装包及显式/依赖安装原因 |
 | `install` / `remove` / `mark_reason` | 安装、依赖检查下删除、调整安装原因 |
@@ -188,11 +217,33 @@ PATH 代替。Bash 入口执行器始终检查 Bash；系统任务还检查宿�
 主程序只理解这些操作的语义；pacman、apt 等具体命令及输出解释属于 Bash 插件。
 简单任务直接在脚本内完成，复杂任务调用随包携带的二进制，不改变核心接口。
 
-使用短生命周期的任务调用，由 Bash 入口接收操作名称及独立参数：
+使用短生命周期的任务调用，控制器按操作名选择对应的 `.sh` 文件，由 Bash 执行。
+每个文件只接收该操作的独立参数：
 
 ```text
-bash <插件根>/<entry> <操作> [参数...]
+bash <插件根>/<操作名>.sh [参数...]
 ```
+
+例如安装调用为 `bash <插件根>/install.sh vim git`，查询调用为
+`bash <插件根>/query_packages.sh`。插件没有二级操作命令或统一分派入口。
+
+| 必需操作文件 | 位置参数 | 查询 stdout / 行为 |
+| --- | --- | --- |
+| `bootstrap.sh` | 无 | 在空系统根上下载、验签并解包 rootfs |
+| `base_install.sh` | 无 | 安装基础包并整理 bootstrap 包状态 |
+| `template_clean.sh`（API 3） | 无 | 模板发布前最后一次操作，清理机器身份和私有状态 |
+| `system_init.sh`（API 3） | `machine-id` | 初始化副本，接收非零 32 位小写十六进制身份 |
+| `update.sh` | 无 | 完整系统更新 |
+| `resolve_packages.sh` | `包名...` | 每行一个实际包名 |
+| `query_packages.sh` | 无 | 每行 `包名<TAB>explicit` 或 `包名<TAB>dependency` |
+| `install.sh` | `包名...` | 显式安装指定包 |
+| `remove.sh` | `包名...` | 检查依赖后删除指定包 |
+| `mark_reason.sh` | `explicit\|dependency 包名...` | 调整安装原因 |
+| `list_orphans.sh` | 无 | 每行一个孤儿包名 |
+| `remove_orphans.sh` | `包名...` | 删除指定孤儿包 |
+
+Arch 还提供无参数的 `clean_orphans.sh`，用于自动查询并清理孤儿依赖。
+操作文件通过 Bash 读取；随包辅助二进制仍必须具备可执行权限。
 
 退出码 0 表示成功，非零表示失败。修改操作输出执行日志；查询操作的 stdout
 只返回约定数据，日志走 stderr。简单包集合逐行返回实际包名；安装原因可以使用
@@ -210,7 +261,7 @@ bash <插件根>/<entry> <操作> [参数...]
 - 基础安装、更新、包查询、安装、删除和孤儿清理通过 nspawn 执行。
 - 在 nspawn 中将整个插件根只读绑定到 `/run/rstarsleep/plugin`，包括脚本、
   辅助二进制和资源；临时写入目录与留档配置使用各自明确的容器路径。
-- 系统内 Bash 入口的工作目录为该插件根；插件临时写入目录单独提供。
+- 系统内操作文件的工作目录为该插件根；插件临时写入目录单独提供。
 - 运行插件前检查所需 Bash 及工具；bootstrap 得到的根必须能执行后续任务。
 - CoW、缓存提交和版本完成标记始终由控制器负责。
 
@@ -251,7 +302,7 @@ packages = ["linux", "vim"]
 `ConfigStore::plugins_path()` 定位共享目录，`read_system_type()` 读取类型和
 可选架构（省略时用宿主架构，兼容 `distribution` 写法）。
 `controller::plugins::for_system()` 自动匹配，并返回管理临时环境生命周期的
-加载结果。当前支持 tar、gzip、xz 和 zstd；解包和入口检查不执行脚本。
+加载结果。当前支持 tar、gzip、xz 和 zstd；解包和操作文件检查不执行脚本。
 链接目标也必须为不含 `..` 的相对路径。
 
 `LoadedPlugin::invoke()` 提供检查后的 Bash 任务调用，bootstrap 在宿主运行，
@@ -303,8 +354,10 @@ systems/<系统>/versions/<版本>/root/
 
 步骤 1：基础系统。
 
-- 无缓存动作：创建独立可写 `base-root`，执行 bootstrap 和基础系统安装，
-  然后提交基础系统缓存。即使后续软件包步骤有缓存，此动作也需要完成。
+- 无缓存动作：获取以完整插件哈希和架构索引的共享模板；不存在时在模板目录
+  执行 bootstrap、基础安装和身份清理。创建独立可写 CoW `base-root`，执行
+  系统初始化，然后提交本系统基础缓存。复用旧模板且后续软件步骤无缓存时，
+  在副本中完整更新一次。即使后续软件包步骤有缓存，此创建动作也需要完成。
 - 有缓存动作：通常恢复基础缓存、更新一次并提交新缓存。若软件包步骤有缓存，
   其维护动作将承担系统更新，因此基础步骤不执行维护，只以只读 CoW 继承缓存
   并保留内容来源记录。
@@ -329,10 +382,36 @@ systems/<系统>/versions/<版本>/root/
 Arch 的受保护基础包入口为 `base`；内核、桌面和其他系统用途相关
 软件写入 `packages`，因此主系统和子系统可以共用流程而不强制安装内核。
 
-首次安装依次执行：获取并校验官方 bootstrap rootfs，解包到新 Btrfs 根子卷，
+模板首次安装依次执行：获取并校验官方 bootstrap rootfs，解包到模板目录中的新 Btrfs 根子卷，
 配置软件源，通过 nspawn 初始化 pacman 密钥，并执行完整更新和基础包安装。
 bootstrap 自带但不属于基础目标的工具应整理为依赖并清理，避免永久混入基础根。
-随后保存只读基础缓存。具体镜像地址、密钥和软件源配置由 Arch 插件定义。
+查询及校验基础包清单后，最后执行 `template_clean`，保存只读模板。
+具体镜像地址、密钥和软件源配置由 Arch 插件定义。
+
+模板位置是 `templates/<完整插件SHA-256>/<架构>/completed/`，包含只读 `root`、
+`template.toml` 完成标记和固定最小配置。索引使用实际加载的整个插件压缩包的
+SHA-256，覆盖元数据、所有脚本、辅助二进制及资源。系统名称、系统类型和用户
+软件清单不参与模板索引；同一插件的不同架构分开存放。
+模板构建上下文固定 `RSTAR_SYSTEM_ID=template`，配置使用插件支持的首个排序类型、
+目标架构和空 `packages`，不读取任何系统的当前或留档配置。API 3 插件必须在
+`system_init` 中应用系统特定输入，不能把它们留在通用模板中。
+
+模板构建和恢复持有哈希/架构目录内的独占锁，竞争时明确报错并要求完成后重试。
+模板根与完成标记在临时目录全部生成后，通过一次目录重命名原子发布。
+失败或中断的 `template-pending-*` 目录不作为来源；正常失败清理已知子卷。
+已发布模板标记损坏、哈希不符或根不是只读子卷时中止，不能悄悄复用或覆盖。
+完成模板不会被系统构建修改；初始化或软件阶段失败仍保留模板。
+
+从模板创建可写快照后，调用 `system_init <machine-id>`。每系统身份保存在
+`systems/<系统>/identity.toml`，首次从安全随机源生成，重建仍复用；旧系统可从自身
+之前的根接纳有效 ID。Arch 模板清空 machine-id，移除 D-Bus 身份、SSH 主机密钥、
+随机种子、主机名、日志、临时文件和 pacman 本地密钥环，保留发行版公开密钥。
+系统初始化写入 machine-id 并重新初始化 pacman 本地密钥；SSH 密钥留待服务生成。
+其他发行版插件负责清理其网络租约、应用凭据及其他运行状态。
+
+只有无基础缓存的创建分支查询模板。有缓存的基础维护、软件维护和继承动作
+保持原样，插件归档哈希变化不额外使兼容的系统缓存失效。新创建分支在新哈希
+没有模板时重新下载 bootstrap，不从其他系统的最终根或软件缓存制作模板。
 
 维护基础系统时，从旧基础缓存创建可写快照，在 nspawn 中执行一次完整系统更新，
 成功后保存新基础缓存。Arch 使用 `pacman -Syu`，不采用独立 `-Sy` 的部分升级。
@@ -391,4 +470,6 @@ AUR 仍按现有项目规划后续实现。
 失败阶段复用、实际包缺失与依赖保留、插件 API 不兼容及任务失败处理、
 归档根及单层包装目录识别、隐藏文件保留、非法归档拒绝、临时会话清理，以及
 CoW 失败不退回普通复制。
+另覆盖跨系统共享模板、全部插件资源哈希变化、已有维护行为不变、独立且稳定的
+机器身份、模板清理、初始化失败重试、损坏标记拒绝和模板锁争用。
 模拟执行层可验证控制流；真实 Btrfs、bootstrap 和 nspawn 链路另做集成验证。

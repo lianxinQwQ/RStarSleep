@@ -30,12 +30,17 @@ cargo run -- init /mnt/btrfs
 `system_type = "arch"` 选择类型；控制器按插件元数据自动匹配，不需要注册路径。
 
 项目根的 [presets/plugins/arch](presets/plugins/arch) 提供 Arch Linux 预设。
-Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包。插件使用 Bash
-实现，复杂任务可以随包携带二进制。加载时在临时目录解包，自动处理单层包装
+Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包。Arch 插件 API 为版本 3，
+每个操作使用根内同名 `.sh` 文件，调用形式为 `bash <插件根>/<操作名>.sh [参数...]`，
+元数据不包含 `entry`。复杂任务可以随包携带二进制。加载时在临时目录解包，自动处理单层包装
 目录，并保留全部资源。具体格式与流程见 [docs/build-design.md](docs/build-design.md)。
 
 插件元数据通过 `[tools]` 声明宿主和系统内所需工具。程序在调用前检查实际环境，
-缺失时返回错误，不执行插件入口；包内二进制可以使用相对路径声明。
+缺失时返回错误，不执行操作文件；包内二进制可以使用相对路径声明。
+
+API 1 插件需拆分操作文件并重新打包。API 3 新增 `template_clean.sh` 和
+`system_init.sh`，分别清理模板身份和初始化系统副本。API 2 仍可维护已有缓存，
+无缓存创建需要 API 3。初始化会保留已有插件包，升级时需主动替换旧包。
 
 已实现预设嵌入、初始化分发、按系统类型查找/临时加载、调用前工具检查
 和 Bash/nspawn 调用，以及版本构建、阶段缓存和软件维护。
@@ -58,7 +63,12 @@ RStarSleep build desktop --root /mnt/btrfs/@rstarsleep
 Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
 `/usr/share/pacman/keyrings/archlinux.gpg`，可用 `RSTAR_ARCH_KEYRING` 指定。
 
-构建只从最新过往尝试读取已完成的只读阶段缓存。软件维护执行一次完整更新，
+构建只从最新过往尝试读取已完成的只读阶段缓存。无基础缓存时，使用共享的
+`templates/<完整插件SHA-256>/<架构>/completed/root` 创建可写 CoW 副本；模板不存在
+才下载 bootstrap 并安装基础系统。完整归档中的脚本、辅助文件或元数据变化都会
+产生新模板，系统名称和类型不作为模板索引。模板在独立目录中构建，不含系统配置
+和用户软件清单；每个系统单独初始化 machine-id 和 pacman 本地密钥。
+有缓存的维护流程保持不变，插件哈希变化不强制重建已有兼容缓存。软件维护执行一次完整更新，
 补装缺失目标，将移除目标改为依赖并清理不再需要的软件。
 最终只读系统根位于 `systems/<系统>/versions/<版本>/root`。
 详细协议、步骤缓存动作和文件职责见 [构建设计](docs/build-design.md)。

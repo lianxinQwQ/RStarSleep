@@ -17,16 +17,56 @@ use std::{fs, io::Write, path::Path};
 /// - `api_version`: Task interface version written into metadata.
 ///   写入元数据的任务接口版本。
 fn tar_bytes(wrapper: Option<&str>, extra: Option<&str>, api_version: u32) -> Vec<u8> {
+    let filenames: Vec<_> = REQUIRED_OPERATIONS
+        .iter()
+        .chain(
+            if api_version == 3 {
+                TEMPLATE_OPERATIONS
+            } else {
+                &[]
+            }
+            .iter(),
+        )
+        .map(|operation| format!("{operation}.sh"))
+        .collect();
+    let operations: Vec<_> = filenames.iter().map(String::as_str).collect();
+    tar_bytes_with_operations(wrapper, extra, api_version, &operations)
+}
+
+/// Create an archive with explicitly chosen operation filenames to test layout rejection.
+/// 创建包含指定操作文件名的归档，验证布局拒绝行为。
+///
+/// # Arguments
+///
+/// - `wrapper`: Optional top-level directory.
+///   可选顶层目录。
+/// - `extra`: Optional raw archive entry.
+///   可选原始归档条目。
+/// - `api_version`: Task protocol version.
+///   任务协议版本。
+/// - `operations`: Operation filenames included in the package.
+///   包中包含的操作文件名。
+fn tar_bytes_with_operations(
+    wrapper: Option<&str>,
+    extra: Option<&str>,
+    api_version: u32,
+    operations: &[&str],
+) -> Vec<u8> {
     let metadata = format!(
-        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\nentry='plugin.sh'\narchitectures=['x86_64']\ncache_format='test-v1'\n[tools]\nhost=[]\nsystem=[]\n"
+        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\narchitectures=['x86_64']\ncache_format='test-v1'\n[tools]\nhost=[]\nsystem=[]\n"
     );
     let mut archive = tar::Builder::new(Vec::new());
-    for (name, contents) in [
+    let mut files = vec![
         ("plugin.toml", metadata.as_bytes()),
-        ("plugin.sh", b"#!/bin/bash\nexit 0\n".as_slice()),
         (".hidden", b"retained".as_slice()),
         ("bin/helper", b"tool".as_slice()),
-    ] {
+    ];
+    files.extend(
+        operations
+            .iter()
+            .map(|name| (*name, b"#!/bin/bash\nexit 0\n".as_slice())),
+    );
+    for (name, contents) in files {
         let path = wrapper.map_or_else(|| name.to_owned(), |wrapper| format!("{wrapper}/{name}"));
         let mut header = tar::Header::new_gnu();
         header.set_size(contents.len() as u64);
@@ -80,7 +120,7 @@ fn normalizes_roots_and_retains_hidden_files_and_tools() {
     let temporary = tempfile::tempdir().unwrap();
     for wrapper in [None, Some("arch-release")] {
         let path = temporary.path().join("arbitrary-name.tar.gz");
-        fixture(&path, wrapper, None, 1);
+        fixture(&path, wrapper, None, 2);
         let plugin = load(&path).unwrap();
         assert_eq!(plugin.root().file_name().unwrap(), "plugin");
         assert_eq!(
@@ -88,7 +128,9 @@ fn normalizes_roots_and_retains_hidden_files_and_tools() {
             b"retained"
         );
         assert_eq!(fs::read(plugin.root().join("bin/helper")).unwrap(), b"tool");
-        assert!(plugin.entry_path().is_file());
+        for operation in REQUIRED_OPERATIONS {
+            assert!(plugin.operation_path(operation).unwrap().is_file());
+        }
         assert!(plugin.temporary_path().is_dir());
         assert_eq!(plugin.archive_sha256.len(), 64);
         #[cfg(unix)]
@@ -123,7 +165,7 @@ fn selects_by_system_type_and_rejects_duplicates_and_wrong_architecture() {
         &temporary.path().join("unrelated-name.tar.gz"),
         None,
         None,
-        1,
+        2,
     );
     assert_eq!(
         find(temporary.path(), "arch", "x86_64")
@@ -134,7 +176,7 @@ fn selects_by_system_type_and_rejects_duplicates_and_wrong_architecture() {
     );
     assert!(find(temporary.path(), "debian", "x86_64").is_err());
     assert!(find(temporary.path(), "arch", "aarch64").is_err());
-    fixture(&temporary.path().join("second.tar.gz"), None, None, 1);
+    fixture(&temporary.path().join("second.tar.gz"), None, None, 2);
     assert!(
         find(temporary.path(), "arch", "x86_64")
             .unwrap_err()
@@ -153,7 +195,7 @@ fn selects_by_system_type_and_rejects_duplicates_and_wrong_architecture() {
 #[test]
 fn retains_bad_archive_diagnostics_without_blocking_valid_selection() {
     let temporary = tempfile::tempdir().unwrap();
-    fixture(&temporary.path().join("valid.tar.gz"), None, None, 1);
+    fixture(&temporary.path().join("valid.tar.gz"), None, None, 2);
     fs::write(temporary.path().join("broken.tar.gz"), b"invalid").unwrap();
     let plugin = find(temporary.path(), "arch", "x86_64").unwrap();
     assert_eq!(plugin.discovery_warnings.len(), 1);
@@ -176,11 +218,12 @@ fn rejects_invalid_layouts_paths_and_api_versions() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("plugin.tar.gz");
     for (wrapper, extra, api) in [
-        (Some("one"), Some(".extra"), 1),
-        (Some("one/two"), None, 1),
-        (None, Some("../escape"), 1),
-        (None, Some("/absolute"), 1),
-        (None, None, 2),
+        (Some("one"), Some(".extra"), 2),
+        (Some("one/two"), None, 2),
+        (None, Some("../escape"), 2),
+        (None, Some("/absolute"), 2),
+        (None, None, 1),
+        (None, None, 4),
     ] {
         fixture(&path, wrapper, extra, api);
         assert!(
@@ -200,7 +243,7 @@ fn rejects_invalid_layouts_paths_and_api_versions() {
 #[test]
 fn accepts_tar_xz_and_zstd_archives() {
     let temporary = tempfile::tempdir().unwrap();
-    let tar = tar_bytes(None, None, 1);
+    let tar = tar_bytes(None, None, 2);
     let plain = temporary.path().join("plugin.tar");
     fs::write(&plain, &tar).unwrap();
     let xz = temporary.path().join("plugin.tar.xz");
@@ -211,6 +254,113 @@ fn accepts_tar_xz_and_zstd_archives() {
     fs::write(&zstd, zstd::stream::encode_all(tar.as_slice(), 1).unwrap()).unwrap();
     for path in [&plain, &xz, &zstd] {
         assert_eq!(load(path).unwrap().metadata.id, "test-plugin");
+    }
+}
+
+/// Reject incomplete operation sets and unsuffixed or incorrectly suffixed alternatives during archive loading.
+/// 加载归档时拒绝缺少操作的插件及无后缀或后缀错误的替代文件。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn requires_every_same_named_operation_file() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    for missing in REQUIRED_OPERATIONS {
+        let filenames: Vec<_> = REQUIRED_OPERATIONS
+            .iter()
+            .filter(|operation| *operation != missing)
+            .map(|operation| format!("{operation}.sh"))
+            .collect();
+        for replacement in [
+            None,
+            Some((*missing).to_owned()),
+            Some(format!("{missing}.bash")),
+        ] {
+            let mut operations: Vec<_> = filenames.iter().map(String::as_str).collect();
+            if let Some(ref replacement) = replacement {
+                operations.push(replacement);
+            }
+            fs::write(
+                &archive,
+                tar_bytes_with_operations(None, None, 2, &operations),
+            )
+            .unwrap();
+            let error = load(&archive).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("{missing}.sh")),
+                "unexpected error: {error}"
+            );
+            assert!(
+                error.contains("缺少同名普通文件"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+}
+
+/// Require both template lifecycle operations for API 3 while continuing to load API 2.
+/// API 3 要求两个模板生命周期操作，同时继续加载 API 2。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn api_three_requires_template_operations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
+    assert_eq!(load(&archive).unwrap().metadata.api_version, 3);
+    for missing in TEMPLATE_OPERATIONS {
+        let filenames: Vec<_> = REQUIRED_OPERATIONS
+            .iter()
+            .chain(TEMPLATE_OPERATIONS)
+            .filter(|name| *name != missing)
+            .map(|name| format!("{name}.sh"))
+            .collect();
+        let operations: Vec<_> = filenames.iter().map(String::as_str).collect();
+        fs::write(
+            &archive,
+            tar_bytes_with_operations(None, None, 3, &operations),
+        )
+        .unwrap();
+        assert!(
+            load(&archive)
+                .unwrap_err()
+                .to_string()
+                .contains(&format!("{missing}.sh"))
+        );
+    }
+    fs::write(&archive, tar_bytes(None, None, 2)).unwrap();
+    assert_eq!(load(&archive).unwrap().metadata.api_version, 2);
+}
+
+/// Reject legacy entry declarations and non-regular operation files.
+/// 拒绝旧入口声明和非普通操作文件。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn rejects_legacy_entry_and_non_regular_operations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar.gz");
+    fixture(&archive, None, None, 2);
+    let plugin = load(&archive).unwrap();
+    let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
+    assert!(toml::from_str::<Metadata>(&format!("entry='plugin.sh'\n{text}")).is_err());
+    let operation = plugin.operation_path("update").unwrap();
+    fs::remove_file(&operation).unwrap();
+    fs::create_dir(&operation).unwrap();
+    assert!(validate_metadata(&plugin.metadata, plugin.root()).is_err());
+    #[cfg(unix)]
+    {
+        fs::remove_dir(&operation).unwrap();
+        std::os::unix::fs::symlink("bootstrap.sh", &operation).unwrap();
+        assert!(validate_metadata(&plugin.metadata, plugin.root()).is_err());
     }
 }
 
@@ -225,7 +375,7 @@ fn accepts_tar_xz_and_zstd_archives() {
 fn requires_and_validates_declared_tools() {
     let temporary = tempfile::tempdir().unwrap();
     let archive = temporary.path().join("plugin.tar.gz");
-    fixture(&archive, None, None, 1);
+    fixture(&archive, None, None, 2);
     let plugin = load(&archive).unwrap();
     let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
     assert!(
@@ -253,7 +403,7 @@ fn requires_and_validates_declared_tools() {
 fn validates_protected_package_targets() {
     let temporary = tempfile::tempdir().unwrap();
     let archive = temporary.path().join("plugin.tar.gz");
-    fixture(&archive, None, None, 1);
+    fixture(&archive, None, None, 2);
     let plugin = load(&archive).unwrap();
     let mut metadata = plugin.metadata.clone();
     metadata.protected_packages = vec!["base".into(), "libstdc++".into()];

@@ -1,21 +1,21 @@
 //! Validate metadata and bounded resource paths.
 //! 校验元数据和限定范围的资源路径。
-use super::{Error, Metadata, Result};
+use super::{Error, Metadata, REQUIRED_OPERATIONS, Result, TEMPLATE_OPERATIONS};
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
 };
-/// Validate compatibility fields and require a real entry file within the plugin root.
-/// 校验兼容性字段，并要求插件根内存在真实入口文件。
+/// Validate compatibility fields and require each same-named operation file at the root.
+/// 校验兼容性字段，并要求插件根内存在每个操作的同名文件。
 ///
 /// # Arguments
 ///
 /// - `metadata`: Parsed plugin metadata to validate.
 ///   待校验的已解析插件元数据。
-/// - `root`: Normalized root restricting the entry script's location.
-///   限定入口脚本位置的归一化插件根。
+/// - `root`: Normalized root containing the operation files.
+///   包含操作文件的归一化插件根。
 pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> {
-    if metadata.schema_version != 1 || metadata.api_version != 1 {
+    if metadata.schema_version != 1 || !matches!(metadata.api_version, 2 | 3) {
         return Err(Error::Invalid(format!(
             "插件 {} 的元数据或任务接口版本不受支持",
             metadata.id
@@ -50,16 +50,46 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
-    relative_path(&metadata.entry)?;
-    let entry = root.join(&metadata.entry);
-    let resolved = fs::canonicalize(&entry).map_err(|error| io_error(&entry, error))?;
-    if !resolved.starts_with(root) || !resolved.is_file() {
-        return Err(Error::Invalid(format!(
-            "插件入口必须是根内的文件: {}",
-            entry.display()
-        )));
+    for operation in REQUIRED_OPERATIONS {
+        operation_path(root, operation)?;
+    }
+    if metadata.api_version == 3 {
+        for operation in TEMPLATE_OPERATIONS {
+            operation_path(root, operation)?;
+        }
     }
     Ok(())
+}
+
+/// Require a regular root-level file named after the operation with a .sh suffix.
+/// 要求插件根内存在以操作名加 .sh 后缀命名的普通文件。
+///
+/// # Arguments
+///
+/// - `root`: Normalized plugin resource root.
+///   归一化插件资源根。
+/// - `operation`: Operation identifier, with .sh appended to form the filename.
+///   操作标识；附加 .sh 后缀形成文件名。
+pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
+    identifier(operation)?;
+    let path = root.join(format!("{operation}.sh"));
+    let info = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            Error::Invalid(format!(
+                "插件操作 {operation} 缺少同名普通文件: {}",
+                path.display()
+            ))
+        } else {
+            io_error(&path, error)
+        }
+    })?;
+    if !info.is_file() {
+        return Err(Error::Invalid(format!(
+            "插件操作 {operation} 必须是同名普通文件: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 /// Require a relative archive path without parent traversal or platform prefixes.

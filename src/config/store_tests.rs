@@ -107,7 +107,7 @@ fn installs_and_selects_embedded_arch_plugin_without_registry_settings() {
     assert_eq!(plugin.metadata.id, "arch");
     assert!(plugin.root().join("data/mirrorlist").is_file());
     assert!(
-        fs::read_to_string(plugin.entry_path())
+        fs::read_to_string(plugin.operation_path("base_install").unwrap())
             .unwrap()
             .contains("base_install")
     );

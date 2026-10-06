@@ -9,9 +9,11 @@ mod backend;
 mod cache;
 mod frozen;
 mod fs;
+mod identity;
 mod model;
 mod records;
 mod stages;
+mod templates;
 mod workflow;
 
 pub use backend::SystemBackend;

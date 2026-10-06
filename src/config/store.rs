@@ -103,6 +103,16 @@ impl ConfigStore {
         self.root.join("plugins")
     }
 
+    /// Locate shared base templates keyed by the complete plugin archive digest.
+    /// 定位按完整插件归档摘要组织的共享基础模板。
+    /// # Arguments
+    ///
+    /// - `self`: Store owning templates independently of managed systems.
+    ///   独立于被管理系统持有模板的存储。
+    pub fn templates_path(&self) -> PathBuf {
+        self.root.join("templates")
+    }
+
     /// Read the current system type without interpreting package or runtime settings.
     /// 读取当前系统类型，不解释软件包及运行配置。
     ///
@@ -163,6 +173,7 @@ impl ConfigStore {
         create_dir_all(&self.root.join("config"))?;
         create_dir_all(&self.root.join("systems"))?;
         create_dir_all(&self.plugins_path())?;
+        create_dir_all(&self.templates_path())?;
         write_default(&self.global_config_path(), GLOBAL_DEFAULT)?;
         super::presets::install(&self.plugins_path())
     }

@@ -23,19 +23,20 @@ pub(super) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
     fs::create_dir(temporary.path().join("tmp")).unwrap();
     fs::create_dir(temporary.path().join("target")).unwrap();
     fs::create_dir(temporary.path().join("host-bin")).unwrap();
-    fs::write(
-        root.join("entry.sh"),
-        "printf '%s\\n' \"$1\" > \"$RSTAR_ROOT/executed\"\n",
-    )
-    .unwrap();
+    for operation in crate::controller::plugins::REQUIRED_OPERATIONS {
+        fs::write(
+            root.join(format!("{operation}.sh")),
+            "printf '%s\\n' \"${BASH_SOURCE[0]##*/}\" > \"$RSTAR_ROOT/executed\"\n",
+        )
+        .unwrap();
+    }
     let plugin = LoadedPlugin {
         metadata: Metadata {
             schema_version: 1,
-            api_version: 1,
+            api_version: 2,
             id: "test".into(),
             version: "1".into(),
             system_types: vec!["test".into()],
-            entry: "entry.sh".into(),
             architectures: vec!["x86_64".into()],
             cache_format: "test-v1".into(),
             protected_packages: vec![],
@@ -137,7 +138,7 @@ fn invokes_host_after_checks_without_checking_target_tools() {
         .unwrap();
     assert_eq!(
         fs::read_to_string(root.join("executed")).unwrap(),
-        "bootstrap\n"
+        "bootstrap.sh\n"
     );
 }
 
@@ -224,7 +225,95 @@ fn invokes_target_only_after_successful_probe() {
     let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
     assert!(trace.contains("--bind-ro="));
     assert!(trace.contains("--setenv=RSTAR_ARCH=x86_64"));
-    assert!(trace.contains("bash /run/rstarsleep/plugin/entry.sh install vim"));
+    assert!(trace.contains("bash /run/rstarsleep/plugin/install.sh vim"));
+}
+
+/// Preserve host arguments exactly and never prepend the operation name.
+/// 原样保留宿主参数，且不将操作名插入参数列表。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn passes_only_operation_arguments_to_host_file() {
+    let plugin = fixture(&[], &[]);
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        r#"printf '%s\0' "$@" > "$RSTAR_ROOT/arguments""#,
+    )
+    .unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let arguments = [
+        "two words".into(),
+        "$(touch injected)".into(),
+        "".into(),
+        "--flag".into(),
+    ];
+    plugin
+        .invoke_with_path("bootstrap", &arguments, &root, "x86_64", path.as_os_str())
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("arguments")).unwrap(),
+        b"two words\0$(touch injected)\0\0--flag\0"
+    );
+    assert!(!plugin.root().join("injected").exists());
+}
+
+/// Preserve guest argument boundaries after selecting the operation by filename.
+/// 通过文件名选择操作后，保留容器参数边界。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn passes_only_operation_arguments_to_guest_file() {
+    let plugin = fixture(&[], &[]);
+    launcher(&plugin, "", false);
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    plugin
+        .invoke_with_path(
+            "mark_reason",
+            &["dependency".into(), "two words".into(), "".into()],
+            &root,
+            "x86_64",
+            path.as_os_str(),
+        )
+        .unwrap();
+    let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+    assert!(
+        trace.ends_with(
+            b"--\0bash\0/run/rstarsleep/plugin/mark_reason.sh\0dependency\0two words\0\0"
+        )
+    );
+}
+
+/// Reject missing operation files and traversal before any dependency probe or plugin runs.
+/// 依赖探测或插件运行前，拒绝缺失操作文件与路径跳转。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn rejects_invalid_operation_files_before_starting_processes() {
+    let plugin = fixture(&[], &[]);
+    launcher(&plugin, "", false);
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let update = plugin.operation_path("update").unwrap();
+    fs::rename(&update, plugin.root().join("update")).unwrap();
+    for operation in ["update", "../bootstrap", "/bootstrap", "missing"] {
+        assert!(matches!(
+            plugin.invoke_with_path(operation, &[], &root, "x86_64", path.as_os_str()),
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert!(!plugin.root().join("launcher-trace").exists());
+    assert!(!root.join("executed").exists());
 }
 
 /// Verify missing launchers and failed probes never start target plugin code.

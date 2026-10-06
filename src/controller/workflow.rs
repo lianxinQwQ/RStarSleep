@@ -92,11 +92,12 @@ fn check_workspace(store: &ConfigStore, work: &Path) -> Result<()> {
     for path in [
         store.root().join("config"),
         store.plugins_path(),
+        store.templates_path(),
         store.root().join("systems"),
     ] {
         if work.starts_with(&path) || path.starts_with(work) {
             return Err(Error::Invalid(format!(
-                "work_dir 必须独立于管理配置、插件和系统记录: {}",
+                "work_dir 必须独立于管理配置、插件、模板和系统记录: {}",
                 work.display()
             )));
         }
@@ -212,6 +213,7 @@ fn build_system(
             config: &config,
             identity: &identity,
             scratch: &scratch,
+            templates: &store.templates_path(),
         };
         stages.run(base, packages, &mut owned)
     })();

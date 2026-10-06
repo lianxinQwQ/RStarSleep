@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Arch Linux operations invoked by the controller in the designated environment.
+# 控制器在指定环境调用的 Arch Linux 操作。
+set -euo pipefail
+export LC_ALL=C
+
+# Report diagnostic text without contaminating query output.
+# 输出诊断信息，不污染查询输出。
+# Arguments: all arguments are diagnostic text fragments.
+# 参数：所有参数均为诊断文本片段。
+log() {
+    printf '%s\n' "$*" >&2
+}
+
+# Validate concrete package names before passing them to pacman.
+# 将具体包名传入 pacman 前进行校验。
+# Arguments: each argument is one concrete package name.
+# 参数：每个参数是一个具体软件包名称。
+validate_packages() {
+    local package
+    for package in "$@"; do
+        if [[ ! $package =~ ^[a-zA-Z0-9@_+][a-zA-Z0-9@_.+-]*$ ]]; then
+            log "Invalid package name: $package"
+            return 64
+        fi
+    done
+}
+
+# Normalize pacman's empty filtered query while preserving real query errors.
+# 将 pacman 筛选结果为空的情形规范化，同时保留真正的查询错误。
+# Arguments: pacman query options and optional package names.
+# 参数：pacman 查询选项，以及可选的软件包名称。
+filtered_query() {
+    local query_tmp status
+    query_tmp=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-query.XXXXXXXX")
+    if pacman "$@" >"$query_tmp/output" 2>"$query_tmp/error"; then
+        status=0
+    else
+        status=$?
+    fi
+    cat -- "$query_tmp/error" >&2
+    if (( status == 1 )) && [[ ! -s $query_tmp/output && ! -s $query_tmp/error ]]; then
+        status=0
+    fi
+    cat -- "$query_tmp/output"
+    rm -rf -- "$query_tmp"
+    return "$status"
+}
+
+clean_orphan_dependencies() {
+    local output
+    local -a packages=()
+    output=$(filtered_query -Qdtq)
+    if [[ -n $output ]]; then
+        mapfile -t packages <<<"$output"
+        pacman -Rns --noconfirm -- "${packages[@]}"
+    fi
+}
+
+# Require an explicit root and real parent directories before handling identity files.
+# 处理身份文件前，要求显式根及真实父目录。
+# Arguments: none; RSTAR_ROOT is supplied by the controller.
+# 参数：无；RSTAR_ROOT 由控制器提供。
+identity_root() {
+    local relative
+    [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
+        log 'Identity operations require an existing absolute RSTAR_ROOT'; return 64;
+    }
+    for relative in etc etc/ssh etc/pacman.d var var/lib var/lib/dbus var/lib/systemd var/log tmp var/tmp; do
+        [[ ! -L ${RSTAR_ROOT%/}/$relative ]] || {
+            log "Identity directory must not be a link: $relative"; return 64;
+        }
+    done
+}
