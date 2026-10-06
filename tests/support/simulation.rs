@@ -377,4 +377,53 @@ impl BuildBackend for SimulatedBackend {
         Self::save(root, &packages);
         Ok(output)
     }
+    /// Execute test shell code in the copied payload with a simulated root environment.
+    /// 在已复制资源中，使用模拟系统根环境执行测试 shell 代码。
+    /// # Arguments
+    /// - `self`: Simulated backend recording order.
+    ///   记录顺序的模拟后端。
+    /// - `root`: Writable isolated test root.
+    ///   可写隔离测试根。
+    /// - `directory`: Guest payload directory.
+    ///   容器内资源目录。
+    /// - `entrypoint`: Relative shell filename.
+    ///   相对 shell 文件名。
+    /// - `context`: Frozen inputs.
+    ///   冻结输入。
+    fn run_script(
+        &self,
+        root: &Path,
+        directory: &Path,
+        entrypoint: &Path,
+        context: &BuildContext,
+    ) -> Result<()> {
+        self.check_subvolume(root, false)?;
+        assert!(Self::inventory(root).contains_key("base"));
+        self.events.borrow_mut().push(Event {
+            operation: "script".into(),
+            arguments: vec![entrypoint.to_string_lossy().into()],
+            root: root.into(),
+            packages: read_build_config_at(&context.config)?.packages,
+            system_id: context.system_id.clone(),
+        });
+        let payload = root.join(directory.strip_prefix("/").unwrap());
+        assert!(payload.starts_with(root));
+        let output = std::process::Command::new("bash")
+            .arg("--")
+            .arg(entrypoint)
+            .current_dir(&payload)
+            .env("RSTAR_ROOT", root)
+            .env("RSTAR_SYSTEM_ID", &context.system_id)
+            .env("RSTAR_CONFIG_DIR", &context.config)
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return Err(Error::Command {
+                command: "simulated script".into(),
+                status: output.status.to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+        Ok(())
+    }
 }

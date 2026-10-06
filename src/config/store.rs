@@ -89,8 +89,8 @@ impl ConfigStore {
         self.root.join("config/rstarsleep.toml")
     }
 
-    /// Locate the shared directory where users place distribution plugin archives.
-    /// 定位用户存放发行版插件压缩包的共享目录。
+    /// Locate the shared directory where users place distribution plugin archives or directories.
+    /// 定位用户存放发行版插件压缩包或目录的共享目录。
     ///
     /// This only resolves a path; it does not access or create the directory.
     /// 此方法仅计算路径，不访问或创建目录。
@@ -103,8 +103,8 @@ impl ConfigStore {
         self.root.join("plugins")
     }
 
-    /// Locate shared base templates keyed by the complete plugin archive digest.
-    /// 定位按完整插件归档摘要组织的共享基础模板。
+    /// Locate shared base templates keyed by the complete plugin resource digest.
+    /// 定位按完整插件资源摘要组织的共享基础模板。
     /// # Arguments
     ///
     /// - `self`: Store owning templates independently of managed systems.
@@ -211,6 +211,7 @@ impl ConfigStore {
         for path in [
             layout.config.join("build"),
             layout.config.join("subsystem"),
+            layout.config.join("script"),
             layout.versions.clone(),
             layout.cache.clone(),
             layout.persistent.clone(),

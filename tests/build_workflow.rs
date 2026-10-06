@@ -216,3 +216,6 @@ mod failures;
 
 #[path = "build_workflow/templates.rs"]
 mod templates;
+
+#[path = "build_workflow/scripts.rs"]
+mod scripts;

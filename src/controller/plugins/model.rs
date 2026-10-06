@@ -125,14 +125,14 @@ pub struct LoadedPlugin {
     /// Validated package metadata.
     /// 已校验的包元数据。
     pub metadata: Metadata,
-    /// Original archive location retained for diagnostics.
-    /// 为诊断保留的原始压缩包位置。
+    /// Original archive or directory location retained for diagnostics.
+    /// 为诊断保留的原始压缩包或目录位置。
     pub archive: PathBuf,
-    /// SHA-256 of the exact archive bytes loaded for this session.
-    /// 本次会话实际加载的压缩包字节的 SHA-256。
+    /// Exact archive SHA-256 or deterministic fingerprint of the frozen directory tree.
+    /// 本次会话准确归档 SHA-256 或冻结目录树的确定性指纹。
     pub archive_sha256: String,
-    /// Diagnostics for invalid archives skipped during automatic discovery.
-    /// 自动查找时跳过的无效压缩包的诊断信息。
+    /// Diagnostics for invalid plugin resources skipped during automatic discovery.
+    /// 自动查找时跳过的无效插件资源的诊断信息。
     pub discovery_warnings: Vec<String>,
     pub(super) root: PathBuf,
     pub(super) temporary: tempfile::TempDir,

@@ -106,5 +106,6 @@ impl Fixture {
         let scratch = self.store.root().join("work/desktop").join(version);
         assert!(!scratch.join("root").exists());
         assert!(!scratch.join("base-root").exists());
+        assert!(!scratch.join("script-root").exists());
     }
 }

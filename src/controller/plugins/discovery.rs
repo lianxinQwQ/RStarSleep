@@ -1,8 +1,8 @@
 //! Select a unique plugin by metadata.
 //! 按元数据选择唯一插件。
-use super::archive::archive_format;
 use super::{Error, LoadedPlugin, Result, identifier, io_error, load};
 use crate::config::ConfigStore;
+use crate::controller::resources::archive_format;
 use std::{fs, io, path::Path};
 /// Select a plugin using a managed system's current type and optional architecture.
 /// 使用被管理系统的当前类型和可选架构选择插件。
@@ -30,13 +30,13 @@ pub fn for_system(store: &ConfigStore, id: &str) -> Result<LoadedPlugin> {
     )
 }
 
-/// Search archive metadata rather than filenames and require one matching plugin.
-/// 搜索压缩包元数据而非文件名，并要求恰好一个匹配插件。
+/// Search archive and directory metadata and require one matching plugin.
+/// 搜索压缩包及目录元数据，并要求恰好一个匹配插件。
 ///
 /// # Arguments
 ///
-/// - `directory`: Existing shared directory containing plugin archives.
-///   存放插件压缩包的现有共享目录。
+/// - `directory`: Existing shared directory containing plugin archives or directories.
+///   存放插件压缩包或目录的现有共享目录。
 /// - `system_type`: Valid type matched against metadata system_types or the plugin identity.
 ///   有效系统类型，与元数据 system_types 或插件标识匹配。
 /// - `architecture`: Target architecture required by the current system.
@@ -45,8 +45,8 @@ pub fn for_system(store: &ConfigStore, id: &str) -> Result<LoadedPlugin> {
 /// # Errors
 ///
 /// Returns an error for inaccessible directories or an ambiguous/missing match. Invalid
-/// archives are retained as diagnostics instead of blocking an otherwise unique valid match.
-/// 目录无法访问、匹配不明确或缺失时返回错误。无效压缩包保留为诊断信息，
+/// resources are retained as diagnostics instead of blocking an otherwise unique valid match.
+/// 目录无法访问、匹配不明确或缺失时返回错误。无效资源保留为诊断信息，
 /// 不阻止其他有效插件的唯一匹配。
 pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<LoadedPlugin> {
     identifier(system_type)?;
@@ -62,7 +62,7 @@ pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<L
     let mut warnings = Vec::new();
     for path in paths
         .into_iter()
-        .filter(|path| archive_format(path).is_some())
+        .filter(|path| path.is_dir() || archive_format(path).is_some())
     {
         let plugin = match load(&path) {
             Ok(plugin) => plugin,

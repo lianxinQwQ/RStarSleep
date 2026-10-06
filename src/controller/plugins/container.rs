@@ -43,20 +43,10 @@ pub(super) fn nspawn(
     architecture: &str,
     context: Option<&crate::controller::BuildContext>,
 ) -> Result<Command> {
-    let mut command = Command::new(launcher);
+    let mut command = crate::controller::container::command(launcher, root);
     command
         .current_dir(plugin.root())
         .env("PATH", host_path)
-        .args([
-            "--quiet",
-            "--pipe",
-            "--settings=no",
-            "--register=no",
-            "--as-pid2",
-            "--link-journal=no",
-        ])
-        .arg("--directory")
-        .arg(root)
         .arg(bind("--bind-ro=", plugin.root(), SYSTEM_PLUGIN)?)
         .arg(bind("--bind=", &plugin.temporary_path(), SYSTEM_TMP)?)
         .arg(format!("--chdir={SYSTEM_PLUGIN}"))
@@ -85,20 +75,6 @@ pub(super) fn nspawn(
 /// - `destination`: Fixed absolute guest mount point without field separators.
 ///   不含字段分隔符的固定容器绝对挂载点。
 fn bind(option: &str, source: &Path, destination: &str) -> Result<OsString> {
-    if source
-        .as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .any(|byte| b":\\".contains(byte))
-    {
-        return Err(Error::Invalid(format!(
-            "nspawn 绑定源路径不能包含冒号或反斜杠: {}",
-            source.display()
-        )));
-    }
-    let mut argument = OsString::from(option);
-    argument.push(source);
-    argument.push(":");
-    argument.push(destination);
-    Ok(argument)
+    crate::controller::container::bind(option, source, destination)
+        .map_err(|e| Error::Invalid(e.to_string()))
 }

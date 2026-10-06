@@ -43,6 +43,7 @@ fn system_initialization_preserves_files_and_leaves_roles_unassigned() {
     assert!(layout.persistent.is_dir());
     assert!(layout.versions.is_dir());
     assert!(layout.cache.is_dir());
+    assert!(layout.config.join("script").is_dir());
 }
 
 /// Verify that package reads ignore other build options and unrelated configuration files.

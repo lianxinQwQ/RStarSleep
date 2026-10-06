@@ -193,4 +193,30 @@ pub trait BuildBackend {
         root: &Path,
         context: &BuildContext,
     ) -> Result<String>;
+    /// Execute a copied build script inside the target system.
+    /// 在目标系统内部执行已复制的构建脚本。
+    /// # Arguments
+    /// - `self`: Target execution backend.
+    ///   目标执行后端。
+    /// - `root`: Writable script-stage root.
+    ///   可写脚本阶段根。
+    /// - `directory`: Absolute guest working directory.
+    ///   容器内绝对工作目录。
+    /// - `entrypoint`: Relative shell filename.
+    ///   相对 shell 文件名。
+    /// - `context`: Frozen build inputs.
+    ///   冻结构建输入。
+    /// # Errors
+    /// Returns execution failures; unsupported backends fail before running scripts.
+    /// 返回执行失败；不支持的后端在执行脚本前报错。
+    fn run_script(
+        &self,
+        root: &Path,
+        directory: &Path,
+        entrypoint: &Path,
+        context: &BuildContext,
+    ) -> Result<()> {
+        let _ = (root, directory, entrypoint, context);
+        Err(Error::Invalid("此构建后端不支持 script 执行".into()))
+    }
 }

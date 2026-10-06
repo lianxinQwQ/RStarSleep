@@ -184,4 +184,27 @@ impl BuildBackend for SystemBackend {
             Ok(String::new())
         }
     }
+    /// Execute a script in its copied directory inside a validated writable system.
+    /// 在已校验的可写系统内，以已复制目录执行脚本。
+    /// # Arguments
+    /// - `self`: Native backend.
+    ///   原生后端。
+    /// - `root`: Writable system root.
+    ///   可写系统根。
+    /// - `directory`: Guest working directory.
+    ///   容器内工作目录。
+    /// - `entrypoint`: Relative shell filename.
+    ///   相对 shell 文件名。
+    /// - `context`: Frozen inputs.
+    ///   冻结输入。
+    fn run_script(
+        &self,
+        root: &Path,
+        directory: &Path,
+        entrypoint: &Path,
+        context: &BuildContext,
+    ) -> Result<()> {
+        self.check_subvolume(root, false)?;
+        super::scripts::run(root, directory, entrypoint, context)
+    }
 }

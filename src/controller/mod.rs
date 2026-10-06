@@ -1,17 +1,20 @@
 //! Shared infrastructure for building and maintaining managed systems.
 //! 构建和维护被管理系统的共享基础设施。
 
-/// Discover and unpack Bash distribution plugin archives.
-/// 查找并解包 Bash 发行版插件压缩包。
+/// Discover and freeze Bash distribution plugin archives or directories.
+/// 查找并冻结 Bash 发行版插件压缩包或目录。
 pub mod plugins;
 
 mod backend;
 mod cache;
+mod container;
 mod frozen;
 mod fs;
 mod identity;
 mod model;
 mod records;
+mod resources;
+mod scripts;
 mod stages;
 mod templates;
 mod workflow;

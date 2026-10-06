@@ -423,3 +423,91 @@ fn validates_protected_package_targets() {
         );
     }
 }
+
+/// Verify directory discovery, immutable copies, and complete deterministic fingerprints.
+/// 验证目录发现、不可变副本及完整确定性指纹。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn directory_plugins_are_frozen_and_hashed_independently_of_location() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("directory-plugin");
+    fs::create_dir(&source).unwrap();
+    tar::Archive::new(tar_bytes(None, None, 3).as_slice())
+        .unpack(&source)
+        .unwrap();
+    let plugin = find(temporary.path(), "arch", "x86_64").unwrap();
+    let hash = plugin.archive_sha256.clone();
+    assert_eq!(load(&source).unwrap().archive_sha256, hash);
+    fs::write(source.join(".hidden"), "edited").unwrap();
+    assert_eq!(
+        fs::read_to_string(plugin.root().join(".hidden")).unwrap(),
+        "retained"
+    );
+    assert_ne!(load(&source).unwrap().archive_sha256, hash);
+    let edited = load(&source).unwrap().archive_sha256;
+    fs::create_dir(source.join("empty-directory")).unwrap();
+    assert_ne!(load(&source).unwrap().archive_sha256, edited);
+    let renamed = temporary.path().join("renamed-plugin");
+    fs::rename(&source, &renamed).unwrap();
+    let hash = load(&renamed).unwrap().archive_sha256;
+    let elsewhere = temporary.path().join("elsewhere");
+    fs::rename(&renamed, &elsewhere).unwrap();
+    assert_eq!(load(&elsewhere).unwrap().archive_sha256, hash);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            elsewhere.join("bin/helper"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert_ne!(load(&elsewhere).unwrap().archive_sha256, hash);
+    }
+    let frozen = plugin.root().to_path_buf();
+    drop(plugin);
+    assert!(!frozen.exists());
+}
+
+/// Apply the same matching and link boundaries to directories and archives.
+/// 对目录及压缩包应用相同匹配及链接边界规则。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[cfg(unix)]
+#[test]
+fn directory_plugins_reject_escaping_links_and_duplicate_matches() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar.gz");
+    fixture(&archive, None, None, 3);
+    let directory = temporary.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    tar::Archive::new(tar_bytes(None, None, 3).as_slice())
+        .unpack(&directory)
+        .unwrap();
+    assert!(
+        find(temporary.path(), "arch", "x86_64")
+            .unwrap_err()
+            .to_string()
+            .contains("多个插件")
+    );
+    fs::remove_file(archive).unwrap();
+    let link = directory.join("resource-link");
+    std::os::unix::fs::symlink(".hidden", &link).unwrap();
+    let plugin = load(&directory).unwrap();
+    assert_eq!(
+        fs::read_link(plugin.root().join("resource-link")).unwrap(),
+        Path::new(".hidden")
+    );
+    for target in ["../escape", "/etc/passwd"] {
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        assert!(load(&directory).is_err());
+    }
+    fs::remove_file(&link).unwrap();
+    let operation = directory.join("install.sh");
+    fs::remove_file(&operation).unwrap();
+    std::os::unix::fs::symlink("update.sh", operation).unwrap();
+    assert!(load(&directory).is_err());
+}

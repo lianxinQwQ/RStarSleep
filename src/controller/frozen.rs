@@ -7,8 +7,8 @@ use std::{
     io::Read,
     path::Path,
 };
-/// Copy only ordinary files and directories, refusing configuration links or special entries.
-/// 仅复制普通文件和目录，拒绝配置链接或特殊条目。
+/// Freeze ordinary configuration and bounded script resources without following links.
+/// 冻结普通配置及限定范围的脚本资源，不跟随链接。
 /// # Arguments
 ///
 /// - `source`: Editable configuration directory.
@@ -17,12 +17,30 @@ use std::{
 ///   私有暂存目录。
 pub(super) fn copy_config(source: &Path, destination: &Path) -> Result<()> {
     disk::checked(source)?;
+    copy_directory(source, destination, true)
+}
+
+/// Copy configuration recursively while reserving resource semantics for the top-level script tree.
+/// 递归复制配置，仅为顶层 script 树保留资源语义。
+/// # Arguments
+/// - `source`: Current source directory.
+///   当前源目录。
+/// - `destination`: Private target directory.
+///   私有目标目录。
+/// - `config_root`: Whether this is the top-level configuration directory.
+///   是否为顶层配置目录。
+fn copy_directory(source: &Path, destination: &Path, config_root: bool) -> Result<()> {
     for entry in entries(source)? {
         let info = entry.file_type().map_err(|e| disk::io(&entry.path(), e))?;
         let target = destination.join(entry.file_name());
         if info.is_dir() {
             fs::create_dir(&target).map_err(|e| disk::io(&target, e))?;
-            copy_config(&entry.path(), &target)?;
+            if config_root && entry.file_name() == "script" {
+                super::resources::copy_tree(&entry.path(), &target)?;
+                disk::sync(&target)?;
+            } else {
+                copy_directory(&entry.path(), &target, false)?;
+            }
         } else if info.is_file() {
             fs::copy(entry.path(), &target).map_err(|e| disk::io(&target, e))?;
             File::open(&target)
@@ -53,8 +71,8 @@ fn entries(path: &Path) -> Result<Vec<fs::DirEntry>> {
     Ok(result)
 }
 
-/// Hash archived files including unknown options; optionally exclude only the package table.
-/// 散列留档文件及未知选项；可选仅排除包表。
+/// Hash all archived inputs; optionally exclude the package table and later script inputs.
+/// 散列全部留档输入；可选排除包表及后续脚本输入。
 /// # Arguments
 ///
 /// - `config`: Archived configuration directory.
@@ -76,8 +94,8 @@ pub(super) fn config_hash(config: &Path, exclude_packages: bool) -> Result<Strin
 ///   配置根。
 /// - `relative`: Current relative directory.
 ///   当前相对目录。
-/// - `exclude_packages`: Omit only the main package array.
-///   仅省略主包数组。
+/// - `exclude_packages`: Omit the main package array and script tree.
+///   省略主包数组及脚本树。
 /// - `digest`: Accumulated SHA-256 state.
 ///   累积 SHA-256 状态。
 fn hash_directory(
@@ -88,6 +106,17 @@ fn hash_directory(
 ) -> Result<()> {
     for entry in entries(&root.join(relative))? {
         let path = relative.join(entry.file_name());
+        // Script inputs affect only the later script stage, not base/software cache compatibility.
+        // 脚本输入仅影响后续脚本阶段，不影响基础和软件缓存兼容性。
+        if path == Path::new("script") {
+            if exclude_packages {
+                continue;
+            }
+            let hash = super::resources::tree_hash(&entry.path())?;
+            digest.update(b"script-tree");
+            digest.update(hash.as_bytes());
+            continue;
+        }
         let name = path.as_os_str().as_encoded_bytes();
         digest.update((name.len() as u64).to_le_bytes());
         digest.update(name);

@@ -28,8 +28,8 @@ pub(super) struct Identity {
     /// Normalized protected explicit base targets.
     /// 规范化受保护显式基础目标。
     pub protected_packages: Vec<String>,
-    /// Configuration digest excluding only the package table.
-    /// 仅排除包表的配置摘要。
+    /// Configuration digest excluding the package table and later script inputs.
+    /// 排除包表及后续脚本输入的配置摘要。
     pub options_sha256: String,
 }
 
@@ -41,8 +41,8 @@ pub(super) struct Record {
     /// Supported serialized record format.
     /// 受支持序列化记录格式。
     pub schema_version: u32,
-    /// Completed base-system or packages stage.
-    /// 已完成的基础或软件阶段。
+    /// Completed base-system, packages, or script stage.
+    /// 已完成的基础、软件或脚本阶段。
     pub stage: String,
     /// Owning monotonic build version.
     /// 所属单调构建版本。

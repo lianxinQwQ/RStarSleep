@@ -1,14 +1,14 @@
-//! Packaged Bash distribution plugins.
-//! 打包的 Bash 发行版插件。
-mod archive;
+//! Archive and directory Bash distribution plugins.
+//! 压缩包及目录形式的 Bash 发行版插件。
 mod container;
 mod discovery;
+mod loader;
 mod model;
 mod runner;
 mod tools;
 mod validation;
-pub use archive::load;
 pub use discovery::{find, for_system};
+pub use loader::load;
 pub use model::{Error, LoadedPlugin, Metadata, Result, ToolRequirements};
 /// Operations shared by API 2 and 3, each provided as <operation>.sh at the plugin root.
 /// API 2 和 3 共用操作；每个操作由插件根内的 <操作名>.sh 文件提供。

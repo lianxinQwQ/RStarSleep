@@ -15,14 +15,14 @@ use crate::{
     software::{PackageSession, SoftwareState},
 };
 use std::path::{Path, PathBuf};
-/// Shared immutable inputs for the two independently committed stage workflows.
-/// 两个独立提交阶段流程共享的不可变输入。
+/// Shared immutable inputs for the independently committed stage workflows.
+/// 独立提交阶段流程共享的不可变输入。
 pub(super) struct Stages<'a, B: BuildBackend> {
     /// Required CoW storage and checked execution.
     /// 必需 CoW 存储和经检查执行。
     pub(super) backend: &'a B,
-    /// One loaded plugin session for both stages.
-    /// 两个阶段共用的已加载插件会话。
+    /// One loaded plugin session for every stage.
+    /// 各阶段共用的已加载插件会话。
     pub(super) plugin: &'a LoadedPlugin,
     /// Frozen system identity, architecture, and configuration.
     /// 冻结系统标识、架构和配置。
@@ -45,8 +45,8 @@ pub(super) struct Stages<'a, B: BuildBackend> {
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
-    /// Run base-system then package steps and publish their completed output.
-    /// 依次执行基础系统和软件包步骤，再发布已完成输出。
+    /// Run base-system, package, and script steps before publishing their completed output.
+    /// 依次执行基础系统、软件包和脚本步骤，再发布已完成输出。
     ///
     /// # Arguments
     ///
@@ -66,7 +66,8 @@ impl<B: BuildBackend> Stages<'_, B> {
     ) -> Result<BuildOutcome> {
         let base = self.base_step(base.as_ref(), packages.as_ref(), owned)?;
         let packages = self.packages_step(packages.as_ref(), &base, owned)?;
-        self.publish(&packages)
+        let scripts = self.script_step(&packages, owned)?;
+        self.publish(&scripts)
     }
 
     /// Install an uncached base, or maintain its cache unless a later step covers maintenance.
@@ -184,6 +185,34 @@ impl<B: BuildBackend> Stages<'_, B> {
             session.install(&self.config.packages)?
         };
         self.commit("packages", &root, software, cached, false)
+    }
+
+    /// Reapply scripts on fresh software output so prior script effects are never inherited.
+    /// 在全新软件输出上重新应用脚本，避免继承先前脚本效果。
+    /// # Arguments
+    /// - `self`: Shared stage inputs.
+    ///   共享阶段输入。
+    /// - `packages`: Completed software stage.
+    ///   已完成软件阶段。
+    /// - `owned`: Scratch roots to clean on success or failure.
+    ///   成功或失败时需要清理的临时根。
+    fn script_step(&self, packages: &Cache, owned: &mut Vec<PathBuf>) -> Result<Cache> {
+        let root = self.scratch.join("script-root");
+        owned.push(root.clone());
+        self.backend.snapshot(&packages.root, &root, false)?;
+        let applied = super::scripts::apply(self.backend, &root, self.context)?;
+        let software = if applied {
+            let session = PackageSession {
+                backend: self.backend,
+                plugin: self.plugin,
+                root: &root,
+                context: self.context,
+            };
+            session.capture(packages.record.software.requested.clone())?
+        } else {
+            packages.record.software.clone()
+        };
+        self.commit("script", &root, software, None, false)
     }
 
     /// Commit one successful step before allowing the next step to run.
