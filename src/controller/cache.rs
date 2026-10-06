@@ -1,0 +1,247 @@
+//! Validate completed stages and atomically publish read-only CoW caches.
+//! 校验已完成阶段并原子发布只读 CoW 缓存。
+use super::{BuildBackend, Error, Result, frozen::config_hash, fs as disk};
+use crate::software::SoftwareState;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+/// Compatibility of filesystem and non-package inputs across plugin releases.
+/// 跨插件发布版本的文件系统及非包输入兼容性。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Identity {
+    /// Stable distribution plugin identity.
+    /// 稳定发行版插件标识。
+    pub plugin_id: String,
+    /// Filesystem cache compatibility format.
+    /// 文件系统缓存兼容格式。
+    pub cache_format: String,
+    /// Frozen system type selected by configuration.
+    /// 配置选定的冻结系统类型。
+    pub system_type: String,
+    /// Frozen target architecture.
+    /// 冻结目标架构。
+    pub architecture: String,
+    /// Normalized protected explicit base targets.
+    /// 规范化受保护显式基础目标。
+    pub protected_packages: Vec<String>,
+    /// Configuration digest excluding only the package table.
+    /// 仅排除包表的配置摘要。
+    pub options_sha256: String,
+}
+
+/// Completion sidecar outside the cached root, installed after its snapshot.
+/// 缓存根之外的完成旁记录，在快照之后安装。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Record {
+    /// Supported serialized record format.
+    /// 受支持序列化记录格式。
+    pub schema_version: u32,
+    /// Completed base-system or packages stage.
+    /// 已完成的基础或软件阶段。
+    pub stage: String,
+    /// Owning monotonic build version.
+    /// 所属单调构建版本。
+    pub version: String,
+    /// Actual donor stage version, absent when installed fresh.
+    /// 实际来源阶段版本，全新安装则省略。
+    pub source_version: Option<String>,
+    /// Version that last changed this stage content.
+    /// 最后改变此阶段内容的版本。
+    pub origin_version: String,
+    /// Release producing the recorded content or current status.
+    /// 生成记录内容或当前状态的发布版本。
+    pub plugin_version: String,
+    /// Exact source archive digest retained for provenance.
+    /// 为来源保留的准确归档摘要。
+    pub plugin_sha256: String,
+    /// Compatibility requirements of this completed stage.
+    /// 此完成阶段的兼容性要求。
+    pub identity: Identity,
+    /// Full archived configuration digest including the package table.
+    /// 包括包表的完整留档配置摘要。
+    pub config_sha256: String,
+    /// Resolved managed targets and actual installed inventory.
+    /// 已解析管理目标和实际安装清单。
+    pub software: SoftwareState,
+}
+
+/// One validated completed cache and its durable inventory/provenance.
+/// 一个经过校验的完成缓存及其持久化清单/来源。
+pub(super) struct Cache {
+    /// Validated read-only cached root subvolume.
+    /// 经校验的只读缓存根子卷。
+    pub root: PathBuf,
+    /// Durable stage completion sidecar.
+    /// 持久化阶段完成旁记录。
+    pub record: Record,
+}
+
+/// Validate sidecar invariants even when compatibility prevents reuse.
+/// 即使兼容性阻止复用，也校验旁记录的不变量。
+/// # Arguments
+///
+/// - `record`: Decoded completion record.
+///   已解码完成记录。
+/// - `version`: Directory's expected version.
+///   目录的预期版本。
+/// - `stage`: Expected stage.
+///   预期阶段。
+fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
+    if record.schema_version != 1
+        || record.version != version
+        || record.stage != stage
+        || record.plugin_version.is_empty()
+    {
+        return Err(Error::Invalid(format!(
+            "缓存完成记录不符: {version}/{stage}"
+        )));
+    }
+    for hash in [
+        &record.plugin_sha256,
+        &record.config_sha256,
+        &record.identity.options_sha256,
+    ] {
+        if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Error::Invalid("缓存摘要无效".into()));
+        }
+    }
+    for id in [
+        &record.origin_version,
+        &record.identity.plugin_id,
+        &record.identity.cache_format,
+        &record.identity.system_type,
+        &record.identity.architecture,
+    ] {
+        super::plugins::validate_identity(id)?;
+    }
+    if let Some(source) = &record.source_version {
+        super::plugins::validate_identity(source)?;
+    }
+    for name in &record.identity.protected_packages {
+        crate::software::valid_name(name)?;
+    }
+    record.software.validate()
+}
+
+/// Load only the selected prior attempt's completed and compatible stage.
+/// 仅加载所选过往尝试中已完成且兼容的阶段。
+/// # Arguments
+///
+/// - `backend`: Real or simulated CoW validation.
+///   真实或模拟 CoW 校验。
+/// - `cache_directory`: Prior attempt's cache directory.
+///   过往尝试的缓存目录。
+/// - `config`: That attempt's archived configuration.
+///   该尝试的留档配置。
+/// - `version`: Selected prior version.
+///   所选过往版本。
+/// - `stage`: Fixed stage name.
+///   固定阶段名称。
+/// - `identity`: Current compatibility requirements.
+///   当前兼容性要求。
+pub(super) fn load(
+    backend: &impl BuildBackend,
+    cache_directory: &Path,
+    config: &Path,
+    version: &str,
+    stage: &str,
+    identity: &Identity,
+) -> Result<Option<Cache>> {
+    let root = cache_directory.join(stage);
+    let sidecar = cache_directory.join(format!("{stage}.toml"));
+    let root_exists = disk::exists(&root)?;
+    if root_exists {
+        backend.check_subvolume(&root, true)?;
+    }
+    if !disk::exists(&sidecar)? {
+        return Ok(None);
+    }
+    if !fs::symlink_metadata(&sidecar)
+        .map_err(|e| disk::io(&sidecar, e))?
+        .is_file()
+    {
+        return Err(Error::Invalid(format!(
+            "缓存完成记录必须是普通文件: {}",
+            sidecar.display()
+        )));
+    }
+    let text = fs::read_to_string(&sidecar).map_err(|e| disk::io(&sidecar, e))?;
+    let record: Record = toml::from_str(&text)
+        .map_err(|e| Error::Invalid(format!("缓存记录 {}: {e}", sidecar.display())))?;
+    validate(&record, version, stage)?;
+    if !root_exists {
+        return Ok(None);
+    }
+    if config_hash(config, false)? != record.config_sha256 {
+        return Err(Error::Invalid(format!("缓存来源配置已改变: {version}")));
+    }
+    if &record.identity != identity {
+        return Ok(None);
+    }
+    // Source packages must be read from this exact attempt, including failed attempts.
+    // 来源包必须从此次准确尝试读取，包括失败尝试。
+    crate::config::read_build_config_at(config)?;
+    Ok(Some(Cache { root, record }))
+}
+
+/// Snapshot a successful stage and publish its completion marker last.
+/// 对成功阶段建立快照，最后发布完成标记。
+/// # Arguments
+///
+/// - `backend`: Required CoW backend.
+///   必需 CoW 后端。
+/// - `source`: Fully completed stage root.
+///   完整完成的阶段根。
+/// - `cache_directory`: Current attempt's cache directory.
+///   当前尝试缓存目录。
+/// - `record`: Completed stage metadata.
+///   已完成阶段元数据。
+pub(super) fn commit(
+    backend: &impl BuildBackend,
+    source: &Path,
+    cache_directory: &Path,
+    record: Record,
+) -> Result<Cache> {
+    validate(&record, &record.version, &record.stage)?;
+    disk::directory(cache_directory)?;
+    let root = cache_directory.join(&record.stage);
+    let sidecar = cache_directory.join(format!("{}.toml", record.stage));
+    if disk::exists(&root)? || disk::exists(&sidecar)? {
+        return Err(Error::Invalid("不覆盖现有阶段缓存".into()));
+    }
+    // Keep the ordinary staging parent manually: TempDir must never recursively remove a subvolume.
+    // 手动保留普通暂存父目录：TempDir 绝不能递归删除子卷。
+    let staging = tempfile::Builder::new()
+        .prefix("stage-pending-")
+        .tempdir_in(cache_directory)
+        .map_err(|e| disk::io(cache_directory, e))?
+        .keep();
+    let pending = staging.join("root");
+    let result = (|| {
+        backend.snapshot(source, &pending, true)?;
+        backend.check_subvolume(&pending, true)?;
+        fs::rename(&pending, &root).map_err(|e| disk::io(&root, e))?;
+        disk::sync(cache_directory)?;
+        disk::write(&sidecar, &record)?;
+        Ok(Cache { root, record })
+    })();
+    let cleanup = (|| {
+        if disk::exists(&pending)? {
+            backend.delete_subvolume(&pending)?;
+        }
+        fs::remove_dir(&staging).map_err(|e| disk::io(&staging, e))
+    })();
+    match (result, cleanup) {
+        (Ok(cache), Ok(())) => Ok(cache),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(Error::Invalid(format!(
+            "{error}; 暂存缓存清理失败: {cleanup}"
+        ))),
+    }
+}

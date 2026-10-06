@@ -1,0 +1,354 @@
+//! Simulate marked subvolumes and package-manager operations without host mutations.
+//! 模拟有标记子卷和包管理操作，不修改宿主系统。
+
+use rstarsleep::{
+    config::read_build_config_at,
+    controller::{BuildBackend, BuildContext, Error, Result, plugins::LoadedPlugin},
+};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
+
+pub const MARKER: &str = ".simulated-subvolume";
+const DATABASE: &str = ".simulated-packages";
+
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub operation: String,
+    pub arguments: Vec<String>,
+    pub root: PathBuf,
+    pub packages: Vec<String>,
+}
+
+/// One attempted CoW boundary between a completed root and a new root.
+/// 完成根与新根之间一次已尝试的 CoW 边界。
+#[derive(Clone, Debug)]
+pub struct SnapshotEvent {
+    /// Source root, which must remain unchanged.
+    /// 必须保持不变的来源根。
+    pub source: PathBuf,
+    /// Newly reserved root path.
+    /// 新预留根路径。
+    pub destination: PathBuf,
+    /// Expected read-only state after the snapshot.
+    /// 快照后的预期只读状态。
+    pub readonly: bool,
+}
+
+#[derive(Default)]
+pub struct SimulatedBackend {
+    pub events: RefCell<Vec<Event>>,
+    pub snapshots: RefCell<Vec<SnapshotEvent>>,
+    pub fail_operation: RefCell<Option<&'static str>>,
+    pub fail_restore: Cell<bool>,
+    pub remove_kept_on_update: Cell<bool>,
+    pub mutate_editable: RefCell<Option<PathBuf>>,
+    generation: Cell<u32>,
+}
+
+impl SimulatedBackend {
+    /// Count executions of one plugin operation since the latest reset.
+    /// 统计最近重置之后某插件操作的执行次数。
+    /// # Arguments
+    ///
+    /// - `self`: Recorded simulated operations.
+    ///   已记录模拟操作。
+    /// - `operation`: Operation to count.
+    ///   待统计操作。
+    pub fn count(&self, operation: &str) -> usize {
+        self.events
+            .borrow()
+            .iter()
+            .filter(|event| event.operation == operation)
+            .count()
+    }
+
+    /// Read package identities and installation reasons from one simulated root.
+    /// 从一个模拟根读取包标识和安装原因。
+    /// # Arguments
+    ///
+    /// - `root`: Simulated system root.
+    ///   模拟系统根。
+    pub fn inventory(root: &Path) -> BTreeMap<String, bool> {
+        fs::read_to_string(root.join(DATABASE))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let (name, reason) = line.split_once('\t').unwrap();
+                (name.into(), reason == "explicit")
+            })
+            .collect()
+    }
+
+    /// Persist a simulated package database with deterministic ordering.
+    /// 按确定顺序持久化模拟包数据库。
+    /// # Arguments
+    ///
+    /// - `root`: Writable simulated root.
+    ///   可写模拟根。
+    /// - `packages`: Names and installation reasons.
+    ///   包名和安装原因。
+    fn save(root: &Path, packages: &BTreeMap<String, bool>) {
+        let text: String = packages
+            .iter()
+            .map(|(name, explicit)| {
+                format!(
+                    "{name}\t{}\n",
+                    if *explicit { "explicit" } else { "dependency" }
+                )
+            })
+            .collect();
+        fs::write(root.join(DATABASE), text).unwrap();
+    }
+
+    /// Return the small dependency graph used to verify maintenance behavior.
+    /// 返回用于验证维护行为的小型依赖图。
+    /// # Arguments
+    ///
+    /// - `name`: Concrete package name.
+    ///   具体包名。
+    fn dependencies(name: &str) -> &'static [&'static str] {
+        match name {
+            "base" => &["base-dependency"],
+            "old" => &["old-dependency", "shared"],
+            "new" | "editor" => &["shared"],
+            _ => &[],
+        }
+    }
+
+    /// Compute dependencies no longer reachable from an explicit package.
+    /// 计算从显式包不可再到达的依赖。
+    /// # Arguments
+    ///
+    /// - `packages`: Actual simulated inventory.
+    ///   实际模拟清单。
+    fn orphans(packages: &BTreeMap<String, bool>) -> Vec<String> {
+        let mut needed: BTreeSet<String> = packages
+            .iter()
+            .filter(|(_, explicit)| **explicit)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut pending: Vec<String> = needed.iter().cloned().collect();
+        while let Some(package) = pending.pop() {
+            for dependency in Self::dependencies(&package) {
+                if needed.insert((*dependency).into()) {
+                    pending.push((*dependency).into());
+                }
+            }
+        }
+        packages
+            .iter()
+            .filter(|(name, explicit)| !**explicit && !needed.contains(*name))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
+/// Copy a simulated snapshot; production always uses the real Btrfs backend.
+/// 复制模拟快照；生产始终使用真实 Btrfs 后端。
+/// # Arguments
+///
+/// - `source`: Simulated source tree.
+///   模拟来源树。
+/// - `destination`: Absent snapshot tree.
+///   不存在的快照树。
+fn copy_simulated_snapshot(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_simulated_snapshot(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+impl BuildBackend for SimulatedBackend {
+    /// Create a marked writable simulated subvolume.
+    /// 创建有标记的可写模拟子卷。
+    /// # Arguments
+    ///
+    /// - `self`: Simulation backend.
+    ///   模拟后端。
+    /// - `path`: New root path.
+    ///   新根路径。
+    fn create_subvolume(&self, path: &Path) -> Result<()> {
+        assert!(!path.exists());
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join(MARKER), "writable").unwrap();
+        Ok(())
+    }
+
+    /// Reject ordinary directories and unexpected simulated read-only properties.
+    /// 拒绝普通目录和非预期的模拟只读属性。
+    /// # Arguments
+    ///
+    /// - `self`: Simulation backend.
+    ///   模拟后端。
+    /// - `path`: Root to inspect.
+    ///   待检查根。
+    /// - `readonly`: Required read-only state.
+    ///   必需只读状态。
+    fn check_subvolume(&self, path: &Path, readonly: bool) -> Result<()> {
+        let expected = if readonly { "readonly" } else { "writable" };
+        if !fs::read_to_string(path.join(MARKER)).is_ok_and(|actual| actual == expected) {
+            return Err(Error::Invalid(format!(
+                "not a {expected} simulated subvolume: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Snapshot marked roots while allowing an injected restore failure.
+    /// 对有标记根建立快照，并允许注入恢复失败。
+    /// # Arguments
+    ///
+    /// - `self`: Simulation backend.
+    ///   模拟后端。
+    /// - `source`: Existing simulated subvolume.
+    ///   已有模拟子卷。
+    /// - `destination`: Absent destination.
+    ///   不存在的目标。
+    /// - `readonly`: New snapshot property.
+    ///   新快照属性。
+    fn snapshot(&self, source: &Path, destination: &Path, readonly: bool) -> Result<()> {
+        assert!(source.join(MARKER).is_file());
+        assert!(!destination.exists());
+        self.snapshots.borrow_mut().push(SnapshotEvent {
+            source: source.into(),
+            destination: destination.into(),
+            readonly,
+        });
+        if !readonly && self.fail_restore.replace(false) {
+            return Err(Error::Invalid("injected CoW restore failure".into()));
+        }
+        copy_simulated_snapshot(source, destination);
+        fs::write(
+            destination.join(MARKER),
+            if readonly { "readonly" } else { "writable" },
+        )
+        .unwrap();
+        Ok(())
+    }
+
+    /// Delete only roots carrying simulated subvolume identity.
+    /// 仅删除具有模拟子卷身份的根。
+    /// # Arguments
+    ///
+    /// - `self`: Simulation backend.
+    ///   模拟后端。
+    /// - `path`: Owned scratch subvolume.
+    ///   所属临时子卷。
+    fn delete_subvolume(&self, path: &Path) -> Result<()> {
+        assert!(path.join(MARKER).is_file());
+        fs::remove_dir_all(path).unwrap();
+        Ok(())
+    }
+
+    /// Simulate the fixed plugin protocol against one writable package database.
+    /// 在一个可写包数据库上模拟固定插件协议。
+    /// # Arguments
+    ///
+    /// - `self`: Simulation backend and injected failures.
+    ///   模拟后端及注入失败。
+    /// - `plugin`: Loaded preset metadata.
+    ///   已加载预设元数据。
+    /// - `operation`: Fixed plugin operation.
+    ///   固定插件操作。
+    /// - `args`: Individually supplied arguments.
+    ///   独立提供的参数。
+    /// - `root`: Writable simulated system root.
+    ///   可写模拟系统根。
+    /// - `context`: Actual frozen build inputs.
+    ///   实际冻结构建输入。
+    fn invoke(
+        &self,
+        plugin: &LoadedPlugin,
+        operation: &str,
+        args: &[String],
+        root: &Path,
+        context: &BuildContext,
+    ) -> Result<String> {
+        self.check_subvolume(root, false)?;
+        assert_eq!(plugin.metadata.id, "arch");
+        assert_eq!(context.architecture, "x86_64");
+        let frozen = read_build_config_at(&context.config)?;
+        self.events.borrow_mut().push(Event {
+            operation: operation.into(),
+            arguments: args.to_vec(),
+            root: root.into(),
+            packages: frozen.packages,
+        });
+        if self.fail_operation.borrow().as_ref() == Some(&operation) {
+            self.fail_operation.borrow_mut().take();
+            return Err(Error::Invalid(format!("injected {operation} failure")));
+        }
+        let mut packages = Self::inventory(root);
+        let mut output = String::new();
+        match operation {
+            "bootstrap" => {
+                let generation = self.generation.get() + 1;
+                self.generation.set(generation);
+                fs::write(root.join(".base-generation"), generation.to_string()).unwrap();
+                if let Some(path) = self.mutate_editable.borrow_mut().take() {
+                    fs::write(path, "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=['mutated']\n").unwrap();
+                }
+            }
+            "base_install" => {
+                packages.insert("base".into(), true);
+                packages.insert("base-dependency".into(), false);
+            }
+            "update" => {
+                if self.remove_kept_on_update.replace(false) {
+                    packages.remove("kept");
+                }
+            }
+            "resolve_packages" => {
+                output = args.iter().map(|name| format!("{name}\n")).collect();
+            }
+            "query_packages" => {
+                output = fs::read_to_string(root.join(DATABASE)).unwrap_or_default();
+            }
+            "install" => {
+                for name in args {
+                    packages.insert(name.clone(), true);
+                    for dependency in Self::dependencies(name) {
+                        packages.entry((*dependency).into()).or_insert(false);
+                    }
+                }
+            }
+            "mark_reason" => {
+                let explicit = match args[0].as_str() {
+                    "explicit" => true,
+                    "dependency" => false,
+                    other => panic!("invalid reason {other}"),
+                };
+                for name in &args[1..] {
+                    *packages.get_mut(name).expect("marking installed package") = explicit;
+                }
+            }
+            "list_orphans" => {
+                output = Self::orphans(&packages)
+                    .iter()
+                    .map(|name| format!("{name}\n"))
+                    .collect();
+            }
+            "remove_orphans" => {
+                let orphans = Self::orphans(&packages);
+                for name in args {
+                    assert!(orphans.contains(name));
+                    packages.remove(name);
+                }
+            }
+            other => panic!("unexpected plugin operation {other}"),
+        }
+        Self::save(root, &packages);
+        Ok(output)
+    }
+}

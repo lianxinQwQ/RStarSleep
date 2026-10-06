@@ -43,6 +43,13 @@ case "$1" in
         exit 1
         ;;
     -Si) printf 'Name : %s\n' "${@: -1}" ;;
+    -S)
+        if [[ ${PACMAN_MOCK_CASE:-} == conflict && " $* " != *" --ask=4 "* ]]; then
+            printf 'conflicting package removal refused\n' >&2
+            exit 1
+        fi
+        exit 0
+        ;;
     *) exit 0 ;;
 esac
 "#,
@@ -173,9 +180,30 @@ fn installs_requested_targets_and_resolves_concrete_names() {
     assert!(
         fixture
             .trace()
-            .contains("-S --needed --asexplicit --noconfirm -- vim emacs")
+            .contains("-S --needed --asexplicit --noconfirm --ask=4 -- vim emacs")
     );
     let resolved = fixture.run(&["resolve_packages", "vim", "emacs"], "");
     assert!(resolved.status.success());
     assert_eq!(String::from_utf8(resolved.stdout).unwrap(), "vim\nemacs\n");
+}
+
+/// Verify a conflicting package switch is delegated to libalpm with dependency checks intact.
+/// 验证冲突包切换交由 libalpm 执行且保留依赖检查。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn permits_conflict_replacement_in_the_install_transaction() {
+    let fixture = Fixture::new();
+    assert!(
+        fixture
+            .run(&["install", "pipewire-pulse"], "conflict")
+            .status
+            .success()
+    );
+    let trace = fixture.trace();
+    assert!(trace.contains("--ask=4 -- pipewire-pulse"));
+    assert!(!trace.contains("--nodeps"));
+    assert!(!trace.contains("-Rdd"));
 }

@@ -1,0 +1,289 @@
+//! Verify preflight failures prevent plugin execution without using real containers.
+//! 不使用真实容器，验证预检查失败会阻止插件执行。
+
+use std::os::unix::fs::{PermissionsExt, symlink};
+
+use super::*;
+use crate::controller::plugins::{Metadata, ToolRequirements};
+use std::fs;
+
+/// Create an isolated plugin whose entry records execution using Bash builtins only.
+/// 创建隔离插件；入口仅使用 Bash 内建命令记录执行。
+///
+/// # Arguments
+///
+/// - `host`: Declared host tool requirements.
+///   声明的宿主工具需求。
+/// - `system`: Declared target-system tool requirements.
+///   声明的目标系统工具需求。
+pub(super) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("plugin");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(temporary.path().join("tmp")).unwrap();
+    fs::create_dir(temporary.path().join("target")).unwrap();
+    fs::create_dir(temporary.path().join("host-bin")).unwrap();
+    fs::write(
+        root.join("entry.sh"),
+        "printf '%s\\n' \"$1\" > \"$RSTAR_ROOT/executed\"\n",
+    )
+    .unwrap();
+    let plugin = LoadedPlugin {
+        metadata: Metadata {
+            schema_version: 1,
+            api_version: 1,
+            id: "test".into(),
+            version: "1".into(),
+            system_types: vec!["test".into()],
+            entry: "entry.sh".into(),
+            architectures: vec!["x86_64".into()],
+            cache_format: "test-v1".into(),
+            protected_packages: vec![],
+            tools: ToolRequirements {
+                host: host.iter().map(|tool| (*tool).into()).collect(),
+                system: system.iter().map(|tool| (*tool).into()).collect(),
+            },
+        },
+        archive: "test.tar.gz".into(),
+        archive_sha256: String::new(),
+        discovery_warnings: Vec::new(),
+        root,
+        temporary,
+    };
+    let path = std::env::var_os("PATH").unwrap();
+    let bash = executable("bash", Path::new("/"), &path).unwrap();
+    symlink(bash, plugin.temporary.path().join("host-bin/bash")).unwrap();
+    plugin
+}
+
+/// Write a fake nspawn that records requests and simulates the target dependency probe.
+/// 写入模拟 nspawn，记录请求并模拟目标依赖探测。
+///
+/// # Arguments
+///
+/// - `plugin`: Test session owning the launcher and trace paths.
+///   管理启动器及记录路径的测试会话。
+/// - `missing`: Fixed missing tool returned by the probe, or an empty string.
+///   探测返回的固定缺失工具，或空字符串。
+/// - `fail`: Whether the probe exits unsuccessfully instead of reporting tool names.
+///   是否让探测失败退出，而不是报告工具名。
+pub(super) fn launcher(plugin: &LoadedPlugin, missing: &str, fail: bool) {
+    let path = plugin.temporary.path().join("host-bin/systemd-nspawn");
+    let text = format!(
+        r#"#!/bin/sh
+printf 'CALL\n%s\n' "$*" >> launcher-trace
+printf 'CALL\0' >> launcher-argv
+printf '%s\0' "$@" >> launcher-argv
+for argument do
+    if [ "$argument" = /bin/sh ]; then
+        if [ {fail} = true ]; then printf 'probe failed\n' >&2; exit 7; fi
+        if [ -n '{missing}' ]; then printf '%s\n' '{missing}'; fi
+        exit 0
+    fi
+done
+printf 'executed\n' > executed-inside
+"#
+    );
+    fs::write(&path, text).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Verify all missing host tools are reported and the entry script is never invoked.
+/// 验证全部缺失宿主工具被报告，且入口脚本不会被调用。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn blocks_host_execution_and_reports_all_missing_tools() {
+    let plugin = fixture(&["curl", "missing-tool"], &[]);
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    let error = plugin
+        .invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str())
+        .unwrap_err();
+    match error {
+        Error::MissingTools {
+            plugin,
+            operation,
+            environment,
+            tools,
+        } => {
+            assert_eq!(plugin, "test");
+            assert_eq!(operation, "bootstrap");
+            assert_eq!(environment, "宿主");
+            assert_eq!(tools, ["curl", "missing-tool"]);
+        }
+        error => panic!("unexpected error: {error}"),
+    }
+    assert!(!root.join("executed").exists());
+}
+
+/// Verify a valid host invocation is independent of tools needed only inside the target.
+/// 验证有效宿主调用不受仅在目标系统使用的工具影响。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn invokes_host_after_checks_without_checking_target_tools() {
+    let plugin = fixture(&[], &["missing-target-tool"]);
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    plugin
+        .invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str())
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("executed")).unwrap(),
+        "bootstrap\n"
+    );
+}
+
+/// Verify plugin-relative binaries require executable permission before invocation.
+/// 验证插件内相对路径二进制必须具备可执行权限，才允许调用。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn checks_bundled_tools_and_rejects_non_executable_files() {
+    let plugin = fixture(&["./bin/helper"], &[]);
+    fs::create_dir(plugin.root().join("bin")).unwrap();
+    let helper = plugin.root().join("bin/helper");
+    fs::write(&helper, "tool").unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o644)).unwrap();
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    assert!(matches!(
+        plugin.invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::MissingTools { .. })
+    ));
+    assert!(!root.join("executed").exists());
+    fs::set_permissions(helper, fs::Permissions::from_mode(0o755)).unwrap();
+    plugin
+        .invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str())
+        .unwrap();
+}
+
+/// Verify a target dependency is checked inside nspawn, not against the host PATH.
+/// 验证目标依赖在 nspawn 内检查，而不是检查宿主 PATH。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn blocks_target_operation_before_plugin_entry_when_guest_tool_is_missing() {
+    let plugin = fixture(&[], &["pacman"]);
+    launcher(&plugin, "pacman", false);
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    let error = plugin
+        .invoke_with_path("update", &[], &root, "x86_64", path.as_os_str())
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::MissingTools { environment, tools, .. } if environment == "目标系统" && tools == ["pacman"])
+    );
+    assert!(!plugin.root().join("executed-inside").exists());
+    assert_eq!(
+        fs::read_to_string(plugin.root().join("launcher-trace"))
+            .unwrap()
+            .lines()
+            .filter(|line| *line == "CALL")
+            .count(),
+        1
+    );
+}
+
+/// Verify successful probes invoke the task with complete plugin mounts and target context.
+/// 验证成功探测后，任务带完整插件挂载和目标上下文执行。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn invokes_target_only_after_successful_probe() {
+    let plugin = fixture(&["missing-host-bootstrap-tool"], &["pacman"]);
+    launcher(&plugin, "", false);
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    plugin
+        .invoke_with_path(
+            "install",
+            &["vim".into()],
+            &root,
+            "x86_64",
+            path.as_os_str(),
+        )
+        .unwrap();
+    assert!(plugin.root().join("executed-inside").is_file());
+    let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
+    assert!(trace.contains("--bind-ro="));
+    assert!(trace.contains("--setenv=RSTAR_ARCH=x86_64"));
+    assert!(trace.contains("bash /run/rstarsleep/plugin/entry.sh install vim"));
+}
+
+/// Verify missing launchers and failed probes never start target plugin code.
+/// 验证启动器缺失或探测失败时，不运行目标插件代码。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn rejects_missing_nspawn_and_failed_probes() {
+    let plugin = fixture(&[], &[]);
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    assert!(
+        matches!(plugin.invoke_with_path("update", &[], &root, "x86_64", path.as_os_str()), Err(Error::MissingTools { tools, .. }) if tools == ["systemd-nspawn"])
+    );
+    launcher(&plugin, "", true);
+    assert!(matches!(
+        plugin.invoke_with_path("update", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::Execution { .. })
+    ));
+    assert!(!plugin.root().join("executed-inside").exists());
+}
+
+/// Exercise the real POSIX probe with isolated PATH entries and bundled relative files.
+/// 使用隔离 PATH 项和随包相对文件验证真实 POSIX 探测。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn probe_checks_executable_files_in_the_actual_target_search_path() {
+    let plugin = fixture(&[], &[]);
+    fs::create_dir(plugin.root().join("bin")).unwrap();
+    let existing = plugin.root().join("bin/available");
+    fs::write(&existing, "tool").unwrap();
+    fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+    let noexec = plugin.root().join("bin/noexec");
+    fs::write(&noexec, "tool").unwrap();
+    fs::set_permissions(noexec, fs::Permissions::from_mode(0o644)).unwrap();
+    let output = Command::new("/bin/sh")
+        .args([
+            "-c",
+            SYSTEM_PROBE,
+            "tool-check",
+            "available",
+            "missing",
+            "./bin/available",
+            "./bin/noexec",
+        ])
+        .current_dir(plugin.root())
+        .env("PATH", "bin")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "missing\n./bin/noexec\n"
+    );
+}

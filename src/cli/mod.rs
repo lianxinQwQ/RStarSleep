@@ -1,6 +1,7 @@
 //! Dispatch command-line requests to independent subcommand modules.
 //! 将命令行请求分派到各自独立的子命令模块。
 
+mod build;
 mod init;
 mod init_system;
 mod packages;
@@ -18,6 +19,7 @@ const USAGE: &str = "\
   RStarSleep init <Btrfs 顶层绝对路径>
   RStarSleep init-system <工作目录绝对路径> <系统标识>
   RStarSleep packages <工作目录绝对路径> <系统标识>
+  RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]
 
 init 创建 @rstarsleep 子卷；工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
 
@@ -60,6 +62,7 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "init" => init::run(rest)?,
         [command, rest @ ..] if command == "init-system" => init_system::run(rest)?,
         [command, rest @ ..] if command == "packages" => packages::run(rest)?,
+        [command, rest @ ..] if command == "build" => build::run(rest)?,
         _ => return Err(USAGE.into()),
     }
     Ok(())

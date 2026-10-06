@@ -13,6 +13,7 @@ Btrfs 顶层/
     │   └── rstarsleep.toml              # 全局配置
     ├── plugins/                        # 用户存放的插件压缩包
     │   └── arch.tar.gz                 # init 安装的内嵌 Arch 预设
+    ├── work/                           # 默认构建临时目录，可由 work_dir 覆盖
     └── systems/
         └── <系统标识>/                  # 系统身份不随角色变更
             ├── config/                 # 当前可编辑配置
@@ -20,13 +21,18 @@ Btrfs 顶层/
             │   │   └── config.toml     # 构建配置，读取 packages 和系统类型
             │   └── subsystem/
             │       └── config.toml     # 子系统运行配置，暂留模板
+            ├── build.lock              # 每系统构建独占锁
             ├── versions/
             │   └── <版本标识>/
+            │       ├── state.toml      # building / failed / complete 状态
             │       ├── config/         # 构建时配置留档，结构同当前 config/
             │       └── root/           # 该版本系统根，由构建模块创建子卷
             ├── cache/
             │   └── <版本标识>/
-            │       └── <流程标识>/     # 各版本、各流程构建缓存
+            │       ├── base-system/    # 只读基础系统子卷快照
+            │       ├── base-system.toml # 基础阶段完成、兼容性与来源
+            │       ├── packages/       # 只读软件阶段子卷快照
+            │       └── packages.toml   # 软件阶段完成、目标与实际清单
             └── persistent/             # 此系统跨版本共享的持久化目录和文件
 ```
 
@@ -157,9 +163,16 @@ Cargo 的 `build.rs` 按稳定顺序打包为 gzip 压缩的 tar，并通过 `in
 提升为插件根。目录计数包含隐藏项，多层包装不自动剥离。条目及链接目标不能
 包含绝对路径或 `..`；脚本入口必须在插件根内。
 
-加载结果保留整个临时环境，释放时自动清理；仅查找和解包，不自动执行插件。
-系统安装和维护的执行层仍按构建设计接入 nspawn。包格式和流程设计见
-`docs/build-design.md`。
+加载结果保留整个临时环境，释放时自动清理；查找和解包不自动执行插件。
+元数据必须包含 `[tools]` 的 `host` 和 `system` 工具列表；无额外工具时显式使用
+空列表。裸工具名从实际执行环境的 PATH 查找，带 `/` 的相对路径从插件根定位。
+工具需为可执行文件，不能使用绝对路径或父级跳转。
+
+`LoadedPlugin::invoke()` 在调用前检查工具：bootstrap 检查宿主声明及 Bash；
+其他任务先检查宿主 nspawn，再在目标系统中检查系统声明及 Bash。目标根需有
+`/bin/sh` 供固定的工具检查脚本使用。缺少工具时返回插件、任务、执行环境及全部
+缺失项，入口不运行。系统任务通过 nspawn 挂载完整插件及独立临时空间后执行。
+版本和阶段缓存流程仍按构建设计接入，包格式和流程设计见 `docs/build-design.md`。
 
 系统、版本和流程标识必须以 ASCII 字母或数字开头，其余字符只能使用字母、数字、
 点、下划线和连字符，避免标识被当成路径使用。
@@ -188,3 +201,15 @@ cargo run -- packages /mnt/btrfs/@rstarsleep desktop
 
 命令分派位于 `src/cli/mod.rs`，初始化命令的参数处理和执行位于 `src/cli/init.rs`。
 其他子命令也使用独立模块；`src/main.rs` 仅保留进程入口、错误输出和退出码处理。
+
+
+## 构建目录与配置留档
+
+`ConfigStore::build_work_dir()` 读取可选全局 `work_dir`，默认使用 `<管理根>/work`。
+相对路径基于管理根解析，绝对路径直接使用；拒绝父级跳转及与永久目录重叠。
+该选项只影响临时构建根，不改变配置、插件、版本和缓存位置。
+
+`ConfigStore::read_build_config()` 读取完整 `schema_version`、`system_type`、
+可选 `architecture` 和必需 `packages`。构建先冻结全部普通配置文件，之后只读
+冻结版本；缓存兼容性摘要排除主包表，其余选项变化均使旧缓存失效。
+构建、插件和软件代码的文件职责见 [构建设计](../../docs/build-design.md)。

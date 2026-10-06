@@ -12,3 +12,11 @@ pub mod config;
 /// Build orchestration infrastructure, including distribution plugin loading.
 /// 构建编排基础设施，包括发行版插件加载。
 pub mod controller;
+
+/// Bootstrap and maintenance of the protected base system.
+/// 受保护基础系统的安装和维护。
+pub mod base_system;
+
+/// Configured package reconciliation and orphan cleanup.
+/// 配置包协调和孤儿清理。
+pub mod software;

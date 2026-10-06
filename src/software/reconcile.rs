@@ -1,0 +1,129 @@
+//! First installation and maintenance with dependency-preserving orphan cleanup.
+//! 首次安装和保留必要依赖的维护及孤儿清理。
+use super::{PackageSession, SoftwareState, model::names};
+use crate::controller::{BuildBackend, Error, Result};
+use std::collections::BTreeSet;
+
+impl<B: BuildBackend> PackageSession<'_, B> {
+    /// Install configured software without repeating the base-system update.
+    /// 安装配置软件，不重复基础系统更新。
+    /// # Arguments
+    ///
+    /// - `self`: Stage execution environment.
+    ///   阶段执行环境。
+    /// - `targets`: Current frozen package table.
+    ///   当前冻结包表。
+    /// # Errors
+    ///
+    /// Returns query, installation, reason, or cleanup failures.
+    /// 返回查询、安装、安装原因或清理错误。
+    pub fn install(&self, targets: &[String]) -> Result<SoftwareState> {
+        self.reconcile(targets, &SoftwareState::default(), false)
+    }
+    /// Update once and reconcile current targets against the source cache's targets.
+    /// 更新一次，再协调当前目标与来源缓存目标。
+    /// # Arguments
+    ///
+    /// - `self`: Stage execution environment.
+    ///   阶段执行环境。
+    /// - `targets`: Current frozen package table.
+    ///   当前冻结包表。
+    /// - `previous`: Actual source cache state.
+    ///   实际来源缓存状态。
+    /// # Errors
+    ///
+    /// Returns update, query, installation, reason, or cleanup failures.
+    /// 返回更新、查询、安装、安装原因或清理错误。
+    pub fn maintain(&self, targets: &[String], previous: &SoftwareState) -> Result<SoftwareState> {
+        previous.validate()?;
+        self.call("update", &[])?;
+        self.reconcile(targets, previous, true)
+    }
+    /// Retain desired explicit roots, demote removed roots, then clean only real orphans.
+    /// 保留所需显式根、降低已移除根的安装原因，再清理真正孤儿。
+    /// # Arguments
+    ///
+    /// - `self`: Stage execution environment.
+    ///   阶段执行环境。
+    /// - `targets`: Current configured roots.
+    ///   当前配置根。
+    /// - `previous`: Prior managed roots.
+    ///   先前管理根。
+    /// - `maintenance`: Whether a system update may have introduced explicit replacement names.
+    ///   系统更新是否可能引入显式安装的替代包名。
+    fn reconcile(
+        &self,
+        targets: &[String],
+        previous: &SoftwareState,
+        maintenance: bool,
+    ) -> Result<SoftwareState> {
+        let requested = self.resolve(targets)?;
+        let protected = self.resolve(&self.plugin.metadata.protected_packages)?;
+        let retained: BTreeSet<_> = requested.union(&protected).cloned().collect();
+        let actual = self.inventory()?;
+        // Identify replacement roots from the post-update database before installation adds packages.
+        // 安装增添软件前，从更新后的数据库识别替代根。
+        let mut demotion_roots = BTreeSet::new();
+        if maintenance {
+            let previous_explicit: BTreeSet<_> = previous
+                .installed
+                .iter()
+                .filter(|package| package.explicit)
+                .map(|package| &package.name)
+                .collect();
+            demotion_roots.extend(
+                actual
+                    .iter()
+                    .filter(|(name, explicit)| **explicit && !previous_explicit.contains(name))
+                    .map(|(name, _)| name.clone()),
+            );
+        }
+        demotion_roots.extend(previous.requested.iter().cloned());
+        let missing: Vec<_> = retained
+            .iter()
+            .filter(|name| !actual.contains_key(*name))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            self.call("install", &missing)?;
+        }
+        let mut explicit = vec!["explicit".into()];
+        explicit.extend(retained.iter().cloned());
+        if explicit.len() > 1 {
+            self.call("mark_reason", &explicit)?;
+        }
+        let actual = self.inventory()?;
+        let mut demote = vec!["dependency".into()];
+        demote.extend(
+            demotion_roots
+                .into_iter()
+                .filter(|name| !retained.contains(name) && actual.get(name) == Some(&true)),
+        );
+        if demote.len() > 1 {
+            self.call("mark_reason", &demote)?;
+        }
+        let orphans = names(&self.call("list_orphans", &[])?)?;
+        let actual = self.inventory()?;
+        if orphans
+            .iter()
+            .any(|name| retained.contains(name) || actual.get(name) != Some(&false))
+        {
+            return Err(Error::Invalid(
+                "孤儿查询包含保留目标、显式包或未安装包".into(),
+            ));
+        }
+        if !orphans.is_empty() {
+            self.call("remove_orphans", &orphans.into_iter().collect::<Vec<_>>())?;
+        }
+        let result = self.capture(requested.into_iter().collect())?;
+        if retained.iter().any(|name| {
+            !result
+                .installed
+                .iter()
+                .any(|p| &p.name == name && p.explicit)
+        }) {
+            return Err(Error::Invalid("最终根缺少显式保留目标".into()));
+        }
+        Ok(result)
+    }
+}

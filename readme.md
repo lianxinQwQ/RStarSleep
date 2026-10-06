@@ -22,7 +22,7 @@ cargo run -- init /mnt/btrfs
 
 `src/main.rs` 只负责进程入口、错误输出和退出码。命令分派位于 `src/cli/mod.rs`，
 各子命令分别实现在 `src/cli/init.rs`、`src/cli/init_system.rs` 和
-`src/cli/packages.rs`。新增子命令时添加独立模块，并在分派模块中注册。
+`src/cli/packages.rs`、`src/cli/build.rs`。新增子命令时添加独立模块，并在分派模块中注册。
 
 ## 发行版插件
 
@@ -34,13 +34,38 @@ Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包�
 实现，复杂任务可以随包携带二进制。加载时在临时目录解包，自动处理单层包装
 目录，并保留全部资源。具体格式与流程见 [docs/build-design.md](docs/build-design.md)。
 
-当前已实现预设嵌入、初始化分发及按系统类型查找/临时加载；`build` 执行流程
-仍按设计草案继续实现。预设 Arch 支持 `x86_64` 和官方仓库包。
+插件元数据通过 `[tools]` 声明宿主和系统内所需工具。程序在调用前检查实际环境，
+缺失时返回错误，不执行插件入口；包内二进制可以使用相对路径声明。
+
+已实现预设嵌入、初始化分发、按系统类型查找/临时加载、调用前工具检查
+和 Bash/nspawn 调用，以及版本构建、阶段缓存和软件维护。
+预设 Arch 支持 `x86_64` 和官方仓库包。
+
+## 构建系统
+
+先初始化系统并编辑 `systems/<系统>/config/build/config.toml` 中的 `packages`：
+
+```sh
+RStarSleep init-system /rstarsleep desktop
+RStarSleep build desktop
+RStarSleep build --all
+RStarSleep build desktop --root /mnt/btrfs/@rstarsleep
+```
+
+省略系统标识默认构建全部系统，逐个执行，个别失败不阻断其他系统。
+临时工作目录默认是管理根下的 `work/`，可通过全局 `work_dir` 覆盖。
+需要 Btrfs 工具、nspawn、插件声明的工具，以及安装系统所需权限。
+Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
+`/usr/share/pacman/keyrings/archlinux.gpg`，可用 `RSTAR_ARCH_KEYRING` 指定。
+
+构建只从最新过往尝试读取已完成的只读阶段缓存。软件维护执行一次完整更新，
+补装缺失目标，将移除目标改为依赖并清理不再需要的软件。
+最终只读系统根位于 `systems/<系统>/versions/<版本>/root`。
+详细协议、步骤缓存动作和文件职责见 [构建设计](docs/build-design.md)。
+当前已通过模拟流程测试；真实 bootstrap/nspawn 完整安装尚未验证。
 
 ## 计划-未完成
 
-- 基础系统构建和维护
-- 自定义软件包
 - 持久化的目录和文件
 - 构建前目录和构建后脚本
 - 将构建的系统放入systemd-boot
@@ -51,3 +76,4 @@ Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包�
 # 计划-已完成
 - 配置模块：工作目录定义、Btrfs 专用子卷初始化、软件包配置读取接口
 - 插件基础：Bash 压缩包格式、Arch 预设嵌入与分发、按系统类型自动查找和临时加载
+- 构建维护：版本锁与配置留档、强制 CoW 阶段缓存、Arch 基础系统及官方仓库软件维护

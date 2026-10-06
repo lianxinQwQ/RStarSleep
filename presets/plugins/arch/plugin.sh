@@ -198,7 +198,11 @@ main() {
         install)
             validate_packages "$@"
             (( $# )) || return 0
-            pacman -S --needed --asexplicit --noconfirm -- "$@"
+            # Let libalpm replace conflicting installed packages in this dependency-checked transaction.
+            # 允许 libalpm 在此次检查依赖的事务中替换冲突的已安装包。
+            # Bit 4 answers only ALPM_QUESTION_CONFLICT_PKG; target validation precedes cache commit.
+            # 位 4 仅应答 ALPM_QUESTION_CONFLICT_PKG；缓存提交前再次校验目标。
+            pacman -S --needed --asexplicit --noconfirm --ask=4 -- "$@"
             ;;
         remove|remove_orphans)
             validate_packages "$@"

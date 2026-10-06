@@ -1,0 +1,337 @@
+//! Verify step failures, committed-cache recovery, and rejected build records.
+//! 验证步骤失败、已提交缓存恢复和无效构建记录拒绝。
+use super::*;
+
+/// Verify a failed software install preserves completed base cache for the next attempt.
+/// 验证软件安装失败时保留完成基础缓存供下次尝试使用。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn failed_packages_keep_base_cache_and_next_attempt_reuses_it() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    *backend.fail_operation.borrow_mut() = Some("install");
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert!(fixture.cache("v00000001", "base-system.toml").is_file());
+    assert!(!fixture.cache("v00000001", "packages.toml").exists());
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    assert_eq!(
+        record(&layout.versions.join("v00000001/state.toml"))["state"].as_str(),
+        Some("failed")
+    );
+    fixture.cleaned("v00000001");
+    backend.events.borrow_mut().clear();
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(outcome.version, "v00000002");
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("update"), 1);
+    fixture.cleaned(&outcome.version);
+}
+
+/// Verify the latest failed attempt prevents fallback to an older completed version.
+/// 验证最新失败尝试阻止回退到更早完成版本。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn only_latest_attempt_is_considered_for_cache_reuse() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(layout.config.join("build/config.toml"), "malformed = [").unwrap();
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    fixture.packages("desktop", &["editor"]);
+    backend.events.borrow_mut().clear();
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(outcome.version, "v00000003");
+    assert_eq!(backend.count("bootstrap"), 1);
+    assert_eq!(backend.count("update"), 0);
+}
+
+/// Verify failed CoW restore aborts before plugins and leaves no copy fallback.
+/// 验证 CoW 恢复失败在插件执行前中止且无复制回退。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn snapshot_restore_failure_does_not_run_plugins_or_copy_fallback() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    backend.events.borrow_mut().clear();
+    backend.fail_restore.set(true);
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(error.to_string().contains("CoW restore failure"));
+    assert!(backend.events.borrow().is_empty());
+    assert!(!fixture.cache("v00000002", "packages.toml").exists());
+    fixture.cleaned("v00000002");
+}
+
+/// Verify mutable current configuration cannot change an in-progress frozen build.
+/// 验证可变当前配置不能改变进行中的冻结构建。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn bootstrap_edits_to_current_config_do_not_change_frozen_targets() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    *backend.mutate_editable.borrow_mut() = Some(
+        fixture
+            .store
+            .system_layout("desktop")
+            .unwrap()
+            .config
+            .join("build/config.toml"),
+    );
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        fixture.store.read_build_config("desktop").unwrap().packages,
+        ["mutated"]
+    );
+    assert!(
+        backend
+            .events
+            .borrow()
+            .iter()
+            .all(|event| event.packages == ["editor"])
+    );
+    let inventory = SimulatedBackend::inventory(&outcome.root);
+    assert!(inventory.contains_key("editor"));
+    assert!(!inventory.contains_key("mutated"));
+}
+
+/// Verify damaged cache completion metadata aborts instead of silently rebuilding.
+/// 验证损坏缓存完成元数据时中止，而不静默重建。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn malformed_completion_record_is_an_error() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    fs::write(fixture.cache("v00000001", "base-system.toml"), "broken = [").unwrap();
+    backend.events.borrow_mut().clear();
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert!(backend.events.borrow().is_empty());
+}
+
+/// Verify a FIFO completion sidecar is rejected without being opened or blocking.
+/// 验证 FIFO 完成旁记录被拒绝，而不打开或阻塞。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[cfg(target_os = "linux")]
+#[test]
+fn fifo_completion_record_is_rejected_without_opening_it() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    let sidecar = fixture.cache("v00000001", "base-system.toml");
+    fs::remove_file(&sidecar).unwrap();
+    support::build::create_fifo(&sidecar);
+    backend.events.borrow_mut().clear();
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(error.to_string().contains("缓存完成记录必须是普通文件"));
+    assert!(backend.events.borrow().is_empty());
+}
+
+/// Verify ordinary directory substitution cannot masquerade as a cache subvolume.
+/// 验证普通目录替换不能伪装成缓存子卷。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn unmarked_cache_directory_is_rejected_before_plugin_execution() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    fs::remove_file(fixture.cache("v00000001", "packages").join(MARKER)).unwrap();
+    backend.events.borrow_mut().clear();
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert!(backend.events.borrow().is_empty());
+}
+
+/// Verify an all-system run continues after malformed inputs and returns aggregated failure.
+/// 验证全系统构建在输入损坏后继续并返回汇总失败。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn batch_build_continues_after_one_system_has_malformed_config() {
+    let fixture = Fixture::new();
+    fixture.system("a-broken", &[]);
+    fixture.system("z-good", &["editor"]);
+    fs::write(
+        fixture
+            .store
+            .system_layout("a-broken")
+            .unwrap()
+            .config
+            .join("build/config.toml"),
+        "broken = [",
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    let error = build_with_backend(&fixture.store, None, &backend).unwrap_err();
+    assert!(
+        matches!(error, Error::Batch(ref errors) if errors.len() == 1 && errors[0].contains("a-broken"))
+    );
+    let good = fixture
+        .store
+        .system_layout("z-good")
+        .unwrap()
+        .versions
+        .join("v00000001");
+    assert_eq!(
+        record(&good.join("state.toml"))["state"].as_str(),
+        Some("complete")
+    );
+    backend.check_subvolume(&good.join("root"), true).unwrap();
+}
+
+/// Verify lock contention allocates no version and executes no plugin.
+/// 验证锁争用不分配版本且不执行插件。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn per_system_lock_conflict_prevents_build_start() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(layout.root.join("build.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    let backend = SimulatedBackend::default();
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(error.to_string().contains("构建锁"));
+    assert!(backend.events.borrow().is_empty());
+    assert_eq!(fs::read_dir(layout.versions).unwrap().count(), 0);
+}
+
+/// Verify edits to an archived cache source are detected before maintenance.
+/// 验证归档缓存来源的修改在维护前被发现。
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn modified_archived_config_is_not_reused() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    let archive = fixture
+        .store
+        .system_layout("desktop")
+        .unwrap()
+        .versions
+        .join("v00000001/config/build/config.toml");
+    fs::write(
+        archive,
+        "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=[]\n",
+    )
+    .unwrap();
+    backend.events.borrow_mut().clear();
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(error.to_string().contains("缓存来源配置已改变"));
+    assert!(backend.events.borrow().is_empty());
+}
+
+/// Verify a failed base action stops the package step and leaves no completed base cache.
+/// 验证基础动作失败阻止软件包步骤且不留下已完成基础缓存。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn base_step_failure_stops_later_steps() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    *backend.fail_operation.borrow_mut() = Some("base_install");
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert_eq!(backend.count("bootstrap"), 1);
+    assert_eq!(backend.count("install"), 0);
+    assert!(
+        backend
+            .events
+            .borrow()
+            .iter()
+            .all(|event| event.root.ends_with("base-root"))
+    );
+    assert!(!fixture.cache("v00000001", "base-system.toml").exists());
+    assert!(!fixture.cache("v00000001", "packages.toml").exists());
+    fixture.cleaned("v00000001");
+}
+
+/// Verify uncached software restores the committed base output and retains it on restore failure.
+/// 验证无缓存软件恢复已提交基础输出，并在恢复失败时保留该输出。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn uncached_package_step_requires_cow_restore_of_committed_previous_step() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    backend.fail_restore.set(true);
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(error.to_string().contains("CoW restore failure"));
+    let base = fixture.cache("v00000001", "base-system");
+    assert!(fixture.cache("v00000001", "base-system.toml").is_file());
+    backend.check_subvolume(&base, true).unwrap();
+    assert!(backend.snapshots.borrow().iter().any(|snapshot| {
+        !snapshot.readonly
+            && snapshot.source == base
+            && snapshot
+                .destination
+                .ends_with("work/desktop/v00000001/root")
+    }));
+    assert_eq!(backend.count("install"), 0);
+    assert!(!fixture.cache("v00000001", "packages.toml").exists());
+    assert!(
+        !fixture
+            .store
+            .system_layout("desktop")
+            .unwrap()
+            .versions
+            .join("v00000001/root")
+            .exists()
+    );
+    fixture.cleaned("v00000001");
+}

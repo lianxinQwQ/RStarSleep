@@ -5,11 +5,13 @@
 //! 全局角色与子系统运行设置目前只保留模板，读取逻辑由后续模块实现。
 #![doc = include_str!("layout.md")]
 
+mod build;
 mod init;
 mod model;
 mod presets;
 mod store;
 
+pub use build::{BuildConfig, read_build_config_at};
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use store::{ConfigStore, SystemLayout};
