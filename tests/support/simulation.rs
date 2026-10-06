@@ -315,7 +315,7 @@ impl BuildBackend for SimulatedBackend {
                 self.generation.set(generation);
                 fs::write(root.join(".base-generation"), generation.to_string()).unwrap();
                 if let Some(path) = self.mutate_editable.borrow_mut().take() {
-                    fs::write(path, "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=['mutated']\n").unwrap();
+                    fs::write(path, "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=x86_64\n[Content]\nPackages=mutated\n").unwrap();
                 }
             }
             "base_install" => {

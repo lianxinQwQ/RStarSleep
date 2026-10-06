@@ -50,8 +50,8 @@ pub struct PackageConfig {
     /// Requested packages in their original order, including duplicate entries.
     /// 按原始顺序保存的待安装软件包列表，包含重复项。
     ///
-    /// Required in TOML; an explicitly empty list is valid.
-    /// TOML 中必须提供此字段；显式的空列表有效。
+    /// Required as [Content] Packages in INI or packages in legacy TOML; an empty list is valid.
+    /// INI 中必须提供 [Content] Packages，旧 TOML 中为 packages；显式的空列表有效。
     pub packages: Vec<String>,
 }
 

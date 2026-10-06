@@ -65,6 +65,7 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 | --- | --- |
 | `src/cli/build.rs` | 解析系统选择、`--all`、`--root` 和帮助 |
 | `src/config/build.rs` | 完整构建配置、工作目录和系统枚举 |
+| `src/config/ini.rs` | mkosi 风格 INI 解析、包列表追加/清空及规范化摘要输入 |
 | `src/controller/model.rs` | 后端契约、冻结上下文、构建结果和错误 |
 | `src/controller/workflow.rs` | 系统批次、一次构建生命周期、状态迁移和临时根清理 |
 | `src/controller/stages.rs` | 按步骤执行基础系统、软件包、script 及最终根发布 |
@@ -74,7 +75,7 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 | `src/controller/templates.rs` | 完整插件资源哈希索引、模板锁、固定输入构建和模板原子发布 |
 | `src/controller/identity.rs` | 每系统 machine-id 的持久保存、旧身份接纳和首次生成 |
 | `src/controller/backend.rs` | 原生 Btrfs 子卷/快照命令、插件及脚本执行适配 |
-| `src/controller/fs.rs` | 路径检查、目录同步和 TOML 原子写入 |
+| `src/controller/fs.rs` | 路径检查、目录同步和 INI/TOML 文本原子写入 |
 | `src/controller/plugins/model.rs` | 插件元数据、加载会话与插件错误 |
 | `src/controller/resources/session.rs` | 共用资源冻结会话、目录/归档选择和根归一化 |
 | `src/controller/resources/archive.rs` | 压缩格式识别、解码、安全 tar 解包 |
@@ -273,7 +274,7 @@ Arch 还提供无参数的 `clean_orphans.sh`，用于自动查询并清理孤�
 - CoW、缓存提交和版本完成标记始终由控制器负责。
 
 用户将插件压缩包或目录放入工作根的 `plugins/` 即可备用。控制器读取每个系统的
-`system_type` 和可选架构，按包内 `system_types` 及 `architectures` 自动匹配。
+`[Distribution] Distribution` 和可选 `Architecture`，按包内 `system_types` 及 `architectures` 自动匹配。
 `system_types` 省略时使用插件 `id`；文件名不参与身份匹配。
 
 没有有效匹配时报告缺失；多个有效匹配时报冲突，不按目录顺序任意选择。
@@ -288,14 +289,25 @@ Arch 还提供无参数的 `clean_orphans.sh`，用于自动查询并清理孤�
 # work_dir = "/mnt/rstarsleep-work"
 ```
 
-```toml
+```ini
 # Editable per-system build configuration.
 # 每个系统的当前可编辑构建配置。
-schema_version = 1
-system_type = "arch"
-architecture = "x86_64"
-packages = ["linux", "vim"]
+[Config]
+SchemaVersion=1
+
+[Distribution]
+Distribution=arch
+Architecture=x86_64
+
+[Content]
+Packages=
+    linux
+    vim
 ```
+
+当前系统构建文件为 `config/build/config.conf`，采用 mkosi 风格 INI。
+`Packages=` 支持缩进续行、逗号/空白分隔和重复赋值追加，空值清空列表；
+`#` 注释和空行不打断续行。配置优先读取 INI，仅在 INI 缺失时读取旧 TOML 留档。
 
 当前 `packages` 读取接口继续保留；新增完整构建配置读取接口。
 软件流程将配置列表规范化为包集合，并保存插件解析后的实际包清单，供维护对比。
@@ -307,7 +319,7 @@ packages = ["linux", "vim"]
 生成的包，初始化时原子写出，安装不依赖项目源码目录或外部预设文件。
 
 `ConfigStore::plugins_path()` 定位共享目录，`read_system_type()` 读取类型和
-可选架构（省略时用宿主架构，兼容 `distribution` 写法）。
+可选架构（省略时用宿主架构，旧 TOML 兼容 `distribution` 写法）。
 `controller::plugins::for_system()` 自动匹配，并返回管理临时环境生命周期的
 加载结果。当前支持 tar、gzip、xz 和 zstd；解包和操作文件检查不执行脚本。
 链接目标也必须为不含 `..` 的相对路径。
@@ -345,7 +357,9 @@ systems/<系统>/versions/<版本>/root/
 控制器按插件 ID、cache_format、系统类型、架构、受保护目标以及配置摘要判断兼容性。
 插件发布版本与归档摘要保留为来源信息；同一 cache_format 下允许发布版本变化。
 摘要涵盖留档中的全部普通配置文件，包括未知构建选项；仅在基础和软件兼容性摘要中排除
-`packages` 和 `script/`：包变化由软件维护处理，脚本在后续独立步骤重新应用。另存完整配置摘要，检测旧留档被修改的情况。
+全部 `[Content] Packages` 赋值和 `script/`：包变化由软件维护处理，脚本在后续独立步骤重新应用。
+INI 摘要规范化包列表、注释及排版，保留未知设置；旧 TOML 摘要规则保持兼容。
+另存完整配置摘要，检测旧留档被修改的情况。
 
 阶段旁记录为 `base-system.toml`、`packages.toml` 与 `script.toml`，记录所在版本、实际来源版本、
 最初内容版本、插件版本和摘要、兼容性身份、完整配置摘要及实际软件清单。

@@ -3,6 +3,7 @@
 use super::{BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin};
 use crate::{
     base_system,
+    config::{BUILD_CONFIG_PATH, BuildConfig},
     software::{PackageSession, SoftwareState},
 };
 use serde::{Deserialize, Serialize};
@@ -197,12 +198,16 @@ fn build(
         let mut types = plugin.metadata.system_types.clone();
         types.sort();
         let system_type = types.first().unwrap_or(&plugin.metadata.id);
-        let mut config = toml::Table::new();
-        config.insert("schema_version".into(), 1.into());
-        config.insert("system_type".into(), system_type.clone().into());
-        config.insert("architecture".into(), architecture.into());
-        config.insert("packages".into(), toml::Value::Array(Vec::new()));
-        disk::write(&pending.join("config/build/config.toml"), &config)?;
+        let config = BuildConfig {
+            schema_version: 1,
+            system_type: system_type.clone(),
+            architecture: Some(architecture.into()),
+            packages: Vec::new(),
+        };
+        disk::write_text(
+            &pending.join("config").join(BUILD_CONFIG_PATH),
+            &config.to_ini()?,
+        )?;
         let context = BuildContext {
             system_id: "template".into(),
             architecture: architecture.into(),

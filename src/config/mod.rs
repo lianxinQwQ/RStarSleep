@@ -6,11 +6,13 @@
 #![doc = include_str!("layout.md")]
 
 mod build;
+mod ini;
 mod init;
 mod model;
 mod presets;
 mod store;
 
+pub(crate) use build::{BUILD_CONFIG_PATH, LEGACY_BUILD_CONFIG_PATH, normalized_build_config};
 pub use build::{BuildConfig, read_build_config_at};
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
@@ -56,6 +58,20 @@ pub enum Error {
         /// Original TOML deserialization error.
         /// 原始 TOML 反序列化错误。
         source: toml::de::Error,
+    },
+    /// An INI build configuration has invalid syntax or a missing or invalid value.
+    /// INI 构建配置的语法错误，或值缺失、无效。
+    #[error("无法解析 {path}:{line}: {message}")]
+    Ini {
+        /// Source configuration path.
+        /// 源配置路径。
+        path: PathBuf,
+        /// One-based line number; zero denotes a missing setting.
+        /// 从 1 开始的行号；0 表示缺失设置。
+        line: usize,
+        /// Syntax or value diagnostic.
+        /// 语法或值的诊断。
+        message: String,
     },
     /// A path, identifier, prerequisite, or package value failed validation.
     /// 路径、标识、前置条件或软件包值未通过校验。

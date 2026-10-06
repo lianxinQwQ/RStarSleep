@@ -46,7 +46,7 @@ fn only_latest_attempt_is_considered_for_cache_reuse() {
     let backend = SimulatedBackend::default();
     build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
     let layout = fixture.store.system_layout("desktop").unwrap();
-    fs::write(layout.config.join("build/config.toml"), "malformed = [").unwrap();
+    fs::write(layout.config.join("build/config.conf"), "malformed = [").unwrap();
     assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
     fixture.packages("desktop", &["editor"]);
     backend.events.borrow_mut().clear();
@@ -97,7 +97,7 @@ fn bootstrap_edits_to_current_config_do_not_change_frozen_targets() {
             .system_layout("desktop")
             .unwrap()
             .config
-            .join("build/config.toml"),
+            .join("build/config.conf"),
     );
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
@@ -197,7 +197,7 @@ fn batch_build_continues_after_one_system_has_malformed_config() {
             .system_layout("a-broken")
             .unwrap()
             .config
-            .join("build/config.toml"),
+            .join("build/config.conf"),
         "broken = [",
     )
     .unwrap();
@@ -262,10 +262,10 @@ fn modified_archived_config_is_not_reused() {
         .system_layout("desktop")
         .unwrap()
         .versions
-        .join("v00000001/config/build/config.toml");
+        .join("v00000001/config/build/config.conf");
     fs::write(
         archive,
-        "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=[]\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=x86_64\n[Content]\nPackages=\n",
     )
     .unwrap();
     backend.events.borrow_mut().clear();

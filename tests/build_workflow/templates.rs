@@ -257,8 +257,8 @@ fn same_archive_is_partitioned_by_architecture() {
             .system_layout("server")
             .unwrap()
             .config
-            .join("build/config.toml"),
-        "schema_version=1\nsystem_type='arch'\narchitecture='aarch64'\npackages=[]\n",
+            .join("build/config.conf"),
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=aarch64\n[Content]\nPackages=\n",
     )
     .unwrap();
     let backend = SimulatedBackend::default();

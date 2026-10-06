@@ -7,10 +7,20 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::{ConfigStore, Error, Result, io_error, validate_identifier};
+use super::{
+    ConfigStore, Error, PackageConfig, Result, SystemTypeConfig, ini::Document, io_error,
+    validate_identifier,
+};
 
-/// Complete supported system-build inputs; other fields remain in the archived TOML.
-/// 完整的已支持系统构建输入；其他字段保留在留档 TOML 中。
+/// Current mkosi-style build configuration path beneath a config root.
+/// 配置根下当前 mkosi 风格构建配置路径。
+pub(crate) const BUILD_CONFIG_PATH: &str = "build/config.conf";
+/// Historical TOML path retained for existing systems and archived versions.
+/// 为已有系统和版本留档保留的历史 TOML 路径。
+pub(crate) const LEGACY_BUILD_CONFIG_PATH: &str = "build/config.toml";
+
+/// Complete supported system-build inputs; other settings remain in the archived file.
+/// 完整的已支持系统构建输入；其他设置保留在留档文件中。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BuildConfig {
     /// Supported build configuration schema.
@@ -41,6 +51,27 @@ struct GlobalBuildOptions {
 }
 
 impl BuildConfig {
+    /// Serialize validated template inputs using mkosi-style sections and one package per line.
+    /// 按 mkosi 风格分节序列化经校验的模板输入，每行一个软件包。
+    /// # Arguments
+    /// - `self`: Concrete supported build inputs.
+    ///   支持的具体构建输入。
+    pub(crate) fn to_ini(&self) -> Result<String> {
+        self.validate()?;
+        let mut text = format!(
+            "[Config]\nSchemaVersion={}\n\n[Distribution]\nDistribution={}\n",
+            self.schema_version, self.system_type
+        );
+        if let Some(architecture) = &self.architecture {
+            text.push_str(&format!("Architecture={architecture}\n"));
+        }
+        text.push_str("\n[Content]\nPackages=\n");
+        for package in &self.packages {
+            text.push_str(&format!("    {package}\n"));
+        }
+        Ok(text)
+    }
+
     /// Validate supported schema, distribution identity, and concrete package targets.
     /// 校验支持的格式版本、发行版标识和具体包目标。
     ///
@@ -55,7 +86,9 @@ impl BuildConfig {
     /// 格式版本不支持、标识或包名无效时返回错误。
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
-            return Err(Error::Invalid("仅支持 schema_version = 1".into()));
+            return Err(Error::Invalid(
+                "仅支持构建格式版本 1（INI: [Config] SchemaVersion=1）".into(),
+            ));
         }
         validate_identifier(&self.system_type)?;
         if let Some(architecture) = &self.architecture {
@@ -74,20 +107,130 @@ impl BuildConfig {
 ///
 /// # Arguments
 ///
-/// - `directory`: Existing configuration directory containing build/config.toml.
-///   包含 build/config.toml 的现有配置目录。
+/// - `directory`: Configuration root containing build/config.conf or a legacy build/config.toml.
+///   包含 build/config.conf 或旧 build/config.toml 的配置根。
 ///
 /// # Errors
 ///
 /// Returns errors for malformed, missing, or unsupported configuration.
 /// 配置格式错误、缺失或不支持时返回错误。
 pub fn read_build_config_at(directory: &Path) -> Result<BuildConfig> {
-    let path = directory.join("build/config.toml");
-    let text = fs::read_to_string(&path).map_err(|source| io_error(&path, source))?;
-    let config: BuildConfig =
-        toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+    let config = match Input::read(directory)? {
+        Input::Ini(document) => {
+            let distribution = document.system_type()?;
+            BuildConfig {
+                schema_version: document.schema_version()?,
+                system_type: distribution.system_type,
+                architecture: distribution.architecture,
+                packages: document.packages()?.packages,
+            }
+        }
+        Input::Toml { path, text } => {
+            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?
+        }
+    };
     config.validate()?;
     Ok(config)
+}
+
+/// Current INI input or a historical TOML input selected only when INI is absent.
+/// 当前 INI 输入，或仅在 INI 缺失时选择的历史 TOML 输入。
+enum Input {
+    /// Current sectioned INI document.
+    /// 当前分节 INI 文档。
+    Ini(Document),
+    /// Historical TOML contents and their diagnostic path.
+    /// 历史 TOML 内容及其诊断路径。
+    Toml { path: PathBuf, text: String },
+}
+
+impl Input {
+    /// Read the current format preferentially without hiding errors behind legacy fallback.
+    /// 优先读取当前格式，不通过旧格式回退掩盖错误。
+    /// # Arguments
+    /// - `directory`: Current or recorded config root.
+    ///   当前或留档配置根。
+    fn read(directory: &Path) -> Result<Self> {
+        let path = directory.join(BUILD_CONFIG_PATH);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(Self::Ini(Document::parse(&text, &path)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let legacy = directory.join(LEGACY_BUILD_CONFIG_PATH);
+                match fs::read_to_string(&legacy) {
+                    Ok(text) => Ok(Self::Toml { path: legacy, text }),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Err(io_error(path, error))
+                    }
+                    Err(error) => Err(io_error(legacy, error)),
+                }
+            }
+            Err(error) => Err(io_error(path, error)),
+        }
+    }
+}
+
+/// Read package settings independently of distribution, schema, and runtime options.
+/// 独立于发行版、格式版本和运行选项读取软件包设置。
+/// # Arguments
+/// - `directory`: Current or recorded config root.
+///   当前或留档配置根。
+pub(super) fn read_packages_at(directory: &Path) -> Result<PackageConfig> {
+    let config = match Input::read(directory)? {
+        Input::Ini(document) => document.packages()?,
+        Input::Toml { path, text } => {
+            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?
+        }
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+/// Read distribution settings independently of packages and runtime options.
+/// 独立于软件包和运行选项读取发行版设置。
+/// # Arguments
+/// - `directory`: Current config root.
+///   当前配置根。
+pub(super) fn read_system_type_at(directory: &Path) -> Result<SystemTypeConfig> {
+    let config = match Input::read(directory)? {
+        Input::Ini(document) => document.system_type()?,
+        Input::Toml { path, text } => {
+            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?
+        }
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+/// Normalize build options while retaining the historical TOML hash representation.
+/// 规范化构建选项，并保留历史 TOML 摘要表示。
+/// # Arguments
+/// - `text`: Complete UTF-8 build file.
+///   完整 UTF-8 构建文件。
+/// - `path`: Build file path identifying its format.
+///   标识格式的构建文件路径。
+/// - `exclude_packages`: Whether to omit the configured package list for cache compatibility.
+///   是否为缓存兼容性忽略配置软件包列表。
+pub(crate) fn normalized_build_config(
+    text: &str,
+    path: &Path,
+    exclude_packages: bool,
+) -> Result<Vec<u8>> {
+    if path.ends_with(BUILD_CONFIG_PATH) {
+        return Document::parse(text, path)?.normalized(exclude_packages);
+    }
+    let mut value: toml::Value = toml::from_str(text).map_err(|source| Error::Parse {
+        path: path.into(),
+        source,
+    })?;
+    if exclude_packages {
+        value
+            .as_table_mut()
+            .ok_or_else(|| Error::Invalid("构建配置不是表".into()))?
+            .remove("packages");
+    }
+    toml::to_string(&value)
+        .map(String::into_bytes)
+        .map_err(|e| Error::Invalid(e.to_string()))
 }
 
 impl ConfigStore {

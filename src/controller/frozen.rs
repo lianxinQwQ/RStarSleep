@@ -130,20 +130,13 @@ fn hash_directory(
             File::open(entry.path())
                 .and_then(|mut f| f.read_to_end(&mut content))
                 .map_err(|e| disk::io(&entry.path(), e))?;
-            if path == Path::new("build/config.toml") {
+            if path == Path::new(crate::config::BUILD_CONFIG_PATH)
+                || path == Path::new(crate::config::LEGACY_BUILD_CONFIG_PATH)
+            {
                 let text =
                     std::str::from_utf8(&content).map_err(|e| Error::Invalid(e.to_string()))?;
-                let mut value: toml::Value =
-                    toml::from_str(text).map_err(|e| Error::Invalid(e.to_string()))?;
-                if exclude_packages {
-                    value
-                        .as_table_mut()
-                        .ok_or_else(|| Error::Invalid("构建配置不是表".into()))?
-                        .remove("packages");
-                }
-                content = toml::to_string(&value)
-                    .map_err(|e| Error::Invalid(e.to_string()))?
-                    .into_bytes();
+                content =
+                    crate::config::normalized_build_config(text, &entry.path(), exclude_packages)?;
             }
             digest.update((content.len() as u64).to_le_bytes());
             digest.update(content);

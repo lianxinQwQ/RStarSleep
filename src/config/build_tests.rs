@@ -23,18 +23,18 @@ fn fixture() -> (tempfile::TempDir, ConfigStore) {
     (temporary, store)
 }
 
-/// Write one build input preserving its source TOML for independent readers.
-/// 写入一份构建输入，保留源 TOML 供独立读取接口使用。
+/// Write one build input preserving its source INI for independent readers.
+/// 写入一份构建输入，保留源 INI 供独立读取接口使用。
 ///
 /// # Arguments
 ///
 /// - `directory`: Current or archived configuration root.
 ///   当前或留档配置根。
-/// - `text`: Exact build TOML to write.
-///   待写入的准确构建 TOML。
+/// - `text`: Exact build INI to write.
+///   待写入的准确构建 INI。
 fn write_build(directory: &Path, text: &str) {
     fs::create_dir_all(directory.join("build")).unwrap();
-    fs::write(directory.join("build/config.toml"), text).unwrap();
+    fs::write(directory.join(BUILD_CONFIG_PATH), text).unwrap();
 }
 
 /// Preserve configured package order and duplicates and read archives independently of current inputs.
@@ -50,7 +50,7 @@ fn reads_complete_inputs_and_uses_recorded_configuration() {
     let layout = store.system_layout("desktop").unwrap();
     write_build(
         &layout.config,
-        "schema_version=1\ndistribution='arch'\narchitecture='x86_64'\npackages=['vim', 'libstdc++', 'vim']\ncustom='retained'\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=x86_64\n[Content]\nPackages=vim libstdc++ vim\nCustom=retained\n",
     );
     let config = store.read_build_config("desktop").unwrap();
     assert_eq!(config.system_type, "arch");
@@ -58,7 +58,7 @@ fn reads_complete_inputs_and_uses_recorded_configuration() {
     assert_eq!(config.packages, ["vim", "libstdc++", "vim"]);
     write_build(
         &layout.versions.join("v00000001/config"),
-        "schema_version=1\nsystem_type='arch'\npackages=['nano']\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=nano\n",
     );
     write_build(&layout.config, "broken = [");
     assert_eq!(
@@ -83,10 +83,11 @@ fn rejects_missing_and_invalid_build_inputs() {
     let (_temporary, store) = fixture();
     let directory = store.system_layout("desktop").unwrap().config;
     for text in [
-        "schema_version=1\nsystem_type='arch'\n",
-        "schema_version=2\nsystem_type='arch'\npackages=[]\n",
-        "schema_version=1\nsystem_type='../arch'\npackages=[]\n",
-        "schema_version=1\nsystem_type='arch'\narchitecture=''\npackages=[]\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n",
+        "[Config]\nSchemaVersion=2\n[Distribution]\nDistribution=arch\n[Content]\nPackages=\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=../arch\n[Content]\nPackages=\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=\n[Content]\nPackages=\n",
+        "[Config]\nSchemaVersion=invalid\n[Distribution]\nDistribution=arch\n[Content]\nPackages=\n",
     ] {
         write_build(&directory, text);
         assert!(
@@ -95,17 +96,19 @@ fn rejects_missing_and_invalid_build_inputs() {
         );
     }
     for package in [
-        "",
         "-flag",
         ".hidden",
         "pkg:version",
         "repo/pkg",
-        "a b",
+        "'a b'",
+        "['vim']",
         "name>=1",
     ] {
         write_build(
             &directory,
-            &format!("schema_version=1\nsystem_type='arch'\npackages=['{package}']\n"),
+            &format!(
+                "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages={package}\n"
+            ),
         );
         assert!(
             read_build_config_at(&directory).is_err(),
@@ -114,7 +117,7 @@ fn rejects_missing_and_invalid_build_inputs() {
     }
     write_build(
         &directory,
-        "schema_version=1\nsystem_type='arch'\npackages=[]\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=\n",
     );
     assert!(
         read_build_config_at(&directory)
@@ -177,4 +180,156 @@ fn lists_systems_in_order_without_parsing_individual_inputs() {
     assert_eq!(store.list_systems().unwrap(), ["alpha", "zulu"]);
     fs::write(store.root().join("systems/ordinary-file"), "unexpected").unwrap();
     assert!(store.list_systems().is_err());
+}
+
+/// Parse thousands of indented package names with comments, blank lines, and CRLF endings.
+/// 解析数千个缩进包名，支持注释、空行及 CRLF 换行。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn reads_large_multiline_package_lists() {
+    let (_temporary, store) = fixture();
+    let directory = store.system_layout("desktop").unwrap().config;
+    let packages: Vec<_> = (0..5000).map(|i| format!("package-{i}")).collect();
+    let mut text = String::from(
+        "[Config]\r\nSchemaVersion=1\r\n[Distribution]\r\nDistribution=arch\r\n[Content]\r\nPackages=\r\n",
+    );
+    for package in &packages {
+        text.push_str(&format!("    {package} # 软件包\r\n\r\n"));
+    }
+    write_build(&directory, &text);
+    assert_eq!(store.read_packages("desktop").unwrap().packages, packages);
+    assert_eq!(
+        store.read_build_config("desktop").unwrap().packages,
+        packages
+    );
+}
+
+/// Apply mkosi list append/reset rules across repeated sections and resolve the last scalar.
+/// 跨重复分节应用 mkosi 列表追加、清空规则，并使用最后一个标量赋值。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn handles_repeated_assignments_continuations_and_empty_resets() {
+    let (_temporary, store) = fixture();
+    let directory = store.system_layout("desktop").unwrap().config;
+    write_build(
+        &directory,
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=obsolete\nDistribution=arch\n[Content]\nPackages=discarded\nPackages=\nPackages=vim, linux\n    libstdc++\n    # Comment inside the continuation\n\n    vim\n[Content]\nPackages=nano\n[Future]\nPackages=ignored\n",
+    );
+    let config = store.read_build_config("desktop").unwrap();
+    assert_eq!(config.system_type, "arch");
+    assert_eq!(
+        config.packages,
+        ["vim", "linux", "libstdc++", "vim", "nano"]
+    );
+    write_build(
+        &directory,
+        "    [Config]\n    SchemaVersion=1\n    [Distribution]\n    Distribution=arch\n    [Content]\n    Packages=vim\n    Packages=\n        nano\n",
+    );
+    assert_eq!(
+        store.read_build_config("desktop").unwrap().packages,
+        ["vim", "nano"]
+    );
+    write_build(
+        &directory,
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=vim\nPackages= # Explicitly clear all packages\n",
+    );
+    assert!(
+        store
+            .read_build_config("desktop")
+            .unwrap()
+            .packages
+            .is_empty()
+    );
+}
+
+/// Preserve historical TOML inputs on initialization and prefer INI without hiding its errors.
+/// 初始化时保留历史 TOML 输入，优先读取 INI 且不掩盖其错误。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn preserves_legacy_inputs_and_prioritizes_ini() {
+    let (_temporary, store) = fixture();
+    let directory = store.system_layout("desktop").unwrap().config;
+    fs::create_dir_all(directory.join("build")).unwrap();
+    let legacy = "schema_version=1\ndistribution='arch'\npackages=['vim']\n";
+    fs::write(directory.join(LEGACY_BUILD_CONFIG_PATH), legacy).unwrap();
+    store.initialize_system("desktop").unwrap();
+    assert!(!directory.join(BUILD_CONFIG_PATH).exists());
+    assert_eq!(
+        fs::read_to_string(directory.join(LEGACY_BUILD_CONFIG_PATH)).unwrap(),
+        legacy
+    );
+    assert_eq!(store.read_packages("desktop").unwrap().packages, ["vim"]);
+    assert_eq!(
+        store.read_system_type("desktop").unwrap().system_type,
+        "arch"
+    );
+    assert_eq!(
+        store.read_build_config("desktop").unwrap().packages,
+        ["vim"]
+    );
+    write_build(
+        &directory,
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=nano\n",
+    );
+    assert_eq!(
+        store.read_build_config("desktop").unwrap().packages,
+        ["nano"]
+    );
+    write_build(&directory, "[Content]\nPackages=vim\ninvalid line\n");
+    assert!(matches!(
+        store.read_build_config("desktop"),
+        Err(Error::Ini { line: 3, .. })
+    ));
+}
+
+/// Keep cache compatibility independent of package syntax while fingerprinting unknown settings.
+/// 缓存兼容性不依赖包列表写法，同时为未知设置保留指纹。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn normalizes_ini_packages_and_excludes_only_the_content_package_setting() {
+    let path = Path::new(BUILD_CONFIG_PATH);
+    let compact = "[Content]\nPackages=vim,linux\n[Future]\nPackages=retained\n";
+    let multiline = "# Different presentation\n[Content]\nPackages=discarded\nPackages=\nPackages=\n    vim\nPackages=linux\n[Future]\nPackages=retained\n";
+    assert_eq!(
+        normalized_build_config(compact, path, false).unwrap(),
+        normalized_build_config(multiline, path, false).unwrap()
+    );
+    let changed = compact.replace("vim,linux", "nano");
+    assert_ne!(
+        normalized_build_config(compact, path, false).unwrap(),
+        normalized_build_config(&changed, path, false).unwrap()
+    );
+    assert_eq!(
+        normalized_build_config(compact, path, true).unwrap(),
+        normalized_build_config(&changed, path, true).unwrap()
+    );
+    let unknown_change = compact.replace("retained", "changed");
+    assert_ne!(
+        normalized_build_config(compact, path, true).unwrap(),
+        normalized_build_config(&unknown_change, path, true).unwrap()
+    );
+    let empty_section = format!("{compact}[FutureSection]\n");
+    assert_ne!(
+        normalized_build_config(compact, path, true).unwrap(),
+        normalized_build_config(&empty_section, path, true).unwrap()
+    );
+    let legacy = "schema_version=1\nsystem_type='arch'\npackages=['vim']\ncustom=true\n";
+    let mut value: toml::Value = toml::from_str(legacy).unwrap();
+    assert_eq!(
+        normalized_build_config(legacy, Path::new(LEGACY_BUILD_CONFIG_PATH), false).unwrap(),
+        toml::to_string(&value).unwrap().into_bytes()
+    );
+    value.as_table_mut().unwrap().remove("packages");
+    assert_eq!(
+        normalized_build_config(legacy, Path::new(LEGACY_BUILD_CONFIG_PATH), true).unwrap(),
+        toml::to_string(&value).unwrap().into_bytes()
+    );
 }

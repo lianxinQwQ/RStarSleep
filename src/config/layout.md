@@ -26,7 +26,7 @@ Btrfs 顶层/
         └── <系统标识>/                  # 系统身份不随角色变更
             ├── config/                 # 当前可编辑配置
             │   ├── build/
-            │   │   └── config.toml     # 构建配置，读取 packages 和系统类型
+            │   │   └── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
             │   ├── script/            # 软件步骤后的构建脚本输入
             │   └── subsystem/
             │       └── config.toml     # 子系统运行配置，暂留模板
@@ -89,21 +89,49 @@ subsystems = []
 
 未指定主系统时，省略 `main_system`。该文件目前仅生成，不实现角色配置读取。
 
-系统构建配置 `systems/<系统标识>/config/build/config.toml`：
+系统构建配置 `systems/<系统标识>/config/build/config.conf`：
 
-```toml
-schema_version = 1
-system_type = "arch"
-packages = []
+```ini
+[Config]
+SchemaVersion=1
+
+[Distribution]
+Distribution=arch
+# Optional target architecture; omission uses the host architecture.
+# 可选目标架构；省略时使用宿主架构。
+# Architecture=x86_64
+
+[Content]
+Packages=
 ```
 
 软件包配置示例：
 
-```toml
-schema_version = 1
-system_type = "arch"
-packages = ["linux", "systemd", "vim"]
+```ini
+[Config]
+SchemaVersion=1
+
+[Distribution]
+Distribution=arch
+
+[Content]
+Packages=
+    linux
+    systemd
+    vim
 ```
+
+构建配置采用 mkosi 风格的 INI：分节名与键名区分大小写，设置必须位于分节内。
+缩进续行延续上一设置的值，空行和 `#` 注释不打断续行；支持行内 `#` 注释。
+软件包值按逗号或空白分隔，重复 `[Content] Packages=` 按顺序追加，空值清空先前列表。
+无需 TOML 的引号、方括号或逗号列表语法；要求显式声明 `Packages=`，允许空列表。
+未知设置原样留档并参与摘要，但读取接口只解释已支持的字段。
+
+已有系统或历史版本缺少 `build/config.conf` 时，继续读取旧 `build/config.toml`。
+两种文件都存在时优先读取 INI，INI 无效不会回退到 TOML；初始化不以空模板覆盖旧 TOML 的设置。
+迁移时把旧 `schema_version`、`system_type`（或 `distribution`）、`architecture` 和 `packages`
+分别改写为 `[Config] SchemaVersion`、`[Distribution] Distribution`、`Architecture`
+及 `[Content] Packages`，另存为 `build/config.conf`。其他自定义设置也应迁入相应分节。
 
 系统运行配置 `systems/<系统标识>/config/subsystem/config.toml` 目前仅包含
 `schema_version = 1` 和说明注释。其字段随子系统运行功能确定。
@@ -152,13 +180,12 @@ let cache = store.build_cache_path("desktop", "v1", "packages")?;
 # }
 ```
 
-软件包读取接口只解释 `packages`，保留列表顺序和重复项，不查询软件包仓库或
-安装软件。系统类型使用独立的 `read_system_type()` 接口，读取 `system_type`
-（接受 `distribution` 别名）和可选 `architecture`；不设置架构时使用宿主架构。
+软件包读取接口只解释 `[Content] Packages`，保留列表顺序和重复项，不查询软件包仓库或
+安装软件。系统类型使用独立的 `read_system_type()` 接口，读取 `[Distribution] Distribution`
+和可选 `Architecture`；不设置架构时使用宿主架构。旧 TOML 继续接受 `distribution` 别名。
 全局配置和子系统运行配置不会被这两个接口读取。
-缺失文件、缺失 `packages`、错误类型、无效 TOML 或空白包名均返回错误，不静默
-替换成空列表。错误包含相关路径或校验原因。`schema_version` 目前作为格式标记
-保留，其兼容性策略在扩展配置读取时实现。
+缺失文件、缺失 `Packages`、无效 INI 或无效包名均返回错误，不静默替换成空列表。
+INI 错误包含文件路径及行号，缺失设置的行号为 0。完整构建读取要求 `[Config] SchemaVersion=1`。
 
 ## 插件预设与自动选择
 
@@ -228,9 +255,11 @@ cargo run -- packages /mnt/btrfs/@rstarsleep desktop
 相对路径基于管理根解析，绝对路径直接使用；拒绝父级跳转及与永久目录重叠。
 该选项只影响临时构建根，不改变配置、插件、版本和缓存位置。
 
-`ConfigStore::read_build_config()` 读取完整 `schema_version`、`system_type`、
-可选 `architecture` 和必需 `packages`。构建先冻结全部普通配置文件，之后只读
-冻结版本；基础和软件缓存兼容性摘要排除主包表及 `script/`，其余选项变化均使旧缓存失效。
+`ConfigStore::read_build_config()` 读取 `[Config] SchemaVersion`、`[Distribution] Distribution`、
+可选 `Architecture` 和必需 `[Content] Packages`，返回现有 `BuildConfig` 数据结构。
+构建先冻结全部普通配置文件，之后只读
+冻结版本；基础和软件缓存兼容性摘要排除全部 `[Content] Packages` 赋值及 `script/`，
+其余选项变化均使旧缓存失效。包列表的空白、注释、续行和追加方式在摘要中规范化。
 构建、插件和软件代码的文件职责见 [构建设计](../../docs/build-design.md)。
 
 ## 系统构建脚本

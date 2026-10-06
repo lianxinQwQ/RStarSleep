@@ -21,20 +21,26 @@ schema_version = 1\n\
 # 只有显式列出的系统才具有子系统角色。\n\
 subsystems = []\n";
 
-/// Editable build template with an explicitly empty package list.
-/// 可编辑的构建配置模板，显式提供空的软件包列表。
+/// Editable mkosi-style INI template with an explicitly empty package list.
+/// 可编辑的 mkosi 风格 INI 模板，显式提供空的软件包列表。
 pub(super) const BUILD_DEFAULT: &str = "\
 # Current editable build configuration.\n\
 # 当前可编辑的系统构建配置。\n\
-schema_version = 1\n\
+[Config]\n\
+SchemaVersion=1\n\
 \n\
 # Distribution plugin type; selected from archives in the workspace plugins/ directory.\n\
 # 发行版插件类型；从工作目录 plugins/ 内的压缩包自动选择。\n\
-system_type = \"arch\"\n\
+[Distribution]\n\
+Distribution=arch\n\
+# Architecture defaults to the host architecture.\n\
+# 架构默认使用宿主架构。\n\
+# Architecture=x86_64\n\
 \n\
-# Packages to install; other build options will be added with their features.\n\
-# 要安装的软件包。其余构建选项随对应功能添加。\n\
-packages = []\n";
+# Indent one package per line below Packages=, or separate packages with spaces.\n\
+# 在 Packages= 下缩进列出每行一个软件包，也可使用空格分隔。\n\
+[Content]\n\
+Packages=\n";
 
 /// Reserved runtime template for systems explicitly enabled as subsystems.
 /// 为显式启用为子系统的系统预留的运行配置模板。

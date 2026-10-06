@@ -107,11 +107,22 @@ pub(super) fn sync(path: &Path) -> Result<()> {
 /// - `value`: Serializable record.
 ///   可序列化记录。
 pub(super) fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let text = toml::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?;
+    write_text(path, &text)
+}
+
+/// Atomically replace UTF-8 text after flushing its complete contents.
+/// 完整内容同步后原子替换 UTF-8 文本。
+/// # Arguments
+/// - `path`: Record or configuration destination.
+///   记录或配置目标。
+/// - `text`: Complete serialized contents.
+///   完整序列化内容。
+pub(super) fn write_text(path: &Path, text: &str) -> Result<()> {
     checked(path)?;
     let parent = path
         .parent()
         .ok_or_else(|| Error::Invalid("记录缺少父目录".into()))?;
-    let text = toml::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| io(parent, e))?;
     file.write_all(text.as_bytes())
         .and_then(|_| file.as_file().sync_all())

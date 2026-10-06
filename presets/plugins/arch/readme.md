@@ -3,7 +3,7 @@
 该目录在 Cargo 构建时打包成 `arch.tar.gz` 并嵌入程序，`init` 将压缩包安装到
 工作目录的 `plugins/`。已有同名普通文件保持不变。
 
-系统构建配置通过 `system_type = "arch"` 自动选择此插件，目标架构为 `x86_64`。
+系统构建配置在 `[Distribution]` 中通过 `Distribution=arch` 自动选择此插件，目标架构为 `x86_64`。
 插件 API 为版本 3。每个操作是插件根内的同名 `.sh` 文件；例如安装调用为
 `bash <插件根>/install.sh vim git`，查询调用为 `bash <插件根>/query_packages.sh`。
 各文件只接收本操作参数，没有统一分派入口，元数据不再包含 `entry`。
@@ -41,7 +41,7 @@ bootstrap 需要宿主的 Bash、curl、tar、zstd、gpgv 和可信 Arch 签名�
 基础系统在 `templates/<完整插件SHA-256>/<架构>/` 内构建，完成后保存只读
 `completed/root` 和 `completed/template.toml`，所有系统可从中创建 CoW 副本。
 模板构建的 `RSTAR_SYSTEM_ID` 固定为 `template`，`RSTAR_CONFIG_DIR` 指向固定
-最小配置，`packages = []`；系统特定选项只交给副本上的 `system_init` 及后续操作。
+最小配置，`[Content] Packages=` 为空；系统特定选项只交给副本上的 `system_init` 及后续操作。
 完整归档的任何变化都产生新模板，不单独散列 `.sh` 文件。
 
 `template_clean` 是模板发布前最后一次容器操作：清空 machine-id，移除 D-Bus

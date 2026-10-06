@@ -214,6 +214,9 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
 #[path = "build_workflow/failures.rs"]
 mod failures;
 
+#[path = "build_workflow/config.rs"]
+mod config;
+
 #[path = "build_workflow/templates.rs"]
 mod templates;
 

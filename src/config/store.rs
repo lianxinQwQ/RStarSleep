@@ -9,6 +9,7 @@ use std::{
 
 use super::{
     Error, PackageConfig, Result, SystemTypeConfig,
+    build::{BUILD_CONFIG_PATH, LEGACY_BUILD_CONFIG_PATH, read_packages_at, read_system_type_at},
     init::{BUILD_DEFAULT, GLOBAL_DEFAULT, SUBSYSTEM_DEFAULT},
     io_error, validate_identifier,
 };
@@ -128,12 +129,7 @@ impl ConfigStore {
     /// Returns an error for missing, malformed, or invalid type settings.
     /// 类型配置缺失、格式错误或值无效时返回错误。
     pub fn read_system_type(&self, id: &str) -> Result<SystemTypeConfig> {
-        let path = self.system_layout(id)?.config.join("build/config.toml");
-        let text = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
-        let config: SystemTypeConfig =
-            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
-        config.validate()?;
-        Ok(config)
+        read_system_type_at(&self.system_layout(id)?.config)
     }
 
     /// Resolve a system's paths without requiring the directories to exist.
@@ -218,7 +214,16 @@ impl ConfigStore {
         ] {
             create_dir_all(&path)?;
         }
-        write_default(&layout.config.join("build/config.toml"), BUILD_DEFAULT)?;
+        // Preserve legacy inputs rather than shadowing their packages with an empty INI default.
+        // 保留旧输入，避免新的空 INI 模板遮蔽其软件包设置。
+        if !layout
+            .config
+            .join(LEGACY_BUILD_CONFIG_PATH)
+            .try_exists()
+            .map_err(|e| io_error(layout.config.join(LEGACY_BUILD_CONFIG_PATH), e))?
+        {
+            write_default(&layout.config.join(BUILD_CONFIG_PATH), BUILD_DEFAULT)?;
+        }
         write_default(
             &layout.config.join("subsystem/config.toml"),
             SUBSYSTEM_DEFAULT,
@@ -241,10 +246,10 @@ impl ConfigStore {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid ID, unreadable file, malformed TOML, missing or mistyped
-    /// `packages`, or a blank package name. Missing configuration never becomes an empty list.
-    /// 标识无效、文件无法读取、TOML 格式错误、`packages` 缺失或类型错误、包名为空白时
-    /// 返回错误；不会将缺失的配置静默转换为空列表。
+    /// Returns an error for an invalid ID, unreadable file, malformed INI, missing Packages,
+    /// or invalid package tokens. Legacy TOML is accepted when INI is absent.
+    /// 标识无效、文件无法读取、INI 格式错误、Packages 缺失或包名无效时
+    /// 返回错误；INI 缺失时接受旧 TOML，不会将缺失配置静默转换为空列表。
     pub fn read_packages(&self, id: &str) -> Result<PackageConfig> {
         read_packages_at(&self.system_layout(id)?.config)
     }
@@ -302,22 +307,6 @@ impl ConfigStore {
         validate_identifier(stage)?;
         Ok(self.system_layout(id)?.cache.join(version).join(stage))
     }
-}
-
-/// Share TOML decoding and package validation between current and recorded configurations.
-/// 在当前配置与版本留档之间共用 TOML 解析和软件包校验逻辑。
-///
-/// # Arguments
-///
-/// - `config_dir`: Current or recorded configuration directory containing build/config.toml.
-///   包含 build/config.toml 的当前配置目录或版本留档配置目录。
-fn read_packages_at(config_dir: &Path) -> Result<PackageConfig> {
-    let path = config_dir.join("build/config.toml");
-    let text = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
-    let config: PackageConfig =
-        toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
-    config.validate()?;
-    Ok(config)
 }
 
 /// Create missing parent directories and attach the requested path to I/O failures.

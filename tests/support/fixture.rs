@@ -71,8 +71,8 @@ impl Fixture {
             .system_layout(id)
             .unwrap()
             .config
-            .join("build/config.toml");
-        fs::write(path, format!("schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages={packages:?}\n")).unwrap();
+            .join("build/config.conf");
+        fs::write(path, format!("[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nArchitecture=x86_64\n[Content]\nPackages=\n    {}\n", packages.join("\n    "))).unwrap();
     }
 
     /// Locate one completed stage's root or metadata.

@@ -2,7 +2,8 @@
 
 
 
-RStarSleep的配置文件借鉴自mkosi，实现方式不同，同时仅保留生成目录所需的选项
+RStarSleep 的系统构建配置采用 mkosi 风格的 INI 分节格式，仅保留生成目录所需的选项。
+软件包可以在 `Packages=` 下缩进列出，每行一个，便于维护大量软件包。
 
 工作目录、初始化方式和软件包配置读取接口见 [src/config/layout.md](src/config/layout.md)。
 
@@ -27,7 +28,7 @@ cargo run -- init /mnt/btrfs
 ## 发行版插件
 
 用户将插件压缩包或目录放入工作目录的 `plugins/`。系统构建配置通过
-`system_type = "arch"` 选择类型；控制器按插件元数据自动匹配，不需要注册路径。
+在 `[Distribution]` 中用 `Distribution=arch` 选择类型；控制器按插件元数据自动匹配，不需要注册路径。
 
 项目根的 [presets/plugins/arch](presets/plugins/arch) 提供 Arch Linux 预设。
 Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包。Arch 插件 API 为版本 3，
@@ -48,7 +49,28 @@ API 1 插件需拆分操作文件并重新打包。API 3 新增 `template_clean.
 
 ## 构建系统
 
-先初始化系统并编辑 `systems/<系统>/config/build/config.toml` 中的 `packages`：
+先初始化系统并编辑 `systems/<系统>/config/build/config.conf` 中的 `[Content] Packages`：
+
+```ini
+[Config]
+SchemaVersion=1
+
+[Distribution]
+Distribution=arch
+Architecture=x86_64
+
+[Content]
+Packages=
+    linux
+    systemd
+    vim
+```
+
+也可以用空格或逗号分隔包名。重复 `Packages=` 会追加，空值赋值会清空之前的列表；
+缩进续行和 `#` 注释采用 mkosi 的写法。文件必须显式提供 `Packages=`，空列表有效。
+新系统生成 INI 模板；已有 `build/config.toml` 和旧版本留档仍可读取。
+同一配置目录中同时存在两种格式时，优先读取 `config.conf`；迁移时将旧文件中的字段
+改写为上述分节格式并保存为 `config.conf`。全局配置、运行配置及插件元数据继续使用 TOML。
 
 ```sh
 RStarSleep init-system /rstarsleep desktop
