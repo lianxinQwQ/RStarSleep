@@ -1,5 +1,5 @@
-//! Check declared tools before invoking Bash plugins in their actual execution environment.
-//! 在实际执行环境检查声明的工具，再调用 Bash 插件。
+//! Check declared tools before invoking plugin entries in their actual execution environment.
+//! 在实际执行环境检查声明的工具，再调用插件入口。
 
 use std::{
     ffi::{OsStr, OsString},
@@ -7,7 +7,7 @@ use std::{
     process::{Command, Output},
 };
 
-use super::container::{SYSTEM_PLUGIN, nspawn};
+use super::container::{SYSTEM_PLUGIN, nspawn_from};
 use super::tools::{
     SYSTEM_PROBE, check_host, executable, execution_error, missing_tools, required_tools,
 };
@@ -149,6 +149,25 @@ impl LoadedPlugin {
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
     ) -> Result<Output> {
         let (host_path, context) = environment;
+        let standalone =
+            std::collections::BTreeMap::from([("Architecture".into(), architecture.into())]);
+        let options = context
+            .map(|value| &value.distribution_options)
+            .unwrap_or(&standalone);
+        let configuration = self.configuration_environment(options, architecture)?;
+        let mappings = self.persistent_directories()?;
+        let mounts = context
+            .map(|c| c.persistent_mounts.as_slice())
+            .unwrap_or(&[]);
+        if mappings.len() != mounts.len()
+            || mappings.iter().any(|m| {
+                !mounts
+                    .iter()
+                    .any(|b| b.target == m.target && b.source.is_absolute() && b.source.is_dir())
+            })
+        {
+            return Err(Error::Invalid("插件持久目录未由控制器完整分配".into()));
+        }
         identifier(operation)?;
         identifier(architecture)?;
         if !root.is_absolute() || !root.is_dir() {
@@ -166,19 +185,41 @@ impl LoadedPlugin {
             )));
         }
         let operation_path = self.operation_path(operation)?;
+        let shell_script = operation_path.extension() == Some(OsStr::new("sh"));
+        let mandatory: &[&str] = if shell_script { &["bash"] } else { &[] };
+        let workspace = if !mounts.is_empty() {
+            Some(if operation == "bootstrap" {
+                super::persistent::host_workspace(self.root(), mounts)?
+            } else {
+                super::persistent::container_workspace(self.root(), mounts)?
+            })
+        } else {
+            None
+        };
+        let visible_root = workspace.as_ref().map(|w| w.path()).unwrap_or(self.root());
         let mut command = if operation == "bootstrap" {
-            let tools = required_tools(&self.metadata.tools.host, &["bash"]);
+            let tools = required_tools(&self.metadata.tools.host, mandatory);
             check_host(self, operation, &tools, host_path)?;
-            let bash = executable("bash", self.root(), host_path)
-                .ok_or_else(|| missing_tools(self, operation, "宿主", vec!["bash".into()]))?;
-            let mut command = Command::new(bash);
+            let entry = visible_root.join(
+                operation_path
+                    .strip_prefix(self.root())
+                    .expect("operation in resources"),
+            );
+            let mut command = if shell_script {
+                let bash = executable("bash", self.root(), host_path)
+                    .ok_or_else(|| missing_tools(self, operation, "宿主", vec!["bash".into()]))?;
+                let mut command = Command::new(bash);
+                command.arg(&entry);
+                command
+            } else {
+                Command::new(&entry)
+            };
             command
-                .current_dir(self.root())
+                .current_dir(visible_root)
                 .env("PATH", host_path)
-                .env("RSTAR_PLUGIN_ROOT", self.root())
+                .env("RSTAR_PLUGIN_ROOT", visible_root)
                 .env("RSTAR_PLUGIN_TMP", self.temporary_path())
-                .env("RSTAR_ROOT", root)
-                .arg(operation_path);
+                .env("RSTAR_ROOT", root);
             command
         } else {
             check_host(self, operation, &["systemd-nspawn".into()], host_path)?;
@@ -186,8 +227,20 @@ impl LoadedPlugin {
                 executable("systemd-nspawn", self.root(), host_path).ok_or_else(|| {
                     missing_tools(self, operation, "宿主", vec!["systemd-nspawn".into()])
                 })?;
-            let required = required_tools(&self.metadata.tools.system, &["bash"]);
-            let mut probe = nspawn(self, &launcher, root, host_path, architecture, context)?;
+            let mut declared = self.metadata.tools.system.clone();
+            if operation == "predownload" {
+                declared.extend(self.metadata.tools.predownload.iter().cloned());
+            }
+            let required = required_tools(&declared, mandatory);
+            let mut probe = nspawn_from(
+                self,
+                &launcher,
+                root,
+                host_path,
+                architecture,
+                context,
+                visible_root,
+            )?;
             probe
                 .arg("--")
                 .arg("/bin/sh")
@@ -214,11 +267,26 @@ impl LoadedPlugin {
             if !missing.is_empty() {
                 return Err(missing_tools(self, operation, "目标系统", missing));
             }
-            let mut command = nspawn(self, &launcher, root, host_path, architecture, context)?;
-            command
-                .arg("--")
-                .arg("bash")
-                .arg(Path::new(SYSTEM_PLUGIN).join(format!("{operation}.sh")));
+            let mut command = nspawn_from(
+                self,
+                &launcher,
+                root,
+                host_path,
+                architecture,
+                context,
+                visible_root,
+            )?;
+            command.arg("--");
+            if shell_script {
+                command.arg("bash");
+            }
+            command.arg(
+                Path::new(SYSTEM_PLUGIN).join(
+                    operation_path
+                        .strip_prefix(self.root())
+                        .expect("operation in resources"),
+                ),
+            );
             command
         };
         if let Some(context) = context {
@@ -226,7 +294,19 @@ impl LoadedPlugin {
                 .env("RSTAR_CONFIG_DIR", &context.config)
                 .env("RSTAR_SYSTEM_ID", &context.system_id);
         }
-        command.env("RSTAR_ARCH", architecture);
+        // Optional settings must not accidentally inherit values from the invoking shell.
+        // 可选设置不能意外继承调用 shell 中的值。
+        for name in self
+            .metadata
+            .config
+            .required
+            .iter()
+            .chain(&self.metadata.config.optional)
+        {
+            command.env_remove(super::configuration::environment_name(name)?);
+        }
+        command.env_remove("RSTAR_ARCH");
+        command.envs(configuration);
         command.args(arguments);
         let output = command
             .output()

@@ -64,13 +64,13 @@ impl Document {
             if value.is_empty() {
                 continue;
             }
-            if content.starts_with(char::is_whitespace) {
-                if let Some(index) = previous {
-                    let entry: &mut Assignment = &mut document.assignments[index];
-                    entry.value.push('\n');
-                    entry.value.push_str(value);
-                    continue;
-                }
+            if content.starts_with(char::is_whitespace)
+                && let Some(index) = previous
+            {
+                let entry: &mut Assignment = &mut document.assignments[index];
+                entry.value.push('\n');
+                entry.value.push_str(value);
+                continue;
             }
             previous = None;
             if value.starts_with('[') {
@@ -188,6 +188,19 @@ impl Document {
             system_type: distribution.value.clone(),
             architecture: architecture.map(|a| a.value.clone()),
         })
+    }
+
+    /// Read the last value of every plugin setting, excluding the distribution selector.
+    /// 读取每个插件设置的最后一次赋值，排除发行版选择字段。
+    /// # Arguments
+    /// - `self`: Parsed configuration retaining case-sensitive setting names.
+    ///   保留大小写敏感设置名的已解析配置。
+    pub(super) fn distribution_options(&self) -> BTreeMap<String, String> {
+        self.assignments
+            .iter()
+            .filter(|entry| entry.section == "Distribution" && entry.key != "Distribution")
+            .map(|entry| (entry.key.clone(), entry.value.clone()))
+            .collect()
     }
 
     /// Append package assignments, resetting on empty values, and split on commas or whitespace.

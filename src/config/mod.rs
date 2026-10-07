@@ -13,7 +13,7 @@ mod presets;
 mod store;
 
 pub(crate) use build::{BUILD_CONFIG_PATH, LEGACY_BUILD_CONFIG_PATH, normalized_build_config};
-pub use build::{BuildConfig, read_build_config_at};
+pub use build::{BuildConfig, read_build_config_at, read_distribution_options_at};
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use store::{ConfigStore, SystemLayout};

@@ -13,14 +13,12 @@ Btrfs 顶层/
     │   └── rstarsleep.toml              # 全局配置
     ├── plugins/                        # 用户存放的插件压缩包或目录
     │   └── arch.tar.gz                 # init 安装的内嵌 Arch 预设
-    ├── templates/                      # 跨系统共享的基础模板
-    │   └── <完整插件SHA-256>/
-    │       └── <架构>/
-    │           ├── build.lock          # 模板构建与恢复独占锁
-    │           └── completed/          # 模板根和标记原子发布
-    │               ├── root/           # 无系统身份的只读基础子卷
-    │               ├── template.toml   # 完整插件哈希、架构和基础包清单
-    │               └── config/         # 模板固定最小构建输入
+    ├── predownload/                    # 独立下载环境缓存
+    │   └── <完整插件SHA-256>/<架构>/<配置SHA-256>/
+    │       └── completed/              # root 子卷及 environment.toml 清单
+    ├── persistent/                     # 全局共享，不按插件划分
+    │   └── <直属名称>/                 # 首次申请创建的独立子卷
+    ├── persistent-state/               # 全局锁、事务副本及恢复日志
     ├── work/                           # 默认构建临时目录，可由 work_dir 覆盖
     └── systems/
         └── <系统标识>/                  # 系统身份不随角色变更
@@ -31,7 +29,7 @@ Btrfs 顶层/
             │   └── subsystem/
             │       └── config.toml     # 子系统运行配置，暂留模板
             ├── build.lock              # 每系统构建独占锁
-            ├── identity.toml           # 从模板创建时保存的稳定 machine-id
+            ├── identity.toml           # 独立安装时保存的稳定 machine-id
             ├── versions/
             │   └── <版本标识>/
             │       ├── state.toml      # building / failed / complete 状态
@@ -48,7 +46,7 @@ Btrfs 顶层/
             └── persistent/             # 此系统跨版本共享的持久化目录和文件
 ```
 
-初始化管理器时创建 `@rstarsleep` 子卷、`config/`、`systems/`、`plugins/`、`templates/` 和全局配置，
+初始化管理器时创建 `@rstarsleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
 并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。已有同名普通文件不覆盖；
 缺失的预设包会在再次初始化时补充。
 初始化一个被管理系统时创建其当前配置（包括空 `script/`）、版本、缓存和持久化目录及默认配置。
@@ -65,9 +63,9 @@ Btrfs 顶层/
 角色变更不移动目录。移出子系统名单时，后续运行模块负责撤销已建立的集成。
 持久化数据默认跨同一系统的版本共享，删除版本不应删除它；其快照与回滚策略
 由持久化功能实现。缓存独立于已完成版本，可以按版本和构建流程清理。
-共享基础模板按完整插件资源哈希与架构索引，不按系统名称或系统类型索引。
-模板仅在基础步骤没有兼容缓存时使用；不改变已有系统的缓存选择和维护流程。
-插件哈希变化后，新系统创建使用新模板；已有兼容缓存仍按原维护流程处理。
+每个系统独立安装和维护基础根，仅复用自己的最新过往阶段缓存。
+下载的初始系统安装文件由插件保存到声明的全局持久目录，供后续独立安装使用；
+管理器不创建跨系统共享的基础根。基础安装或恢复后均执行一次基础维护。
 
 当前配置用于下一次构建。后续构建模块在开始构建时保存配置留档，并使用留档
 完成构建，避免期间编辑当前配置影响版本归属。既有版本留档不应覆盖。
@@ -125,7 +123,15 @@ Packages=
 缩进续行延续上一设置的值，空行和 `#` 注释不打断续行；支持行内 `#` 注释。
 软件包值按逗号或空白分隔，重复 `[Content] Packages=` 按顺序追加，空值清空先前列表。
 无需 TOML 的引号、方括号或逗号列表语法；要求显式声明 `Packages=`，允许空列表。
-未知设置原样留档并参与摘要，但读取接口只解释已支持的字段。
+其他分节中的未知设置原样留档并参与摘要。
+`[Distribution]` 中除 `Distribution` 外的全部键均属于插件配置，匹配插件后根据
+`[config] required` 和 `optional` 校验：必选项缺失或为空、显式键未声明时退出。
+键名保留原始写法，环境变量使用 `RSTAR_` 加原键名的大写，例如
+`Architecture` → `RSTAR_ARCHITECTURE`，`BootstrapUrl` → `RSTAR_BOOTSTRAPURL`。
+标量重复赋值取最后一个值，多行值保留换行；变量值不作为 shell 源码执行。
+原键名必须以 ASCII 字母开头，后续只能包含字母、数字或下划线，不能发生大写冲突
+或占用 `RSTAR_ROOT` 等控制器变量。Architecture 若声明为必选则必须显式提供；
+若声明为可选并省略，则传入用于插件匹配的默认架构。
 
 已有系统或历史版本缺少 `build/config.conf` 时，继续读取旧 `build/config.toml`。
 两种文件都存在时优先读取 INI，INI 无效不会回退到 TOML；初始化不以空模板覆盖旧 TOML 的设置。
@@ -205,8 +211,8 @@ Cargo 的 `build.rs` 按稳定顺序打包为 gzip 压缩的 tar，并通过 `in
 `plugin.toml` 时直接使用；否则只有一个顶层目录，且其中直接有该文件时自动
 提升为插件根。目录计数包含隐藏项，多层包装不自动剥离。条目及链接目标不能
 包含绝对路径或 `..`。支持插件 API 2 和 3；无基础缓存的系统创建需要 API 3 的
-`template_clean.sh` 和 `system_init.sh`，API 2 仍可维护已有缓存。根内必须提供所有必需操作的同名
-带 `.sh` 后缀的普通文件，元数据不包含 `entry`。操作文件不允许使用目录或符号链接。
+`system_init.sh`，API 2 仍可维护已有缓存。根内必须提供所有必需操作的同名
+带 `.sh` 后缀的普通文件或无后缀的可执行文件；两者同时存在时优先 `.sh`，元数据不包含 `entry`。操作文件不允许使用目录或符号链接。
 
 加载结果保留整个临时环境，释放时自动清理；查找和解包不自动执行插件。
 元数据必须包含 `[tools]` 的 `host` 和 `system` 工具列表；无额外工具时显式使用
@@ -257,9 +263,12 @@ cargo run -- packages /mnt/btrfs/@rstarsleep desktop
 
 `ConfigStore::read_build_config()` 读取 `[Config] SchemaVersion`、`[Distribution] Distribution`、
 可选 `Architecture` 和必需 `[Content] Packages`，返回现有 `BuildConfig` 数据结构。
+`read_distribution_options_at()` 独立读取传给插件的原始键和值；旧 TOML 可使用
+`distribution_options` 字符串表配置额外字段，顶层 `architecture` 映射为 `Architecture`。
 构建先冻结全部普通配置文件，之后只读
 冻结版本；基础和软件缓存兼容性摘要排除全部 `[Content] Packages` 赋值及 `script/`，
-其余选项变化均使旧缓存失效。包列表的空白、注释、续行和追加方式在摘要中规范化。
+其余选项变化在构建前实际删除本系统历史基础及后续缓存。
+每次构建还固定删除历史 script 及其后续阶段缓存；这些删除不影响已发布版本根及配置留档。包列表的空白、注释、续行和追加方式在摘要中规范化。
 构建、插件和软件代码的文件职责见 [构建设计](../../docs/build-design.md)。
 
 ## 系统构建脚本

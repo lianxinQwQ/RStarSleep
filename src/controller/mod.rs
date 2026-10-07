@@ -12,13 +12,15 @@ mod frozen;
 mod fs;
 mod identity;
 mod model;
+mod persistent;
+mod predownload;
 mod records;
 mod resources;
+mod scoped_backend;
 mod scripts;
 mod stages;
-mod templates;
 mod workflow;
 
 pub use backend::SystemBackend;
-pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, Result};
+pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount, Result};
 pub use workflow::{build, build_with_backend};

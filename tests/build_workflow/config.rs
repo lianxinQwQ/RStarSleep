@@ -45,7 +45,7 @@ fn multiline_ini_freezes_and_preserves_cache_compatibility() {
         .unwrap()
         .remove(0);
     assert_eq!(backend.count("system_init"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("update"), 2);
     assert_eq!(
         record(&fixture.cache(&second.version, "base-system.toml"))["source_version"].as_str(),
         Some(first.version.as_str())
@@ -112,7 +112,7 @@ fn legacy_toml_builds_keep_readable_archives_and_reusable_caches() {
         .unwrap()
         .remove(0);
     assert_eq!(backend.count("system_init"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("update"), 2);
     assert_eq!(
         record(&fixture.cache(&second.version, "base-system.toml"))["source_version"].as_str(),
         Some(first.version.as_str())

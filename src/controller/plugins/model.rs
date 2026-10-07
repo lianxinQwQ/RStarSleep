@@ -80,10 +80,26 @@ pub struct ToolRequirements {
     /// Executables needed by target-system tasks inside nspawn.
     /// nspawn 内目标系统任务所需的可执行工具。
     pub system: Vec<String>,
+    /// Additional tools checked only after the predownload environment is initialized.
+    #[serde(default)]
+    pub predownload: Vec<String>,
 }
 
-/// Metadata describing one packaged Bash plugin.
-/// 描述一个打包的 Bash 插件的元数据。
+/// Explicit plugin configuration contract using original [Distribution] key names.
+/// 使用原始 [Distribution] 键名声明的插件配置契约。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigRequirements {
+    /// Settings that must be explicitly configured with nonempty values.
+    /// 必须显式配置且值非空的设置。
+    pub required: Vec<String>,
+    /// Accepted settings whose omission is handled by the plugin or architecture default.
+    /// 接受的可选设置；缺省由插件或架构默认值处理。
+    pub optional: Vec<String>,
+}
+
+/// Metadata describing one packaged distribution plugin.
+/// 描述一个打包的发行版插件的元数据。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
@@ -112,10 +128,19 @@ pub struct Metadata {
     /// Explicit required-tool declaration, including empty lists when appropriate.
     /// 显式的工具需求声明；适用时也需显式提供空列表。
     pub tools: ToolRequirements,
+    /// Required and optional settings; both lists must be present, even when empty.
+    /// 必选和可选设置；两个列表都必须提供，即使为空。
+    pub config: ConfigRequirements,
     /// Protected explicit base targets.
     /// 受保护的显式基础目标。
     #[serde(default)]
     pub protected_packages: Vec<String>,
+    /// Optional single predownload operation and its independent environment scripts.
+    #[serde(default)]
+    pub predownload: bool,
+    /// Globally named direct subvolumes, optionally followed by :relative/mountpoint.
+    #[serde(default)]
+    pub persistent_dirs: Vec<String>,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.
@@ -139,6 +164,9 @@ pub struct LoadedPlugin {
 }
 
 impl LoadedPlugin {
+    pub fn persistent_directories(&self) -> Result<Vec<super::PersistentDirectory>> {
+        super::persistent::parse(&self.metadata.persistent_dirs, self.root())
+    }
     /// Return the normalized root containing all packaged resources.
     /// 返回包含全部打包资源的归一化插件根。
     ///
@@ -150,20 +178,20 @@ impl LoadedPlugin {
         &self.root
     }
 
-    /// Validate and locate the operation's .sh file without executing it.
-    /// 校验并定位操作的 .sh 文件，不执行脚本。
+    /// Validate and locate the operation's .sh file or unsuffixed executable.
+    /// 校验并定位操作的 .sh 文件或无后缀可执行文件。
     ///
     /// # Arguments
     ///
     /// - `self`: Plugin providing operation files directly at its root.
     ///   在根内直接提供操作文件的插件。
-    /// - `operation`: Operation identifier; .sh is appended to form its filename.
-    ///   操作标识；附加 .sh 后缀形成文件名。
+    /// - `operation`: Operation identifier; .sh entries take precedence.
+    ///   操作标识；优先选择 .sh 入口。
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid identifiers or missing/non-regular operation files.
-    /// 标识无效或操作文件缺失、不是普通文件时返回错误。
+    /// Returns an error for invalid identifiers, missing/non-regular files, or non-executable unsuffixed entries.
+    /// 标识无效、文件缺失或不是普通文件、无后缀入口不可执行时返回错误。
     pub fn operation_path(&self, operation: &str) -> Result<PathBuf> {
         super::validation::operation_path(self.root(), operation)
     }

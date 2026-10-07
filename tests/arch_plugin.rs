@@ -282,66 +282,6 @@ fn runs_split_maintenance_operations_with_mock_system_tools() {
     }
 }
 
-/// Verify templates retain public signing keys but discard private identity and transient state.
-/// 验证模板保留公开签名密钥，但移除私有身份和临时状态。
-/// # Arguments
-///
-/// No parameters.
-/// 无参数。
-#[test]
-fn cleans_template_machine_state_and_local_signing_keys() {
-    let fixture = Fixture::new();
-    let root = fixture.temporary.path().join("root");
-    for name in [
-        "etc/pacman.d/gnupg/private-keys-v1.d",
-        "usr/share/pacman/keyrings",
-    ] {
-        fs::create_dir_all(root.join(name)).unwrap();
-    }
-    for name in [
-        "etc/machine-id",
-        "var/lib/dbus/machine-id",
-        "var/lib/systemd/random-seed",
-        "etc/hostname",
-        "etc/machine-info",
-        "etc/ssh/ssh_host_ed25519_key",
-        "etc/ssh/ssh_host_ed25519_key.pub",
-        "etc/pacman.d/gnupg/private-keys-v1.d/key",
-        "var/log/.hidden",
-        "tmp/stale",
-        "var/tmp/stale",
-        "usr/share/pacman/keyrings/archlinux.gpg",
-    ] {
-        fs::write(root.join(name), "source state").unwrap();
-    }
-    let output = fixture.run("template_clean", &[], "");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(root.join("etc/machine-id")).unwrap(), "");
-    for name in [
-        "var/lib/dbus/machine-id",
-        "var/lib/systemd/random-seed",
-        "etc/hostname",
-        "etc/machine-info",
-        "etc/ssh/ssh_host_ed25519_key",
-        "etc/ssh/ssh_host_ed25519_key.pub",
-        "etc/pacman.d/gnupg",
-        "var/log/.hidden",
-        "tmp/stale",
-        "var/tmp/stale",
-    ] {
-        assert!(!root.join(name).exists(), "{name}");
-    }
-    assert!(
-        root.join("usr/share/pacman/keyrings/archlinux.gpg")
-            .exists()
-    );
-    assert!(fixture.trace().is_empty());
-}
-
 /// Verify a system clone receives the requested identity and a fresh local signing keyring.
 /// 验证系统副本获得指定身份及新的本地签名密钥环。
 /// # Arguments
@@ -394,10 +334,6 @@ fn identity_operations_reject_invalid_inputs_and_directory_links() {
             Some(64)
         );
     }
-    assert_eq!(
-        fixture.run("template_clean", &["extra"], "").status.code(),
-        Some(64)
-    );
     let root = fixture.temporary.path().join("root");
     let outside = fixture.temporary.path().join("outside");
     fs::create_dir(&outside).unwrap();
@@ -405,9 +341,58 @@ fn identity_operations_reject_invalid_inputs_and_directory_links() {
     fs::remove_dir(root.join("var/log")).unwrap();
     std::os::unix::fs::symlink(&outside, root.join("var/log")).unwrap();
     assert_eq!(
-        fixture.run("template_clean", &[], "").status.code(),
+        fixture
+            .run("system_init", &["1234567890abcdef1234567890abcdef"], "")
+            .status
+            .code(),
         Some(64)
     );
     assert!(outside.join("keep").is_file());
     assert!(fixture.trace().is_empty());
+}
+
+#[test]
+fn arch_preparation_protocol_handles_dependencies_providers_and_corruption() {
+    let output = Command::new("python3")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arch_predownload.py"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn shared_cache_options_precede_the_package_argument_delimiter() {
+    let fixture = Fixture::new();
+    let resources = fixture.temporary.path().join("plugin");
+    fs::create_dir_all(resources.join("lib")).unwrap();
+    fs::create_dir_all(resources.join("state/packages")).unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+    fs::copy(
+        source.join("lib/common.sh"),
+        resources.join("lib/common.sh"),
+    )
+    .unwrap();
+    let mut paths = vec![fixture.temporary.path().to_path_buf()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let output = Command::new("bash")
+        .arg(source.join("install.sh"))
+        .args(["vim", "git"])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("PACMAN_TRACE", &fixture.trace)
+        .env("RSTAR_PLUGIN_ROOT", &resources)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = fixture.trace();
+    assert!(trace.starts_with("--cachedir "));
+    assert!(trace.ends_with("-- vim git\n"));
 }

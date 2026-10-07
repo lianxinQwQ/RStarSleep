@@ -40,9 +40,16 @@ pub(super) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             architectures: vec!["x86_64".into()],
             cache_format: "test-v1".into(),
             protected_packages: vec![],
+            predownload: false,
+            persistent_dirs: vec![],
+            config: super::super::ConfigRequirements {
+                required: vec![],
+                optional: vec!["Architecture".into()],
+            },
             tools: ToolRequirements {
                 host: host.iter().map(|tool| (*tool).into()).collect(),
                 system: system.iter().map(|tool| (*tool).into()).collect(),
+                predownload: vec![],
             },
         },
         archive: "test.tar.gz".into(),
@@ -224,7 +231,7 @@ fn invokes_target_only_after_successful_probe() {
     assert!(plugin.root().join("executed-inside").is_file());
     let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
     assert!(trace.contains("--bind-ro="));
-    assert!(trace.contains("--setenv=RSTAR_ARCH=x86_64"));
+    assert!(trace.contains("--setenv=RSTAR_ARCHITECTURE=x86_64"));
     assert!(trace.contains("bash /run/rstarsleep/plugin/install.sh vim"));
 }
 
@@ -289,6 +296,99 @@ fn passes_only_operation_arguments_to_guest_file() {
             b"--\0bash\0/run/rstarsleep/plugin/mark_reason.sh\0dependency\0two words\0\0"
         )
     );
+}
+
+/// Execute a shebang entry on the host without Bash while retaining arguments and context.
+/// 宿主无 Bash 时执行 shebang 入口，保留参数和上下文。
+#[test]
+fn invokes_unsuffixed_host_entry_without_bash() {
+    let mut plugin = fixture(&["missing-host-tool"], &[]);
+    fs::remove_file(plugin.root().join("bootstrap.sh")).unwrap();
+    let entry = plugin.root().join("bootstrap");
+    fs::write(
+        &entry,
+        r#"#!/bin/sh
+test "$PWD" = "$RSTAR_PLUGIN_ROOT" || exit 8
+test -d "$RSTAR_PLUGIN_TMP" || exit 9
+test "$RSTAR_ARCHITECTURE" = x86_64 || exit 10
+printf '%s\0' "$@" > "$RSTAR_ROOT/arguments"
+printf 'done\n'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    fs::remove_file(path.join("bash")).unwrap();
+    assert!(matches!(
+        plugin.invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::MissingTools { tools, .. }) if tools == ["missing-host-tool"]
+    ));
+    assert!(!root.join("arguments").exists());
+    plugin.metadata.tools.host.clear();
+    let arguments = ["two words".into(), "$(touch injected)".into(), "".into()];
+    let output = plugin
+        .invoke_with_path("bootstrap", &arguments, &root, "x86_64", path.as_os_str())
+        .unwrap();
+    assert_eq!(output.stdout, b"done\n");
+    assert_eq!(
+        fs::read(root.join("arguments")).unwrap(),
+        b"two words\0$(touch injected)\0\0"
+    );
+    assert!(!plugin.root().join("injected").exists());
+    fs::write(&entry, "#!/bin/sh\nprintf 'failed' >&2\nexit 7\n").unwrap();
+    assert!(matches!(
+        plugin.invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::Execution { stderr, .. }) if stderr == "failed"
+    ));
+}
+
+/// Invoke executable entries directly in nspawn, including nested predownload lifecycle tasks.
+/// 在 nspawn 中直接调用可执行入口，包括嵌套的预下载生命周期任务。
+#[test]
+fn invokes_unsuffixed_guest_entries_after_declared_tool_checks() {
+    let plugin = fixture(&[], &["pacman"]);
+    fs::create_dir(plugin.root().join("predownload")).unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    fs::remove_file(plugin.root().join("install.sh")).unwrap();
+    for (operation, relative) in [
+        ("install", "install"),
+        ("predownload_install", "predownload/install"),
+        ("predownload_update", "predownload/update"),
+    ] {
+        let entry = plugin.root().join(relative);
+        fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        launcher(&plugin, "pacman", false);
+        assert!(matches!(
+            plugin.invoke_with_path(operation, &[], &root, "x86_64", path.as_os_str()),
+            Err(Error::MissingTools { tools, .. }) if tools == ["pacman"]
+        ));
+        assert!(!plugin.root().join("executed-inside").exists());
+        fs::remove_file(plugin.root().join("launcher-argv")).unwrap();
+        launcher(&plugin, "", false);
+        plugin
+            .invoke_with_path(
+                operation,
+                &["two words".into(), "".into()],
+                &root,
+                "x86_64",
+                path.as_os_str(),
+            )
+            .unwrap();
+        let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+        assert!(
+            trace
+                .windows(b"rstarsleep-tool-check\0pacman\0".len())
+                .any(|part| part == b"rstarsleep-tool-check\0pacman\0")
+        );
+        assert!(!trace.windows(b"bash\0".len()).any(|part| part == b"bash\0"));
+        let expected = format!("--\0/run/rstarsleep/plugin/{relative}\0two words\0\0");
+        assert!(trace.ends_with(expected.as_bytes()));
+        fs::remove_file(plugin.root().join("launcher-argv")).unwrap();
+        fs::remove_file(plugin.root().join("executed-inside")).unwrap();
+    }
 }
 
 /// Reject missing operation files and traversal before any dependency probe or plugin runs.

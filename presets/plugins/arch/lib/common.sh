@@ -72,3 +72,38 @@ identity_root() {
         }
     done
 }
+
+# One configuration path for all operations; only locally produced packages use
+# the explicitly trusted rstarsleep repository. Official signature policy stays intact.
+pacman() {
+    local cache=${RSTAR_PLUGIN_ROOT:-}/state/packages
+    local repository=${RSTAR_PLUGIN_ROOT:-}/state/repository
+    local configuration status=0
+    local -a args=("$@")
+    if [[ ! -d $cache ]]; then
+        command pacman "${args[@]}"
+        return
+    fi
+    # Prepared official metadata is consumed by target builds. Preparation-environment
+    # maintenance retains normal refresh semantics.
+    if [[ ${RSTAR_SYSTEM_ID:-} != predownload && -f $repository/.prepared.json ]]; then
+        mkdir -p /var/lib/pacman/sync
+        local database
+        for database in "$repository"/official-sync/*.db "$repository"/official-sync/*.db.sig; do
+            [[ -f $database ]] || continue
+            cp --remove-destination -- "$database" "/var/lib/pacman/sync/${database##*/}"
+        done
+        if [[ ${args[0]:-} == -Syu ]]; then args[0]=-Su; fi
+    fi
+    if [[ -f $repository/rstarsleep.db.tar.gz ]]; then
+        configuration=$(mktemp "${RSTAR_PLUGIN_TMP:-/tmp}/pacman-conf.XXXXXXXX")
+        awk '/^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[rstarsleep\]/) } !skip { print }' /etc/pacman.conf >"$configuration"
+        printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration"
+        mkdir -p /var/lib/pacman/sync
+        cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db
+        command pacman --config "$configuration" --cachedir "$cache" "${args[@]}" || status=$?
+        rm -f -- "$configuration"
+        return "$status"
+    fi
+    command pacman --cachedir "$cache" "${args[@]}"
+}

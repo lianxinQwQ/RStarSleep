@@ -8,6 +8,68 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Ordered cache stages. Append future stages after script here so startup cleanup covers them.
+/// 有序缓存阶段。未来 script 之后的新阶段须追加于此，以纳入构建前固定清理。
+pub(super) const STAGES: &[&str] = &["base-system", "packages", "script"];
+
+/// Delete a stage and its successors across this system's historical cache directories.
+/// 删除此系统历史缓存目录中指定阶段及其后续阶段。
+/// # Arguments
+/// - `backend`: Checked recursive subvolume deletion; ordinary directories are never a fallback.
+///   经检查的递归子卷删除；不回退为普通目录删除。
+/// - `cache_root`: One system's cache root, protected by its build lock.
+///   由系统构建锁保护的单个系统缓存根。
+/// - `stage`: First invalidated stage in STAGES.
+///   STAGES 中首个失效阶段。
+pub(super) fn clear_from(
+    backend: &impl BuildBackend,
+    cache_root: &Path,
+    stage: &str,
+) -> Result<()> {
+    let start = STAGES
+        .iter()
+        .position(|candidate| *candidate == stage)
+        .ok_or_else(|| Error::Invalid(format!("未知缓存阶段: {stage}")))?;
+    if !disk::exists(cache_root)? {
+        return Ok(());
+    }
+    disk::checked(cache_root)?;
+    for entry in fs::read_dir(cache_root).map_err(|e| disk::io(cache_root, e))? {
+        let entry = entry.map_err(|e| disk::io(cache_root, e))?;
+        let directory = entry.path();
+        disk::checked(&directory)?;
+        if !entry
+            .file_type()
+            .map_err(|e| disk::io(&directory, e))?
+            .is_dir()
+        {
+            return Err(Error::Invalid(format!(
+                "系统缓存条目必须是目录: {}",
+                directory.display()
+            )));
+        }
+        // Retire completion markers first; an interrupted deletion must never reuse stale roots.
+        // 先撤销完成标记，避免删除中断后复用失效根。
+        for stage in &STAGES[start..] {
+            let sidecar = directory.join(format!("{stage}.toml"));
+            if disk::exists(&sidecar)? {
+                disk::checked(&sidecar)?;
+                fs::remove_file(&sidecar).map_err(|e| disk::io(&sidecar, e))?;
+            }
+        }
+        disk::sync(&directory)?;
+        for stage in STAGES[start..].iter().rev() {
+            let root = directory.join(stage);
+            if disk::exists(&root)? {
+                disk::checked(&root)?;
+                backend.delete_subvolume_recursive(&root)?;
+            }
+        }
+        disk::sync(&directory)?;
+    }
+    Ok(())
+}
+
 /// Compatibility of filesystem and non-package inputs across plugin releases.
 /// 跨插件发布版本的文件系统及非包输入兼容性。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

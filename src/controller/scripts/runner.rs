@@ -31,12 +31,18 @@ fn command(
         )?)
         .arg("--setenv=RSTAR_CONFIG_DIR=/run/rstarsleep/config")
         .arg(format!("--setenv=RSTAR_SYSTEM_ID={}", context.system_id))
-        .arg(format!("--setenv=RSTAR_ARCH={}", context.architecture))
-        .arg("--setenv=RSTAR_ROOT=/")
-        .arg("--")
-        .arg("bash")
-        .arg("--")
-        .arg(entrypoint);
+        .arg("--setenv=RSTAR_ROOT=/");
+    for (name, value) in &context.distribution_options {
+        let name = super::super::plugins::configuration::environment_name(name)?;
+        command.arg(format!("--setenv={name}={value}"));
+    }
+    if !context.distribution_options.contains_key("Architecture") {
+        command.arg(format!(
+            "--setenv=RSTAR_ARCHITECTURE={}",
+            context.architecture
+        ));
+    }
+    command.arg("--").arg("bash").arg("--").arg(entrypoint);
     Ok(command)
 }
 
@@ -87,7 +93,12 @@ mod tests {
         let context = BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
+            distribution_options: std::collections::BTreeMap::from([(
+                "Mirror".into(),
+                "https://example.invalid/$repo/$arch".into(),
+            )]),
             config: "/manager/config".into(),
+            persistent_mounts: Vec::new(),
         };
         let root = Path::new("/work/script-root");
         let command = command(
@@ -106,6 +117,12 @@ mod tests {
         );
         assert!(args.contains(&"--chdir=/.rstarsleep-script-123".into()));
         assert!(args.contains(&"--bind-ro=/manager/config:/run/rstarsleep/config".into()));
+        let delimiter = args.iter().position(|argument| argument == "--").unwrap();
+        assert!(
+            args[..delimiter]
+                .contains(&"--setenv=RSTAR_MIRROR=https://example.invalid/$repo/$arch".into())
+        );
+        assert!(args[..delimiter].contains(&"--setenv=RSTAR_ARCHITECTURE=x86_64".into()));
         assert_eq!(
             args.iter()
                 .filter(|arg| arg.to_string_lossy().starts_with("--bind"))
@@ -127,7 +144,9 @@ mod tests {
         let mut context = BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
+            distribution_options: Default::default(),
             config: "/manager/config".into(),
+            persistent_mounts: Vec::new(),
         };
         let name = OsString::from_vec(b"shell-\xff.sh".to_vec());
         let cmd = command(

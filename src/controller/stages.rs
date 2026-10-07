@@ -7,7 +7,6 @@ use super::{
     identity,
     plugins::LoadedPlugin,
     records::Attempt,
-    templates,
 };
 use crate::{
     base_system,
@@ -39,9 +38,6 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Independent owned temporary build directory.
     /// 独立所属构建临时目录。
     pub(super) scratch: &'a Path,
-    /// Shared immutable templates, outside per-system caches and scratch space.
-    /// 位于每系统缓存和临时空间之外的共享不可变模板。
-    pub(super) templates: &'a Path,
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
@@ -70,8 +66,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         self.publish(&scripts)
     }
 
-    /// Install an uncached base, or maintain its cache unless a later step covers maintenance.
-    /// 无缓存时安装基础系统；有缓存时维护，若后续步骤承担维护则跳过维护。
+    /// Create or restore this system's own base, then always maintain it before committing.
+    /// 创建或恢复此系统自己的基础根，然后始终先维护再提交。
     ///
     /// # Arguments
     ///
@@ -79,8 +75,8 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   共享步骤输入。
     /// - `cached`: This step's own completed prior cache.
     ///   此步骤自身已完成的过往缓存。
-    /// - `packages`: Later cache covering maintenance and optionally supplying an existing identity.
-    ///   承担维护的后续缓存，也可提供此系统已有身份。
+    /// - `packages`: Later cache optionally supplying this system's existing identity.
+    ///   可提供此系统已有身份的后续缓存。
     /// - `owned`: Scratch roots reserved for cleanup.
     ///   为清理预留的临时根。
     fn base_step(
@@ -90,30 +86,17 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
         let root = self.scratch.join("base-root");
+        owned.push(root.clone());
         if let Some(cached) = cached {
-            // Later package maintenance supplies the update; inherit this completed step unchanged.
-            // 后续软件维护提供系统更新；原样继承本已完成步骤。
-            if packages.is_some() {
-                return self.commit(
-                    "base-system",
-                    &cached.root,
-                    cached.record.software.clone(),
-                    Some(cached),
-                    true,
-                );
-            }
-            owned.push(root.clone());
             self.backend.snapshot(&cached.root, &root, false)?;
-            base_system::maintain(self.backend, self.plugin, &root, self.context)?;
         } else {
-            owned.push(root.clone());
-            let reused = templates::restore(
-                self.backend,
-                self.plugin,
-                self.templates,
-                &root,
-                &self.context.architecture,
-            )?;
+            if self.plugin.metadata.api_version != 3 {
+                return Err(super::Error::Invalid(
+                    "无基础缓存的系统创建需要 API 3 的 system_init 操作".into(),
+                ));
+            }
+            self.backend.create_subvolume(&root)?;
+            base_system::install(self.backend, self.plugin, &root, self.context)?;
             let previous_root = packages.map(|cache| cache.root.clone()).or_else(|| {
                 self.attempt
                     .previous
@@ -129,25 +112,17 @@ impl<B: BuildBackend> Stages<'_, B> {
                 &root,
                 self.context,
             )?;
-            // A reused template may be old; the later cached package stage still covers updates.
-            // 复用模板可能较旧；后续有缓存软件阶段仍负责覆盖更新。
-            if reused && packages.is_none() {
-                base_system::maintain(self.backend, self.plugin, &root, self.context)?;
-            }
         }
+        // Downloaded installation files can be old even when their version is unchanged.
+        // 安装文件即使版本未变也可能较旧；新建和恢复路径均必须维护一次。
+        base_system::maintain(self.backend, self.plugin, &root, self.context)?;
         let session = PackageSession {
             backend: self.backend,
             plugin: self.plugin,
             root: &root,
             context: self.context,
         };
-        self.commit(
-            "base-system",
-            &root,
-            session.capture(Vec::new())?,
-            cached,
-            false,
-        )
+        self.commit("base-system", &root, session.capture(Vec::new())?, cached)
     }
 
     /// Install from the preceding step's output, or maintain this step's own restored cache.
@@ -184,7 +159,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         } else {
             session.install(&self.config.packages)?
         };
-        self.commit("packages", &root, software, cached, false)
+        self.commit("packages", &root, software, cached)
     }
 
     /// Reapply scripts on fresh software output so prior script effects are never inherited.
@@ -212,7 +187,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         } else {
             packages.record.software.clone()
         };
-        self.commit("script", &root, software, None, false)
+        self.commit("script", &root, software, None)
     }
 
     /// Commit one successful step before allowing the next step to run.
@@ -230,17 +205,14 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   经校验的已安装清单和目标。
     /// - `source`: Actual prior cache donor, absent for first installation.
     ///   实际过往缓存来源，首次安装时省略。
-    /// - `inherited`: Whether the step inherited its cache without running actions.
-    ///   步骤是否未经执行动作继承缓存。
     fn commit(
         &self,
         stage: &str,
         root: &Path,
         software: SoftwareState,
         source: Option<&Cache>,
-        inherited: bool,
     ) -> Result<Cache> {
-        let record = self.record(stage, software, source, inherited)?;
+        let record = self.record(stage, software, source)?;
         let directory = self.attempt.layout.cache.join(&self.attempt.version);
         cache::commit(self.backend, root, &directory, record)
     }
@@ -277,30 +249,20 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   实际清单和目标。
     /// - `source`: Actual donor cache, absent for a fresh root.
     ///   实际来源缓存，全新根则省略。
-    /// - `inherited`: Whether content is inherited without mutation.
-    ///   内容是否未经修改继承。
     fn record(
         &self,
         stage: &str,
         software: SoftwareState,
         source: Option<&Cache>,
-        inherited: bool,
     ) -> Result<Record> {
-        let origin = source.filter(|_| inherited).map(|cache| &cache.record);
         Ok(Record {
             schema_version: 1,
             stage: stage.into(),
             version: self.attempt.version.clone(),
             source_version: source.map(|cache| cache.record.version.clone()),
-            origin_version: origin
-                .map(|record| record.origin_version.clone())
-                .unwrap_or_else(|| self.attempt.version.clone()),
-            plugin_version: origin
-                .map(|record| record.plugin_version.clone())
-                .unwrap_or_else(|| self.plugin.metadata.version.clone()),
-            plugin_sha256: origin
-                .map(|record| record.plugin_sha256.clone())
-                .unwrap_or_else(|| self.plugin.archive_sha256.clone()),
+            origin_version: self.attempt.version.clone(),
+            plugin_version: self.plugin.metadata.version.clone(),
+            plugin_sha256: self.plugin.archive_sha256.clone(),
             identity: self.identity.clone(),
             config_sha256: config_hash(&self.attempt.config, false)?,
             software,

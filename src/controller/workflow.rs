@@ -9,7 +9,7 @@ use super::{
     records::{Attempt, Status},
     stages::Stages,
 };
-use crate::config::{ConfigStore, read_build_config_at};
+use crate::config::{ConfigStore, read_build_config_at, read_distribution_options_at};
 use std::path::{Path, PathBuf};
 
 /// Build one named system or every configured system using native CoW storage.
@@ -55,13 +55,80 @@ pub fn build_with_backend(
     };
     let work = store.build_work_dir()?;
     check_workspace(store, &work)?;
+    let backend = super::scoped_backend::ScopedBackend {
+        backend,
+        pool: store.persistent_path(),
+        state: store.root().join("persistent-state"),
+    };
     let mut outcomes = Vec::new();
     let mut failures = Vec::new();
+    let mut prepared = Vec::new();
     for id in systems {
-        match build_system(store, &id, &work, backend) {
-            Ok(outcome) => outcomes.push(outcome),
+        match prepare_system(store, &id, &backend) {
+            Ok(value) => prepared.push(value),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{id}: {error}")),
+        }
+    }
+    let mut groups: std::collections::BTreeMap<
+        (String, String, std::collections::BTreeMap<String, String>),
+        Vec<usize>,
+    > = std::collections::BTreeMap::new();
+    for (index, value) in prepared.iter().enumerate() {
+        if value.plugin.metadata.predownload {
+            groups
+                .entry((
+                    value.plugin.archive_sha256.clone(),
+                    value.context.architecture.clone(),
+                    value.context.distribution_options.clone(),
+                ))
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut failed = std::collections::BTreeSet::new();
+    for ((_, _, _), indices) in groups {
+        let mut requirements = std::collections::BTreeSet::new();
+        for &index in &indices {
+            requirements.extend(prepared[index].config.packages.iter().cloned());
+            requirements.extend(prepared[index].upgrade_packages.iter().cloned());
+        }
+        let packages: Vec<_> = requirements.into_iter().collect();
+        if let Err(error) = super::predownload::run(
+            &backend,
+            store,
+            &prepared[indices[0]].plugin,
+            &prepared[indices[0]].context,
+            &packages,
+        ) {
+            for &index in &indices {
+                let value = &prepared[index];
+                status(
+                    &value.attempt,
+                    &value.context.system_id,
+                    "failed",
+                    Some(error.to_string()),
+                    Some(&value.plugin),
+                )?;
+                failed.insert(index);
+            }
+            if system.is_some() {
+                return Err(error);
+            }
+            failures.push(format!(
+                "预下载 {}: {error}",
+                prepared[indices[0]].plugin.metadata.id
+            ));
+        }
+    }
+    for (index, value) in prepared.iter().enumerate() {
+        if failed.contains(&index) {
+            continue;
+        }
+        match build_system(value, &work, &backend) {
+            Ok(outcome) => outcomes.push(outcome),
+            Err(error) if system.is_some() => return Err(error),
+            Err(error) => failures.push(format!("{}: {error}", value.context.system_id)),
         }
     }
     if failures.is_empty() {
@@ -92,12 +159,14 @@ fn check_workspace(store: &ConfigStore, work: &Path) -> Result<()> {
     for path in [
         store.root().join("config"),
         store.plugins_path(),
-        store.templates_path(),
+        store.predownload_path(),
+        store.persistent_path(),
+        store.root().join("persistent-state"),
         store.root().join("systems"),
     ] {
         if work.starts_with(&path) || path.starts_with(work) {
             return Err(Error::Invalid(format!(
-                "work_dir 必须独立于管理配置、插件、模板和系统记录: {}",
+                "work_dir 必须独立于管理配置、插件、持久数据和系统记录: {}",
                 work.display()
             )));
         }
@@ -138,30 +207,35 @@ fn status(
     })
 }
 
-/// Build one attempt, retaining completed caches and cleaning owned writable roots on failure.
-/// 构建一次尝试，失败时保留完成缓存并清理所属可写根。
+/// Retain locked, frozen, validated inputs through preparation and version publication.
+/// 在准备和版本发布期间保留已锁定、冻结及校验的输入。
+struct Prepared {
+    attempt: Attempt,
+    plugin: LoadedPlugin,
+    config: crate::config::BuildConfig,
+    context: BuildContext,
+    upgrade_packages: Vec<String>,
+}
+
+/// Freeze one system, validate its selected plugin, and remove invalidated caches before preparation.
+/// 冻结单个系统、校验其选定插件，并在准备前删除失效缓存。
 /// # Arguments
-///
-/// - `store`: Manager configuration store.
-///   管理器配置存储。
-/// - `id`: Selected system.
-///   所选系统。
-/// - `work`: Independent scratch directory.
-///   独立临时目录。
-/// - `backend`: Required storage and execution backend.
-///   必需存储和执行后端。
-fn build_system(
-    store: &ConfigStore,
-    id: &str,
-    work: &Path,
-    backend: &impl BuildBackend,
-) -> Result<BuildOutcome> {
+/// - `store`: Initialized manager containing the system and plugins.
+///   包含系统和插件的已初始化管理器。
+/// - `id`: Managed-system identifier to lock and prepare.
+///   待锁定和准备的被管理系统标识。
+/// - `backend`: Checked cache storage backend.
+///   经检查的缓存存储后端。
+fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result<Prepared> {
     let attempt = Attempt::begin(store, id)?;
     let mut plugin = None;
-    let scratch = work.join(id).join(&attempt.version);
-    let mut owned = Vec::new();
-    let result = (|| {
+    let result: Result<(crate::config::BuildConfig, BuildContext, Vec<String>)> = (|| {
         status(&attempt, id, "building", None, None)?;
+        // Script output is never a donor. Append future stages after script to cache::STAGES
+        // so every build also removes their caches, even when configuration validation fails.
+        // script 输出绝不作为来源。未来 script 后的新阶段须追加到 cache::STAGES，
+        // 使每次构建均清理其缓存，包括配置校验失败的情况。
+        cache::clear_from(backend, &attempt.layout.cache, "script")?;
         attempt.freeze()?;
         let config = read_build_config_at(&attempt.config)?;
         let architecture = config
@@ -174,9 +248,9 @@ fn build_system(
             &config.system_type,
             &architecture,
         )?);
-        let loaded = plugin
-            .as_ref()
-            .expect("plugin assigned before stage execution");
+        let loaded = plugin.as_ref().unwrap();
+        let distribution_options = read_distribution_options_at(&attempt.config)?;
+        loaded.validate_configuration(&distribution_options)?;
         for warning in &loaded.discovery_warnings {
             eprintln!("{warning}");
         }
@@ -184,8 +258,95 @@ fn build_system(
         let context = BuildContext {
             system_id: id.into(),
             architecture,
+            distribution_options,
             config: attempt.config.clone(),
+            persistent_mounts: Vec::new(),
         };
+        let mut upgrade_packages = Vec::new();
+        {
+            let mut protected = loaded.metadata.protected_packages.clone();
+            protected.sort();
+            protected.dedup();
+            let identity = Identity {
+                plugin_id: loaded.metadata.id.clone(),
+                cache_format: loaded.metadata.cache_format.clone(),
+                system_type: config.system_type.clone(),
+                architecture: context.architecture.clone(),
+                protected_packages: protected,
+                options_sha256: config_hash(&attempt.config, true)?,
+            };
+            let (base, packages) = previous_caches(&attempt, &identity, backend)?;
+            if let Some(version) = &attempt.previous {
+                let previous = attempt.layout.versions.join(version).join("config");
+                // Completed donors above have verified provenance. A failed attempt without a
+                // readable config has no donor; retire older caches and install independently.
+                // 上方完成来源已校验出处。失败尝试若无可读配置则没有来源；清理旧缓存并独立安装。
+                if fs::exists(&previous)?
+                    && config_hash(&previous, true).ok().as_ref() != Some(&identity.options_sha256)
+                {
+                    cache::clear_from(backend, &attempt.layout.cache, "base-system")?;
+                }
+            }
+            if loaded.metadata.predownload
+                && let Some(cache) = packages.or(base)
+            {
+                upgrade_packages = cache
+                    .record
+                    .software
+                    .installed
+                    .into_iter()
+                    .map(|p| p.name)
+                    .collect();
+            }
+        }
+        Ok((config, context, upgrade_packages))
+    })();
+    match result {
+        Ok((config, context, upgrade_packages)) => Ok(Prepared {
+            attempt,
+            plugin: plugin.unwrap(),
+            config,
+            context,
+            upgrade_packages,
+        }),
+        Err(error) => {
+            status(
+                &attempt,
+                id,
+                "failed",
+                Some(error.to_string()),
+                plugin.as_ref(),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+/// Run prepared stages and record completion, preserving earlier completed caches on failure.
+/// 执行已准备阶段并记录完成状态，失败时保留先前完成的缓存。
+/// # Arguments
+/// - `prepared`: Locked and validated frozen build inputs.
+///   已锁定并校验的冻结构建输入。
+/// - `work`: Independent manager scratch directory.
+///   管理器的独立临时目录。
+/// - `backend`: Checked storage and plugin execution.
+///   经检查的存储及插件执行。
+fn build_system(
+    prepared: &Prepared,
+    work: &Path,
+    backend: &impl BuildBackend,
+) -> Result<BuildOutcome> {
+    let Prepared {
+        attempt,
+        plugin: loaded,
+        config,
+        context,
+        ..
+    } = prepared;
+    let id = &context.system_id;
+    let scratch = work.join(id).join(&attempt.version);
+    let mut owned = Vec::new();
+    let result = (|| {
         let mut protected = loaded.metadata.protected_packages.clone();
         protected.sort();
         protected.dedup();
@@ -197,7 +358,7 @@ fn build_system(
             protected_packages: protected,
             options_sha256: config_hash(&attempt.config, true)?,
         };
-        let (base, packages) = previous_caches(&attempt, &identity, backend)?;
+        let (base, packages) = previous_caches(attempt, &identity, backend)?;
         if fs::exists(&scratch)? {
             return Err(Error::Invalid(format!(
                 "构建工作目录已存在: {}",
@@ -208,12 +369,11 @@ fn build_system(
         let stages = Stages {
             backend,
             plugin: loaded,
-            context: &context,
-            attempt: &attempt,
-            config: &config,
+            context,
+            attempt,
+            config,
             identity: &identity,
             scratch: &scratch,
-            templates: &store.templates_path(),
         };
         stages.run(base, packages, &mut owned)
     })();
@@ -228,17 +388,13 @@ fn build_system(
     };
     match result {
         Ok(outcome) => {
-            status(&attempt, id, "complete", None, plugin.as_ref())?;
+            status(attempt, id, "complete", None, Some(loaded))?;
             Ok(outcome)
         }
         Err(error) => {
-            if let Err(record_error) = status(
-                &attempt,
-                id,
-                "failed",
-                Some(error.to_string()),
-                plugin.as_ref(),
-            ) {
+            if let Err(record_error) =
+                status(attempt, id, "failed", Some(error.to_string()), Some(loaded))
+            {
                 return Err(Error::Invalid(format!(
                     "{error}; 失败记录写入失败: {record_error}"
                 )));

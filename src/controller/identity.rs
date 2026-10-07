@@ -1,5 +1,5 @@
-//! Keep each system's machine identity outside disposable roots and shared templates.
-//! 将每个系统的机器身份保存在可清理根和共享模板之外。
+//! Keep each system's machine identity outside disposable independently installed roots.
+//! 将每个系统的机器身份保存在独立安装的可清理根之外。
 use super::{Error, Result, fs as disk};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,8 +35,8 @@ fn valid(id: &str) -> bool {
         && id.bytes().any(|b| b != b'0')
 }
 
-/// Reuse this system's ID or generate one once when creating a system from a template.
-/// 从模板创建系统时复用此系统的 ID，或仅生成一次新 ID。
+/// Reuse this system's ID or generate one once when installing its independent base.
+/// 独立安装系统基础根时复用此系统的 ID，或仅生成一次新 ID。
 /// # Arguments
 ///
 /// - `system`: Locked manager-owned directory for this system.

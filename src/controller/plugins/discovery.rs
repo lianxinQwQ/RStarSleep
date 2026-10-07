@@ -20,14 +20,18 @@ use std::{fs, io, path::Path};
 /// 配置无效、压缩包处理失败、无匹配或存在多个匹配时返回错误。
 pub fn for_system(store: &ConfigStore, id: &str) -> Result<LoadedPlugin> {
     let config = store.read_system_type(id)?;
-    find(
+    let plugin = find(
         &store.plugins_path(),
         &config.system_type,
         config
             .architecture
             .as_deref()
             .unwrap_or(std::env::consts::ARCH),
-    )
+    )?;
+    plugin.validate_configuration(&crate::config::read_distribution_options_at(
+        &store.system_layout(id)?.config,
+    )?)?;
+    Ok(plugin)
 }
 
 /// Search archive and directory metadata and require one matching plugin.

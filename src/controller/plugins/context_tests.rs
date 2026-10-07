@@ -3,6 +3,7 @@
 
 use super::tests::{fixture, launcher};
 use super::*;
+use crate::controller::plugins::container::nspawn;
 use std::fs;
 
 /// Verify bootstrap receives the archived directory and stable system identity unchanged.
@@ -19,11 +20,13 @@ fn passes_frozen_configuration_to_host_operations() {
     fs::create_dir(&config).unwrap();
     let root = plugin.temporary.path().join("target");
     fs::write(plugin.operation_path("bootstrap").unwrap(),
-        "printf '%s\\0%s\\0%s' \"$RSTAR_CONFIG_DIR\" \"$RSTAR_SYSTEM_ID\" \"$RSTAR_ARCH\" > \"$RSTAR_ROOT/context\"\n").unwrap();
+        "printf '%s\\0%s\\0%s' \"$RSTAR_CONFIG_DIR\" \"$RSTAR_SYSTEM_ID\" \"$RSTAR_ARCHITECTURE\" > \"$RSTAR_ROOT/context\"\n").unwrap();
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        distribution_options: Default::default(),
         config: config.clone(),
+        persistent_mounts: Vec::new(),
     };
     let path = plugin.temporary.path().join("host-bin");
     plugin
@@ -41,6 +44,121 @@ fn passes_frozen_configuration_to_host_operations() {
         fields,
         [config.as_os_str().as_encoded_bytes(), b"desktop", b"x86_64"]
     );
+}
+
+/// Pass original configuration names to Bash without executing shell syntax in their values.
+/// 将原始配置名传递给 Bash，值中的 shell 语法不执行。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn passes_declared_configuration_values_literally_to_host_and_guest() {
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.config.required = vec!["Channel".into()];
+    plugin.metadata.config.optional.push("Mirror".into());
+    let config = plugin.temporary.path().join("config");
+    fs::create_dir(&config).unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let value = "https://example.invalid/$repo/$(touch unexpected) with spaces\nsecond line";
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        distribution_options: std::collections::BTreeMap::from([
+            ("Channel".into(), "stable".into()),
+            ("Mirror".into(), value.into()),
+        ]),
+        config,
+        persistent_mounts: Vec::new(),
+    };
+    fs::write(plugin.operation_path("bootstrap").unwrap(),
+        "test -z \"${RSTAR_ARCH+x}\" && test -z \"${RSTAR_DISTRIBUTION+x}\"\nprintf '%s\\0%s\\0%s' \"$RSTAR_ARCHITECTURE\" \"$RSTAR_CHANNEL\" \"$RSTAR_MIRROR\" > \"$RSTAR_ROOT/options\"\n").unwrap();
+    plugin
+        .invoke_environment(
+            "bootstrap",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("options")).unwrap(),
+        format!("x86_64\0stable\0{value}").as_bytes()
+    );
+    assert!(!plugin.root().join("unexpected").exists());
+    launcher(&plugin, "", false);
+    plugin
+        .invoke_environment(
+            "update",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+    let fields: Vec<_> = trace.split(|byte| *byte == 0).collect();
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|field| **field == format!("--setenv=RSTAR_MIRROR={value}").as_bytes())
+            .count(),
+        2
+    );
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|field| **field == b"--setenv=RSTAR_CHANNEL=stable")
+            .count(),
+        2
+    );
+}
+
+/// Block all execution before tool probes when required keys are missing or keys are undeclared.
+/// 必选键缺失或键未声明时在工具探测前阻止所有执行。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn validates_configuration_before_host_and_container_execution() {
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.config.required = vec!["Channel".into()];
+    let config = plugin.temporary.path().join("config");
+    fs::create_dir(&config).unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    launcher(&plugin, "", false);
+    for options in [
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::from([("Channel".into(), " ".into())]),
+        std::collections::BTreeMap::from([
+            ("Channel".into(), "stable".into()),
+            ("Chanel".into(), "typo".into()),
+        ]),
+    ] {
+        let context = crate::controller::BuildContext {
+            system_id: "desktop".into(),
+            architecture: "x86_64".into(),
+            distribution_options: options,
+            config: config.clone(),
+            persistent_mounts: Vec::new(),
+        };
+        for operation in ["bootstrap", "update"] {
+            let error = plugin
+                .invoke_environment(
+                    operation,
+                    &[],
+                    &root,
+                    "x86_64",
+                    (path.as_os_str(), Some(&context)),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("配置不满足声明"));
+        }
+    }
+    assert!(!root.join("executed").exists());
+    assert!(!plugin.root().join("launcher-argv").exists());
 }
 
 /// Verify both target probe and entry receive configuration mounts before their command delimiter.
@@ -61,7 +179,9 @@ fn passes_build_context_to_guest_probe_and_task_before_delimiter() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        distribution_options: Default::default(),
         config: config.clone(),
+        persistent_mounts: Vec::new(),
     };
     plugin
         .invoke_environment(
@@ -109,10 +229,12 @@ fn mount_arguments_preserve_native_bytes_and_reject_ambiguous_paths() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        distribution_options: Default::default(),
         config: plugin
             .temporary
             .path()
             .join(OsString::from_vec(b"frozen-\xff".to_vec())),
+        persistent_mounts: Vec::new(),
     };
     let command = nspawn(
         &plugin,
@@ -144,4 +266,88 @@ fn mount_arguments_preserve_native_bytes_and_reject_ambiguous_paths() {
             Err(Error::Invalid(_))
         ));
     }
+}
+
+#[test]
+fn host_operation_gets_transactional_directory_without_mutating_frozen_resources() {
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.persistent_dirs = vec!["packages:state/cache".into()];
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        "printf prepared > \"$RSTAR_PLUGIN_ROOT/state/cache/data\"\n",
+    )
+    .unwrap();
+    let source = plugin.temporary.path().join("persistent-copy");
+    fs::create_dir(&source).unwrap();
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        distribution_options: Default::default(),
+        config: plugin.temporary.path().join("target"),
+        persistent_mounts: vec![crate::controller::PersistentMount {
+            source: source.clone(),
+            target: "state/cache".into(),
+        }],
+    };
+    let path = plugin.temporary.path().join("host-bin");
+    plugin
+        .invoke_environment(
+            "bootstrap",
+            &[],
+            &context.config,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    assert_eq!(fs::read_to_string(source.join("data")).unwrap(), "prepared");
+    assert!(!plugin.root().join("state").exists());
+    assert!(
+        plugin
+            .invoke_with_path(
+                "bootstrap",
+                &[],
+                &context.config,
+                "x86_64",
+                path.as_os_str()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.persistent_dirs = vec!["packages:state/cache".into()];
+    let source = plugin.temporary.path().join("persistent-copy");
+    fs::create_dir(&source).unwrap();
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        distribution_options: Default::default(),
+        config: plugin.temporary.path().join("target"),
+        persistent_mounts: vec![crate::controller::PersistentMount {
+            source: source.clone(),
+            target: "state/cache".into(),
+        }],
+    };
+    let resources =
+        super::super::persistent::container_workspace(plugin.root(), &context.persistent_mounts)
+            .unwrap();
+    assert!(resources.path().join("state/cache").is_dir());
+    let command = super::super::container::nspawn_from(
+        &plugin,
+        Path::new("/bin/nspawn"),
+        &context.config,
+        OsStr::new("/usr/bin"),
+        "x86_64",
+        Some(&context),
+        resources.path(),
+    )
+    .unwrap();
+    let expected = format!(
+        "--bind={}:{}",
+        source.display(),
+        "/run/rstarsleep/plugin/state/cache"
+    );
+    assert!(command.get_args().any(|a| a == OsStr::new(&expected)));
 }

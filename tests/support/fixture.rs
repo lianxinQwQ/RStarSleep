@@ -20,19 +20,37 @@ impl Fixture {
     /// No parameters.
     /// 无参数。
     pub fn new() -> Self {
+        Self::with_predownload(false)
+    }
+
+    pub fn with_predownload(enabled: bool) -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("manager");
         fs::create_dir_all(root.join("config")).unwrap();
         fs::create_dir_all(root.join("plugins")).unwrap();
         fs::write(root.join("config/rstarsleep.toml"), "schema_version = 1\n").unwrap();
+        let source = temporary.path().join("plugin-source");
+        copy_plugin(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch"),
+            &source,
+        );
+        let metadata = source.join("plugin.toml");
+        let text = fs::read_to_string(&metadata).unwrap();
+        fs::write(
+            &metadata,
+            text.replace(
+                "predownload = true",
+                if enabled {
+                    "predownload = true"
+                } else {
+                    "predownload = false"
+                },
+            ),
+        )
+        .unwrap();
         let file = fs::File::create(root.join("plugins/arch.tar")).unwrap();
         let mut archive = tar::Builder::new(file);
-        archive
-            .append_dir_all(
-                ".",
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch"),
-            )
-            .unwrap();
+        archive.append_dir_all(".", &source).unwrap();
         archive.finish().unwrap();
         Self {
             _temporary: temporary,
@@ -107,5 +125,18 @@ impl Fixture {
         assert!(!scratch.join("root").exists());
         assert!(!scratch.join("base-root").exists());
         assert!(!scratch.join("script-root").exists());
+    }
+}
+
+fn copy_plugin(source: &Path, dest: &Path) {
+    fs::create_dir(dest).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let destination = dest.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_plugin(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).unwrap();
+        }
     }
 }

@@ -3,9 +3,39 @@
 use super::{BuildBackend, BuildContext, Error, Result, fs, plugins::LoadedPlugin};
 use std::{
     ffi::OsString,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
+
+/// Find nested roots using Btrfs's reserved subvolume-root inode, without parsing paths.
+/// 使用 Btrfs 子卷根保留 inode 查找后代，不解析命令输出中的路径。
+fn nested_subvolumes(root: &Path) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    let mut pending = vec![root.to_path_buf()];
+    let mut found = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|e| fs::io(&directory, e))? {
+            let entry = entry.map_err(|e| fs::io(&directory, e))?;
+            let path = entry.path();
+            let info = std::fs::symlink_metadata(&path).map_err(|e| fs::io(&path, e))?;
+            if !info.is_dir() {
+                continue;
+            }
+            if info.ino() == 256 {
+                btrfs(&[
+                    "subvolume".into(),
+                    "show".into(),
+                    "--".into(),
+                    path.clone().into(),
+                ])?;
+                found.push(path.clone());
+            }
+            pending.push(path);
+        }
+    }
+    found.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    Ok(found)
+}
 
 /// Production backend requiring real Btrfs snapshots and systemd-nspawn.
 /// 要求真实 Btrfs 快照和 systemd-nspawn 的生产后端。
@@ -50,6 +80,36 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
+        fs::checked(path)?;
+        // Kernel enumeration also detects subvolumes hidden by a mounted directory.
+        let output = btrfs(&[
+            "subvolume".into(),
+            "list".into(),
+            "-o".into(),
+            "--".into(),
+            path.into(),
+        ])?;
+        if !output.stdout.is_empty() {
+            return Err(Error::Invalid(format!(
+                "持久目录含嵌套子卷，不能快照或提交 {}:\n{}",
+                path.display(),
+                String::from_utf8_lossy(&output.stdout)
+            )));
+        }
+        Ok(())
+    }
+
+    fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
+        fs::checked(path)?;
+        // Validate the owned root before deleting any descendants; readonly roots
+        // are also valid cleanup targets after a failed plugin operation.
+        btrfs(&["subvolume".into(), "show".into(), "--".into(), path.into()])?;
+        for child in nested_subvolumes(path)? {
+            self.delete_subvolume(&child)?;
+        }
+        self.delete_subvolume(path)
+    }
     /// Create and verify a writable subvolume.
     /// 创建并验证可写子卷。
     /// # Arguments

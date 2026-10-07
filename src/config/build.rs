@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -51,27 +52,6 @@ struct GlobalBuildOptions {
 }
 
 impl BuildConfig {
-    /// Serialize validated template inputs using mkosi-style sections and one package per line.
-    /// 按 mkosi 风格分节序列化经校验的模板输入，每行一个软件包。
-    /// # Arguments
-    /// - `self`: Concrete supported build inputs.
-    ///   支持的具体构建输入。
-    pub(crate) fn to_ini(&self) -> Result<String> {
-        self.validate()?;
-        let mut text = format!(
-            "[Config]\nSchemaVersion={}\n\n[Distribution]\nDistribution={}\n",
-            self.schema_version, self.system_type
-        );
-        if let Some(architecture) = &self.architecture {
-            text.push_str(&format!("Architecture={architecture}\n"));
-        }
-        text.push_str("\n[Content]\nPackages=\n");
-        for package in &self.packages {
-            text.push_str(&format!("    {package}\n"));
-        }
-        Ok(text)
-    }
-
     /// Validate supported schema, distribution identity, and concrete package targets.
     /// 校验支持的格式版本、发行版标识和具体包目标。
     ///
@@ -131,6 +111,54 @@ pub fn read_build_config_at(directory: &Path) -> Result<BuildConfig> {
     };
     config.validate()?;
     Ok(config)
+}
+
+/// Read plugin options from [Distribution], preserving names and scalar values.
+/// 从 [Distribution] 读取插件选项，保留名称和标量值。
+///
+/// Legacy TOML exposes architecture as Architecture and accepts a distribution_options table.
+/// 旧 TOML 将 architecture 映射为 Architecture，并支持 distribution_options 表。
+/// # Arguments
+/// - `directory`: Current or frozen configuration root.
+///   当前或冻结配置根。
+/// # Errors
+/// Returns an error for unreadable input or non-string legacy plugin options.
+/// 输入无法读取或旧格式插件选项不是字符串时返回错误。
+pub fn read_distribution_options_at(directory: &Path) -> Result<BTreeMap<String, String>> {
+    match Input::read(directory)? {
+        Input::Ini(document) => Ok(document.distribution_options()),
+        Input::Toml { path, text } => {
+            let value: toml::Value = toml::from_str(&text).map_err(|source| Error::Parse {
+                path: path.clone(),
+                source,
+            })?;
+            let mut options = BTreeMap::new();
+            if let Some(architecture) = value.get("architecture").and_then(toml::Value::as_str) {
+                options.insert("Architecture".into(), architecture.into());
+            }
+            if let Some(custom) = value.get("distribution_options") {
+                let table = custom.as_table().ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "{}: distribution_options 必须是字符串表",
+                        path.display()
+                    ))
+                })?;
+                for (name, value) in table {
+                    let value = value.as_str().ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "{}: distribution_options.{name} 必须是字符串",
+                            path.display()
+                        ))
+                    })?;
+                    if name == "Distribution" || name == "Architecture" {
+                        return Err(Error::Invalid(format!("旧 TOML 的 {name} 应使用顶层字段")));
+                    }
+                    options.insert(name.clone(), value.into());
+                }
+            }
+            Ok(options)
+        }
+    }
 }
 
 /// Current INI input or a historical TOML input selected only when INI is absent.

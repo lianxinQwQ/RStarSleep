@@ -54,7 +54,7 @@ fn only_latest_attempt_is_considered_for_cache_reuse() {
         .unwrap()
         .remove(0);
     assert_eq!(outcome.version, "v00000003");
-    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("bootstrap"), 1);
     assert_eq!(backend.count("system_init"), 1);
     assert_eq!(backend.count("update"), 1);
 }
@@ -111,11 +111,7 @@ fn bootstrap_edits_to_current_config_do_not_change_frozen_targets() {
             .events
             .borrow()
             .iter()
-            .all(|event| if event.system_id == "template" {
-                event.packages.is_empty()
-            } else {
-                event.packages == ["editor"]
-            })
+            .all(|event| event.packages == ["editor"])
     );
     let inventory = SimulatedBackend::inventory(&outcome.root);
     assert!(inventory.contains_key("editor"));

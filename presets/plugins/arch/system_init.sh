@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Initialize one system snapshot without modifying the shared template.
-# 初始化单个系统快照，不修改共享模板。
+# Initialize the stable identity of one independently installed system.
+# 初始化独立安装的单个系统的稳定身份。
 set -euo pipefail
 plugin_root=${RSTAR_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 source "$plugin_root/lib/common.sh"
@@ -9,8 +9,8 @@ source "$plugin_root/lib/common.sh"
 }
 identity_root
 root=${RSTAR_ROOT%/}
-# Unlink first so writes cannot follow template-provided identity symlinks or hardlinks.
-# 先解除链接，避免写入跟随模板身份文件的符号链接或硬链接。
+# Unlink first so writes cannot follow installation-provided identity symlinks or hardlinks.
+# 先解除链接，避免写入跟随安装文件中身份文件的符号链接或硬链接。
 rm -f -- "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
 printf '%s\n' "$1" >"$root/etc/machine-id"
 if [[ -d $root/var/lib/dbus ]]; then

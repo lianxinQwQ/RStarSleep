@@ -37,6 +37,38 @@ fn write_build(directory: &Path, text: &str) {
     fs::write(directory.join(BUILD_CONFIG_PATH), text).unwrap();
 }
 
+/// Read every original distribution key, applying last-assignment semantics and retaining multiline values.
+/// 读取所有原始发行版键，采用最后赋值语义并保留多行值。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn reads_plugin_distribution_options_without_renaming_or_splitting_values() {
+    let (_temporary, store) = fixture();
+    let directory = store.system_layout("desktop").unwrap().config;
+    write_build(
+        &directory,
+        "[Distribution]\nDistribution=arch\nArchitecture=x86_64\nChannel=old\nChannel=stable\nMirror=https://example/$repo/$arch\nList=first\n    second\nEmpty=\n[Other]\nChannel=ignored\n",
+    );
+    let options = read_distribution_options_at(&directory).unwrap();
+    assert_eq!(options.len(), 5);
+    assert_eq!(options["Channel"], "stable");
+    assert_eq!(options["Architecture"], "x86_64");
+    assert_eq!(options["Mirror"], "https://example/$repo/$arch");
+    assert_eq!(options["List"], "first\nsecond");
+    assert_eq!(options["Empty"], "");
+    assert!(!options.contains_key("Distribution"));
+    fs::remove_file(directory.join(BUILD_CONFIG_PATH)).unwrap();
+    fs::write(
+        directory.join(LEGACY_BUILD_CONFIG_PATH),
+        "architecture='x86_64'\n[distribution_options]\nChannel='stable'\n",
+    )
+    .unwrap();
+    let options = read_distribution_options_at(&directory).unwrap();
+    assert_eq!(options["Architecture"], "x86_64");
+    assert_eq!(options["Channel"], "stable");
+}
+
 /// Preserve configured package order and duplicates and read archives independently of current inputs.
 /// 保留配置包顺序和重复项，并独立于当前输入读取留档。
 ///

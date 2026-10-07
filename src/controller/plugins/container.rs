@@ -35,6 +35,7 @@ const SYSTEM_CONFIG: &str = "/run/rstarsleep/config";
 ///   向插件操作提供的目标架构。
 /// - `context`: Optional frozen inputs.
 ///   可选冻结输入。
+#[cfg(test)]
 pub(super) fn nspawn(
     plugin: &LoadedPlugin,
     launcher: &Path,
@@ -43,18 +44,52 @@ pub(super) fn nspawn(
     architecture: &str,
     context: Option<&crate::controller::BuildContext>,
 ) -> Result<Command> {
+    nspawn_from(
+        plugin,
+        launcher,
+        root,
+        host_path,
+        architecture,
+        context,
+        plugin.root(),
+    )
+}
+
+pub(super) fn nspawn_from(
+    plugin: &LoadedPlugin,
+    launcher: &Path,
+    root: &Path,
+    host_path: &OsStr,
+    architecture: &str,
+    context: Option<&crate::controller::BuildContext>,
+    resources: &Path,
+) -> Result<Command> {
     let mut command = crate::controller::container::command(launcher, root);
     command
-        .current_dir(plugin.root())
+        .current_dir(resources)
         .env("PATH", host_path)
-        .arg(bind("--bind-ro=", plugin.root(), SYSTEM_PLUGIN)?)
+        .arg(bind("--bind-ro=", resources, SYSTEM_PLUGIN)?)
         .arg(bind("--bind=", &plugin.temporary_path(), SYSTEM_TMP)?)
         .arg(format!("--chdir={SYSTEM_PLUGIN}"))
         .arg(format!("--setenv=RSTAR_PLUGIN_ROOT={SYSTEM_PLUGIN}"))
         .arg(format!("--setenv=RSTAR_PLUGIN_TMP={SYSTEM_TMP}"))
-        .arg(format!("--setenv=RSTAR_ARCH={architecture}"))
         .arg("--setenv=RSTAR_ROOT=/");
+    let standalone =
+        std::collections::BTreeMap::from([("Architecture".into(), architecture.into())]);
+    let options = context
+        .map(|value| &value.distribution_options)
+        .unwrap_or(&standalone);
+    for (name, value) in plugin.configuration_environment(options, architecture)? {
+        command.arg(format!("--setenv={name}={value}"));
+    }
     if let Some(context) = context {
+        for mount in &context.persistent_mounts {
+            command.arg(bind(
+                "--bind=",
+                &mount.source,
+                &format!("{SYSTEM_PLUGIN}/{}", mount.target.display()),
+            )?);
+        }
         command
             .arg(bind("--bind-ro=", &context.config, SYSTEM_CONFIG)?)
             .arg("--setenv=RSTAR_CONFIG_DIR=/run/rstarsleep/config")

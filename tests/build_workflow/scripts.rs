@@ -156,12 +156,15 @@ fn script_edits_and_removal_preserve_software_cache_reuse() {
         "invalid record",
     )
     .unwrap();
-    fs::remove_file(fixture.cache(&first.version, "script").join(MARKER)).unwrap();
     fs::write(&path, "printf second > \"$RSTAR_ROOT/current\"\n").unwrap();
     backend.events.borrow_mut().clear();
     let second = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
         .remove(0);
+    assert!(!fixture.cache(&first.version, "script").exists());
+    assert!(!fixture.cache(&first.version, "script.toml").exists());
+    assert!(fixture.cache(&first.version, "base-system").exists());
+    assert!(fixture.cache(&first.version, "packages").exists());
     assert!(!second.root.join("obsolete").exists());
     assert_eq!(
         fs::read_to_string(second.root.join("current")).unwrap(),
@@ -172,7 +175,7 @@ fn script_edits_and_removal_preserve_software_cache_reuse() {
         "first"
     );
     assert_eq!(backend.count("system_init"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("update"), 2);
     assert_eq!(
         record(&fixture.cache(&second.version, "packages.toml"))["source_version"].as_str(),
         Some(first.version.as_str())
@@ -234,7 +237,7 @@ fn script_failure_keeps_software_cache_and_retry_starts_from_clean_software() {
         "done"
     );
     assert_eq!(backend.count("system_init"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("update"), 2);
     fixture.cleaned(&retried.version);
 }
 

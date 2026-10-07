@@ -1,6 +1,6 @@
 //! Validate metadata and bounded resource paths.
 //! 校验元数据和限定范围的资源路径。
-use super::{Error, Metadata, REQUIRED_OPERATIONS, Result, TEMPLATE_OPERATIONS};
+use super::{Error, Metadata, REQUIRED_OPERATIONS, Result, SYSTEM_OPERATIONS};
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
@@ -29,7 +29,13 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for value in metadata.system_types.iter().chain(&metadata.architectures) {
         identifier(value)?;
     }
-    for tool in metadata.tools.host.iter().chain(&metadata.tools.system) {
+    for tool in metadata
+        .tools
+        .host
+        .iter()
+        .chain(&metadata.tools.system)
+        .chain(&metadata.tools.predownload)
+    {
         if tool.contains('/') {
             relative_path(Path::new(tool))?;
             if !Path::new(tool)
@@ -50,44 +56,84 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
+    metadata.config.validate()?;
     for operation in REQUIRED_OPERATIONS {
         operation_path(root, operation)?;
     }
     if metadata.api_version == 3 {
-        for operation in TEMPLATE_OPERATIONS {
+        for operation in SYSTEM_OPERATIONS {
+            operation_path(root, operation)?;
+        }
+    }
+    super::persistent::parse(&metadata.persistent_dirs, root)?;
+    if metadata.predownload {
+        if metadata.api_version != 3 {
+            return Err(Error::Invalid("预下载环境需要 API 3 系统初始化接口".into()));
+        }
+        for operation in ["predownload", "predownload_install", "predownload_update"] {
             operation_path(root, operation)?;
         }
     }
     Ok(())
 }
 
-/// Require a regular root-level file named after the operation with a .sh suffix.
-/// 要求插件根内存在以操作名加 .sh 后缀命名的普通文件。
+/// Prefer the same-named .sh file, otherwise require an unsuffixed executable file.
+/// 优先使用同名 .sh 文件，否则要求无后缀的可执行普通文件。
 ///
 /// # Arguments
 ///
 /// - `root`: Normalized plugin resource root.
 ///   归一化插件资源根。
-/// - `operation`: Operation identifier, with .sh appended to form the filename.
-///   操作标识；附加 .sh 后缀形成文件名。
+/// - `operation`: Operation identifier used to locate either entry format.
+///   用于定位两种入口格式的操作标识。
 pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
     identifier(operation)?;
-    let path = root.join(format!("{operation}.sh"));
-    let info = fs::symlink_metadata(&path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            Error::Invalid(format!(
-                "插件操作 {operation} 缺少同名普通文件: {}",
-                path.display()
-            ))
-        } else {
-            io_error(&path, error)
+    let relative = match operation {
+        "predownload_install" => "predownload/install",
+        "predownload_update" => "predownload/update",
+        _ => operation,
+    };
+    let mut path = root.join(format!("{relative}.sh"));
+    if let Some(parent) = path.parent() {
+        let info = fs::symlink_metadata(parent).map_err(|e| io_error(parent, e))?;
+        if !info.is_dir() || info.file_type().is_symlink() {
+            return Err(Error::Invalid("操作资源目录必须是普通目录".into()));
         }
-    })?;
+    }
+    let (info, script) = match fs::symlink_metadata(&path) {
+        Ok(info) => (info, true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            path = root.join(relative);
+            let info = fs::symlink_metadata(&path).map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    Error::Invalid(format!(
+                        "插件操作 {operation} 缺少同名普通文件: {}.sh 或 {}",
+                        path.display(),
+                        path.display()
+                    ))
+                } else {
+                    io_error(&path, error)
+                }
+            })?;
+            (info, false)
+        }
+        Err(error) => return Err(io_error(&path, error)),
+    };
     if !info.is_file() {
         return Err(Error::Invalid(format!(
             "插件操作 {operation} 必须是同名普通文件: {}",
             path.display()
         )));
+    }
+    #[cfg(unix)]
+    if !script {
+        use std::os::unix::fs::PermissionsExt;
+        if info.permissions().mode() & 0o111 == 0 {
+            return Err(Error::Invalid(format!(
+                "插件操作 {operation} 的无后缀入口必须具备可执行权限: {}",
+                path.display()
+            )));
+        }
     }
     Ok(path)
 }

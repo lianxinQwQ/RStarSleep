@@ -7,14 +7,14 @@ use rstarsleep::controller::{BuildBackend, Error, build_with_backend};
 use std::fs;
 use support::build::{Fixture, MARKER, SimulatedBackend, record};
 
-/// Verify cached package maintenance covers the base update and preserves dependencies.
-/// 验证有缓存软件维护覆盖基础更新并保留依赖。
+/// Verify base and package caches are maintained independently while preserving dependencies.
+/// 验证基础及软件缓存独立维护并保留依赖。
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn cached_package_step_takes_over_maintenance_and_preserves_dependencies() {
+fn cached_base_and_package_steps_both_maintain_and_preserve_dependencies() {
     let fixture = Fixture::new();
     fixture.system("desktop", &["old", "kept"]);
     let backend = SimulatedBackend::default();
@@ -24,7 +24,7 @@ fn cached_package_step_takes_over_maintenance_and_preserves_dependencies() {
     assert_eq!(first.version, "v00000001");
     assert_eq!(backend.count("bootstrap"), 1);
     assert_eq!(backend.count("base_install"), 1);
-    assert_eq!(backend.count("update"), 0);
+    assert_eq!(backend.count("update"), 1);
     assert!(
         backend
             .events
@@ -75,13 +75,14 @@ fn cached_package_step_takes_over_maintenance_and_preserves_dependencies() {
         .remove(0);
     assert_eq!(backend.count("bootstrap"), 0);
     assert_eq!(backend.count("base_install"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("update"), 2);
     assert!(
         backend
             .events
             .borrow()
             .iter()
-            .all(|event| event.root.ends_with("root"))
+            .filter(|event| event.operation == "update")
+            .any(|event| event.root.ends_with("base-root"))
     );
     let inventory = SimulatedBackend::inventory(&second.root);
     assert_eq!(inventory.get("base"), Some(&true));
@@ -99,7 +100,7 @@ fn cached_package_step_takes_over_maintenance_and_preserves_dependencies() {
             .any(|event| event.operation == "install" && event.arguments == ["kept", "new"])
     );
     let inherited = record(&fixture.cache(&second.version, "base-system.toml"));
-    assert_eq!(inherited["origin_version"].as_str(), Some("v00000001"));
+    assert_eq!(inherited["origin_version"].as_str(), Some("v00000002"));
     assert_eq!(inherited["source_version"].as_str(), Some("v00000001"));
     assert_eq!(
         inherited["plugin_sha256"],
@@ -149,8 +150,8 @@ fn cached_base_step_maintains_when_package_step_has_no_cache() {
     fixture.cleaned(&outcome.version);
 }
 
-/// Verify missing base cache is restored from a template independently of maintained software.
-/// 验证缺失基础缓存独立于被维护软件从模板恢复。
+/// Verify missing base cache is installed independently before maintained software.
+/// 验证缺失基础缓存独立安装后再维护软件。
 /// # Arguments
 ///
 /// No parameters.
@@ -166,9 +167,9 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
         .remove(0);
-    assert_eq!(backend.count("bootstrap"), 0);
-    assert_eq!(backend.count("base_install"), 0);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("bootstrap"), 1);
+    assert_eq!(backend.count("base_install"), 1);
+    assert_eq!(backend.count("update"), 2);
     assert!(
         record(&fixture.cache(&outcome.version, "base-system.toml"))
             .get("source_version")
@@ -193,7 +194,7 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
             .find(|event| event.operation == "update")
             .unwrap()
             .root
-            .ends_with("root")
+            .ends_with("base-root")
     );
     assert_eq!(
         fs::read_to_string(
@@ -202,7 +203,7 @@ fn uncached_base_step_installs_before_cached_package_step_maintains() {
                 .join(".base-generation")
         )
         .unwrap(),
-        "1"
+        "2"
     );
     assert_eq!(
         fs::read_to_string(outcome.root.join(".base-generation")).unwrap(),
@@ -217,8 +218,11 @@ mod failures;
 #[path = "build_workflow/config.rs"]
 mod config;
 
-#[path = "build_workflow/templates.rs"]
-mod templates;
+#[path = "build_workflow/base_system.rs"]
+mod base_system;
 
 #[path = "build_workflow/scripts.rs"]
 mod scripts;
+
+#[path = "build_workflow/predownload.rs"]
+mod predownload;

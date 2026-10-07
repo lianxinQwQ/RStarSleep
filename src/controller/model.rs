@@ -70,9 +70,23 @@ pub struct BuildContext {
     /// Target architecture selected before cache reuse.
     /// 缓存复用前确定的目标架构。
     pub architecture: String,
+    /// Explicit [Distribution] settings other than Distribution, frozen before execution.
+    /// 执行前冻结的 [Distribution] 显式设置，不包括 Distribution。
+    pub distribution_options: std::collections::BTreeMap<String, String>,
     /// Version's frozen configuration directory.
     /// 版本的冻结配置目录。
     pub config: PathBuf,
+    /// Writable CoW copies of globally named persistent subvolumes.
+    /// 全局命名持久子卷的可写 CoW 副本。
+    pub persistent_mounts: Vec<PersistentMount>,
+}
+
+/// Bind one transactional subvolume below the plugin working directory.
+/// 在插件工作目录下绑定一个事务子卷。
+#[derive(Debug, Clone)]
+pub struct PersistentMount {
+    pub source: PathBuf,
+    pub target: PathBuf,
 }
 
 /// A completely built version, ready for later boot or runtime integration.
@@ -162,6 +176,22 @@ pub trait BuildBackend {
     /// Returns an error if validation or deletion fails.
     /// 校验或删除失败时返回错误。
     fn delete_subvolume(&self, path: &Path) -> Result<()>;
+
+    /// Reject descendants that would be omitted by a non-recursive snapshot.
+    /// 拒绝不能由普通快照覆盖的后代子卷。
+    fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
+        Err(Error::Invalid(format!(
+            "此后端不能检查嵌套子卷: {}",
+            path.display()
+        )))
+    }
+
+    /// Delete an owned work root including subvolumes created during plugin execution.
+    /// 删除所属工作根及插件运行时创建的子卷。
+    fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
+        self.check_no_nested_subvolumes(path)?;
+        self.delete_subvolume(path)
+    }
 
     /// Run a checked plugin operation and return query output.
     /// 运行已检查的插件操作并返回查询输出。

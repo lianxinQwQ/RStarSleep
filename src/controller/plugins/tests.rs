@@ -5,6 +5,44 @@ use super::validation::validate_metadata;
 use super::*;
 use std::{fs, io::Write, path::Path};
 
+/// Reject incomplete configuration contracts and keys colliding with each other or controller state.
+/// 拒绝不完整配置契约及相互冲突或占用控制器状态的键。
+/// # Arguments
+/// No parameters.
+/// 无参数。
+#[test]
+fn requires_valid_explicit_configuration_declarations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    for declaration in ["[config]\nrequired=[]\n", "[config]\noptional=[]\n", ""] {
+        let text = fs::read_to_string(plugin.root().join("plugin.toml"))
+            .unwrap()
+            .replace(
+                "[config]\nrequired=[]\noptional=['Architecture']\n",
+                declaration,
+            );
+        assert!(toml::from_str::<Metadata>(&text).is_err());
+    }
+    for names in [
+        vec!["Root"],
+        vec!["PLUGIN_TMP"],
+        vec!["Distribution"],
+        vec!["Bad-Name"],
+        vec!["Architecture", "architecture"],
+        vec!["Channel", "Channel"],
+    ] {
+        let mut metadata = plugin.metadata.clone();
+        metadata.config.required = names.into_iter().map(String::from).collect();
+        metadata.config.optional.clear();
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+    let mut metadata = plugin.metadata.clone();
+    metadata.config.required = vec!["Architecture".into()];
+    assert!(validate_metadata(&metadata, plugin.root()).is_err());
+}
+
 /// Create a minimal plugin tar stream with an optional wrapper and test entries.
 /// 创建包含可选包装目录和测试条目的最小插件 tar 数据流。
 ///
@@ -21,7 +59,7 @@ fn tar_bytes(wrapper: Option<&str>, extra: Option<&str>, api_version: u32) -> Ve
         .iter()
         .chain(
             if api_version == 3 {
-                TEMPLATE_OPERATIONS
+                SYSTEM_OPERATIONS
             } else {
                 &[]
             }
@@ -53,7 +91,7 @@ fn tar_bytes_with_operations(
     operations: &[&str],
 ) -> Vec<u8> {
     let metadata = format!(
-        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\narchitectures=['x86_64']\ncache_format='test-v1'\n[tools]\nhost=[]\nsystem=[]\n"
+        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\narchitectures=['x86_64']\ncache_format='test-v1'\n[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n"
     );
     let mut archive = tar::Builder::new(Vec::new());
     let mut files = vec![
@@ -257,8 +295,8 @@ fn accepts_tar_xz_and_zstd_archives() {
     }
 }
 
-/// Reject incomplete operation sets and unsuffixed or incorrectly suffixed alternatives during archive loading.
-/// 加载归档时拒绝缺少操作的插件及无后缀或后缀错误的替代文件。
+/// Reject incomplete operation sets and incorrectly suffixed alternatives during archive loading.
+/// 加载归档时拒绝缺少操作的插件及后缀错误的替代文件。
 ///
 /// # Arguments
 ///
@@ -274,11 +312,7 @@ fn requires_every_same_named_operation_file() {
             .filter(|operation| *operation != missing)
             .map(|operation| format!("{operation}.sh"))
             .collect();
-        for replacement in [
-            None,
-            Some((*missing).to_owned()),
-            Some(format!("{missing}.bash")),
-        ] {
+        for replacement in [None, Some(format!("{missing}.bash"))] {
             let mut operations: Vec<_> = filenames.iter().map(String::as_str).collect();
             if let Some(ref replacement) = replacement {
                 operations.push(replacement);
@@ -301,22 +335,22 @@ fn requires_every_same_named_operation_file() {
     }
 }
 
-/// Require both template lifecycle operations for API 3 while continuing to load API 2.
-/// API 3 要求两个模板生命周期操作，同时继续加载 API 2。
+/// Require system initialization for API 3 while continuing to load API 2.
+/// API 3 要求系统初始化操作，同时继续加载 API 2。
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn api_three_requires_template_operations() {
+fn api_three_requires_system_initialization() {
     let temporary = tempfile::tempdir().unwrap();
     let archive = temporary.path().join("plugin.tar");
     fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
     assert_eq!(load(&archive).unwrap().metadata.api_version, 3);
-    for missing in TEMPLATE_OPERATIONS {
+    for missing in SYSTEM_OPERATIONS {
         let filenames: Vec<_> = REQUIRED_OPERATIONS
             .iter()
-            .chain(TEMPLATE_OPERATIONS)
+            .chain(SYSTEM_OPERATIONS)
             .filter(|name| *name != missing)
             .map(|name| format!("{name}.sh"))
             .collect();
@@ -379,7 +413,11 @@ fn requires_and_validates_declared_tools() {
     let plugin = load(&archive).unwrap();
     let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
     assert!(
-        toml::from_str::<Metadata>(&text.replace("[tools]\nhost=[]\nsystem=[]\n", "")).is_err()
+        toml::from_str::<Metadata>(&text.replace(
+            "[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n",
+            ""
+        ))
+        .is_err()
     );
     assert!(toml::from_str::<Metadata>(&text.replace("host=[]", "hots=[]")).is_err());
     for invalid in ["", "../escape", "/usr/bin/tool", "bad tool", "./"] {
@@ -510,4 +548,114 @@ fn directory_plugins_reject_escaping_links_and_duplicate_matches() {
     fs::remove_file(&operation).unwrap();
     std::os::unix::fs::symlink("update.sh", operation).unwrap();
     assert!(load(&directory).is_err());
+}
+
+#[test]
+fn predownload_capability_requires_its_entrypoint_and_independent_lifecycle() {
+    let root = tempfile::tempdir().unwrap();
+    let mut metadata:Metadata=toml::from_str("schema_version=1\napi_version=3\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\npredownload=true\n[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n").unwrap();
+    for op in REQUIRED_OPERATIONS.iter().chain(SYSTEM_OPERATIONS) {
+        fs::write(root.path().join(format!("{op}.sh")), "exit 0").unwrap();
+    }
+    assert!(validate_metadata(&metadata, root.path()).is_err());
+    fs::create_dir(root.path().join("predownload")).unwrap();
+    for file in [
+        "predownload.sh",
+        "predownload/install.sh",
+        "predownload/update.sh",
+    ] {
+        fs::write(root.path().join(file), "exit 0").unwrap();
+    }
+    validate_metadata(&metadata, root.path()).unwrap();
+    #[cfg(unix)]
+    for file in ["predownload/install", "predownload/update"] {
+        use std::os::unix::fs::PermissionsExt;
+        let entry = root.path().join(file);
+        fs::rename(root.path().join(format!("{file}.sh")), &entry).unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        validate_metadata(&metadata, root.path()).unwrap();
+    }
+    metadata.predownload = false;
+    fs::remove_file(super::validation::operation_path(root.path(), "predownload").unwrap())
+        .unwrap();
+    validate_metadata(&metadata, root.path()).unwrap();
+}
+
+/// Load mixed shell and executable entries from both archives and frozen directories.
+/// 从归档和冻结目录加载混合的脚本与可执行入口。
+#[test]
+#[cfg(unix)]
+fn loads_unsuffixed_and_mixed_operation_entries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    for mixed in [false, true] {
+        let filenames: Vec<_> = REQUIRED_OPERATIONS
+            .iter()
+            .chain(SYSTEM_OPERATIONS)
+            .enumerate()
+            .map(|(index, name)| {
+                if mixed && index % 2 == 0 {
+                    format!("{name}.sh")
+                } else {
+                    (*name).to_owned()
+                }
+            })
+            .collect();
+        let operations: Vec<_> = filenames.iter().map(String::as_str).collect();
+        fs::write(
+            &archive,
+            tar_bytes_with_operations(Some("wrapper"), None, 3, &operations),
+        )
+        .unwrap();
+        let packaged = load(&archive).unwrap();
+        let directory = load(packaged.root()).unwrap();
+        for plugin in [&packaged, &directory] {
+            for (operation, filename) in REQUIRED_OPERATIONS
+                .iter()
+                .chain(SYSTEM_OPERATIONS)
+                .zip(&filenames)
+            {
+                assert_eq!(
+                    plugin.operation_path(operation).unwrap(),
+                    plugin.root().join(filename)
+                );
+            }
+        }
+    }
+}
+
+/// Keep shell precedence and reject unsafe or non-executable unsuffixed entries.
+/// 保持脚本优先，拒绝不安全或不可执行的无后缀入口。
+#[test]
+#[cfg(unix)]
+fn validates_unsuffixed_entry_permissions_and_shell_precedence() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&archive).unwrap();
+    let script = plugin.root().join("update.sh");
+    let entry = plugin.root().join("update");
+    fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&entry, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(plugin.operation_path("update").unwrap(), script);
+    fs::remove_file(&script).unwrap();
+    assert!(
+        plugin
+            .operation_path("update")
+            .unwrap_err()
+            .to_string()
+            .contains("可执行权限")
+    );
+    fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+    validate_metadata(&plugin.metadata, plugin.root()).unwrap();
+    fs::create_dir(&script).unwrap();
+    assert!(plugin.operation_path("update").is_err());
+    fs::remove_dir(&script).unwrap();
+    fs::remove_file(&entry).unwrap();
+    symlink("bootstrap.sh", &entry).unwrap();
+    assert!(plugin.operation_path("update").is_err());
+    fs::remove_file(&entry).unwrap();
+    fs::create_dir(&entry).unwrap();
+    assert!(plugin.operation_path("update").is_err());
 }

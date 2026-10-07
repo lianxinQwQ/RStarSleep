@@ -30,8 +30,8 @@ pub fn install(
     Ok(())
 }
 
-/// Update a restored base root once before its cache is committed.
-/// 恢复的基础根更新一次后提交缓存。
+/// Update a newly installed or restored base root once before its cache is committed.
+/// 新安装或恢复的基础根均先更新一次再提交缓存。
 /// # Arguments
 ///
 /// - `backend`: Checked execution backend.

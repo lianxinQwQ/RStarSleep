@@ -22,6 +22,8 @@ pub struct Event {
     pub root: PathBuf,
     pub packages: Vec<String>,
     pub system_id: String,
+    pub distribution_options: BTreeMap<String, String>,
+    pub persistent_mounts: Vec<rstarsleep::controller::PersistentMount>,
 }
 
 /// One attempted CoW boundary between a completed root and a new root.
@@ -171,6 +173,13 @@ fn copy_simulated_snapshot(source: &Path, destination: &Path) {
 }
 
 impl BuildBackend for SimulatedBackend {
+    fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
+        self.check_subvolume(
+            path,
+            fs::read_to_string(path.join(MARKER)).unwrap() == "readonly",
+        )
+    }
+
     /// Create a marked writable simulated subvolume.
     /// 创建有标记的可写模拟子卷。
     /// # Arguments
@@ -295,14 +304,26 @@ impl BuildBackend for SimulatedBackend {
                 .architectures
                 .contains(&context.architecture)
         );
-        let frozen = read_build_config_at(&context.config)?;
+        let frozen_packages = if context.system_id == "predownload" {
+            Vec::new()
+        } else {
+            read_build_config_at(&context.config)?.packages
+        };
         self.events.borrow_mut().push(Event {
             operation: operation.into(),
             arguments: args.to_vec(),
             root: root.into(),
-            packages: frozen.packages,
+            packages: frozen_packages,
             system_id: context.system_id.clone(),
+            distribution_options: context.distribution_options.clone(),
+            persistent_mounts: context.persistent_mounts.clone(),
         });
+        if operation == "predownload" {
+            fs::write(root.join(".download-work-only"), "temporary").unwrap();
+            for mount in &context.persistent_mounts {
+                fs::write(mount.source.join(".prepared-batch"), args.join("\n")).unwrap();
+            }
+        }
         if self.fail_operation.borrow().as_ref() == Some(&operation) {
             self.fail_operation.borrow_mut().take();
             return Err(Error::Invalid(format!("injected {operation} failure")));
@@ -322,16 +343,14 @@ impl BuildBackend for SimulatedBackend {
                 packages.insert("base".into(), true);
                 packages.insert("base-dependency".into(), false);
             }
-            "template_clean" => {
-                fs::create_dir_all(root.join("etc")).unwrap();
-                fs::write(root.join("etc/machine-id"), "").unwrap();
-            }
             "system_init" => {
                 assert_eq!(args.len(), 1);
+                fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
             }
+            "predownload_install" | "predownload_update" | "predownload" => {}
             "update" => {
-                if self.remove_kept_on_update.replace(false) {
+                if root.ends_with("root") && self.remove_kept_on_update.replace(false) {
                     packages.remove("kept");
                 }
             }
@@ -405,6 +424,8 @@ impl BuildBackend for SimulatedBackend {
             root: root.into(),
             packages: read_build_config_at(&context.config)?.packages,
             system_id: context.system_id.clone(),
+            distribution_options: context.distribution_options.clone(),
+            persistent_mounts: context.persistent_mounts.clone(),
         });
         let payload = root.join(directory.strip_prefix("/").unwrap());
         assert!(payload.starts_with(root));
