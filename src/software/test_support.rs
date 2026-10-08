@@ -353,6 +353,7 @@ impl Fixture {
             config: temporary.path().join("config"),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            inherited_mounts: Vec::new(),
         };
         Self {
             _temporary: temporary,

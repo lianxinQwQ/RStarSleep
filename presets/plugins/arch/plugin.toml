@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.6.0"
+version = "0.7.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -12,6 +12,7 @@ protected_packages = ["base"]
 # Required host tools are checked before bootstrap.
 # bootstrap 前检查的宿主必需工具。
 predownload = true
+mount_inheritance = true
 persistent_dirs = [
     "arch-bootstrap:state/bootstrap",
     "arch-packages:state/packages",
@@ -27,7 +28,7 @@ optional = [
     "RSTAR_CONFIG_SCHEMAVERSION", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_CONTENT_PACKAGES",
     "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
-    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
+    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
 ]
 
 [config.constraints.RSTAR_CONFIG_SCHEMAVERSION]
@@ -38,6 +39,9 @@ kind = "enum-single"
 values = ["arch"]
 
 [config.constraints.RSTAR_CONTENT_PACKAGES]
+kind = "free-list"
+
+[config.constraints.RSTAR_CONTENT_FSTABLINES]
 kind = "free-list"
 
 [config.constraints.RSTAR_DISTRIBUTION_ARCHITECTURE]
@@ -69,6 +73,6 @@ software = []
 host = ["bash", "curl", "tar", "zstd", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
-system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir"]
+system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv"]
 
 predownload = ["python3", "git", "makepkg", "repo-add", "repo-remove", "bsdtar", "vercmp", "runuser", "gpg"]

@@ -175,6 +175,10 @@ pub struct Metadata {
     /// 宿主命令:入口对，或同名入口。
     #[serde(default)]
     pub commands: Vec<String>,
+    /// Optional distribution-specific inherited-mount configuration operation.
+    /// 可选发行版继承挂载配置操作。
+    #[serde(default)]
+    pub mount_inheritance: bool,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.

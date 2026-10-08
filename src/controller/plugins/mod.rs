@@ -15,6 +15,7 @@ pub use discovery::{find, for_system};
 pub use loader::load;
 pub use model::{
     CacheRequirements, ConfigRequirements, Error, LoadedPlugin, Metadata, Result, ToolRequirements,
+    ValueConstraint,
 };
 pub use persistent::PersistentDirectory;
 /// Operations shared by API 2 and 3, provided as <operation>.sh or <operation>.

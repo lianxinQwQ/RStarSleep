@@ -82,9 +82,12 @@ pub fn clean_with_backend(
     targets.sort_by_key(|(value, _, _)| *value);
     let mut boots = Vec::new();
     for (_, name, directory) in &targets {
+        super::mounts::check_unmounted_tree(directory)?;
         let root = directory.join("root");
         if disk::exists(&root)? {
-            backend.check_subvolume(&root, true)?;
+            backend
+                .check_subvolume(&root, true)
+                .or_else(|_| backend.check_subvolume(&root, false))?;
             if backend.is_running_root(&root)? {
                 return Err(Error::Invalid(format!(
                     "不能清理正在运行的版本: {system}/{name}"
@@ -93,10 +96,13 @@ pub fn clean_with_backend(
         }
         let cache = layout.cache.join(name);
         disk::checked(&cache)?;
+        super::mounts::check_unmounted_tree(&cache)?;
         for stage in cache::STAGES {
             let path = cache.join(stage);
             if disk::exists(&path)? {
-                backend.check_subvolume(&path, true)?;
+                backend
+                    .check_subvolume(&path, true)
+                    .or_else(|_| backend.check_subvolume(&path, false))?;
             }
         }
         let record = directory.join("boot.toml");
@@ -162,6 +168,8 @@ pub fn clean_with_backend(
 fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()> {
     disk::checked(&record.directory)?;
     disk::checked(&record.entry)?;
+    super::mounts::check_unmounted_tree(&record.directory)?;
+    super::mounts::check_unmounted_tree(&record.entry)?;
     let boot_root = record
         .directory
         .parent()

@@ -86,6 +86,13 @@ pub(super) fn nspawn_from(
         command.arg(format!("--setenv={name}={value}"));
     }
     if let Some(context) = context {
+        for mount in &context.inherited_mounts {
+            let target = mount
+                .target
+                .to_str()
+                .ok_or_else(|| Error::Invalid("继承挂载点必须为 UTF-8".into()))?;
+            command.arg(bind("--bind=", &mount.source, target)?);
+        }
         for mount in &context.persistent_mounts {
             command.arg(bind(
                 "--bind=",

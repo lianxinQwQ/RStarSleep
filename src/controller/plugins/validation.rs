@@ -59,6 +59,9 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for entry in super::commands::parse(&metadata.commands)?.values() {
         super::commands::entry_path(root, entry)?;
     }
+    if metadata.mount_inheritance {
+        operation_path(root, "mount_inheritance")?;
+    }
     metadata.config.validate()?;
     metadata.cache.validate(&metadata.config)?;
     for operation in REQUIRED_OPERATIONS {

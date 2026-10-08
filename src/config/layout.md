@@ -3,12 +3,14 @@
 RStarSleep 的工作目录属于整个管理体系，不依附任何被管理系统的 `/etc`。
 在 Btrfs 顶层（subvolid=5）创建专用子卷 `@RStarSleep`，建议运行时挂载到
 `/rstarsleep`。存储路径与挂载路径指向同一份数据；初始化接口不执行挂载。
+新初始化使用 `@RStarSleep`，已有小写 `@rstarsleep` 子卷会继续复用。
 
 ## 目录树
 
 ```text
 Btrfs 顶层/
 └── @RStarSleep/                         # 管理器专用子卷
+    ├── RStarSleep                      # 每次构建同步的当前可执行程序
     ├── config/
     │   └── rstarsleep.toml              # 全局配置
     ├── plugins/                        # 用户存放的插件压缩包或目录
@@ -24,17 +26,20 @@ Btrfs 顶层/
         └── <系统标识>/                  # 系统身份不随角色变更
             ├── config/                 # 当前可编辑配置
             │   ├── build/
-            │   │   └── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
+            │   │   ├── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
+            │   │   └── inherit.conf    # 空继承模板，与其他 INI 一同叠加
             │   ├── script/            # 软件步骤后的构建脚本输入
             │   └── subsystem/
             │       └── config.toml     # 子系统运行配置，暂留模板
             ├── build.lock              # 每系统构建独占锁
             ├── identity.toml           # 独立安装时保存的稳定 machine-id
+            ├── version-counter         # 最高已分配版本号，清理历史后仍保留
             ├── versions/
             │   └── <版本标识>/
             │       ├── state.toml      # building / failed / complete 状态
+            │       ├── boot.toml       # 主系统启动文件的所有权记录
             │       ├── config/         # 构建时配置留档，结构同当前 config/
-            │       └── root/           # 该版本系统根，由构建模块创建子卷
+            │       └── root/           # 只读系统父根及 CoW 继承目录子卷
             ├── cache/
             │   └── <版本标识>/
             │       ├── base-system/    # 只读基础系统子卷快照
@@ -42,14 +47,17 @@ Btrfs 顶层/
             │       ├── packages/       # 只读软件阶段子卷快照
             │       ├── packages.toml   # 软件阶段完成、目标与实际清单
             │       ├── script/         # 只读脚本阶段子卷快照，不作后续构建来源
-            │       └── script.toml     # 脚本阶段完成与实际清单
-            └── persistent/             # 此系统跨版本共享的持久化目录和文件
+            │       ├── script.toml     # 脚本阶段完成与实际清单
+            │       ├── inherit/        # 可选继承阶段，父根及子卷均只读，不复用
+            │       └── inherit.toml    # 继承阶段完成与实际清单
+            └── persistent/             # Mount 跨版本共享数据，如 -home-alice
 ```
 
 初始化管理器时创建 `@RStarSleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
 并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。已有同名普通文件不覆盖；
 缺失的预设包会在再次初始化时补充。
-初始化一个被管理系统时创建其当前配置（包括空 `script/`）、版本、缓存和持久化目录及默认配置。
+初始化一个被管理系统时创建其当前配置（包括空 `script/` 和 INI 系统的空 `inherit.conf`）、
+版本、缓存和持久化目录及默认配置。
 这些系统目录目前是普通目录；具体版本根、阶段缓存是否使用子卷由对应功能实现。
 初始化不会生成系统版本、配置留档或修改主/子系统角色，也不会覆盖已有配置。
 子卷创建失败时返回错误，不使用普通目录代替；既有 `@RStarSleep` 必须为真实子卷。
@@ -62,12 +70,13 @@ Btrfs 顶层/
 
 角色变更不移动目录。移出子系统名单时，后续运行模块负责撤销已建立的集成。
 持久化数据默认跨同一系统的版本共享，删除版本不应删除它；其快照与回滚策略
-由持久化功能实现。缓存独立于已完成版本，可以按版本和构建流程清理。
+由具体持久化功能管理。Mount 数据首次复制后持续复用，不随重建覆盖；CopyOnWrite
+数据属于各版本独立子卷，不放入 persistent。缓存独立于已完成版本，可以清理。
 每个系统独立安装和维护基础根，仅复用自己的最新过往阶段缓存。
 下载的初始系统安装文件由插件保存到声明的全局持久目录，供后续独立安装使用；
 管理器不创建跨系统共享的基础根。基础安装或恢复后均执行一次基础维护。
 
-当前配置用于下一次构建。后续构建模块在开始构建时保存配置留档，并使用留档
+当前配置用于下一次构建。构建模块在开始构建时保存配置留档，并使用留档
 完成构建，避免期间编辑当前配置影响版本归属。既有版本留档不应覆盖。
 全局角色配置不归属于某个系统版本。
 
@@ -83,9 +92,14 @@ schema_version = 1
 # Only explicitly listed systems receive the subsystem role.
 # 只有显式列出的系统才具有子系统角色。
 subsystems = []
+# Type #1 systemd-boot destination and optional extra kernel arguments.
+# systemd-boot Type #1 启动目标及可选额外内核参数。
+# boot_dir = "/boot"
+# kernel_options = ["quiet"]
 ```
 
-未指定主系统时，省略 `main_system`。该文件目前仅生成，不实现角色配置读取。
+未指定主系统时，省略 `main_system`。构建和清理会读取全局配置；指定的主系统构建成功后
+发布启动文件，`boot_dir` 默认 `/boot`。子系统运行字段仍待实现。
 
 系统构建配置 `systems/<系统标识>/config/build/config.conf`：
 
@@ -134,8 +148,15 @@ Packages 的传统变量保留按逗号/空白拆分后的包列表。
 不能发生大写或节/键拼接冲突，不能占用控制器变量。
 Architecture 若声明为必选则必须显式提供；若声明为可选并省略，则传入用于插件匹配的默认架构。
 
-已有系统或历史版本缺少 `build/config.conf` 时，继续读取旧 `build/config.toml`。
-两种文件都存在时优先读取 INI，INI 无效不会回退到 TOML；初始化不以空模板覆盖旧 TOML 的设置。
+`config/build/` 内除历史 `config.toml` 外的普通文件均作为 INI 按文件名排序独立解析后叠加，
+文件名和扩展名没有配置职责区别。核心单项 SchemaVersion、Distribution、Architecture
+重复时报错，空赋值不清空先前的成员。未知继承键由控制器报错；其余参数由插件声明校验。
+插件可在 `[config.constraints.RSTAR_字段名]` 声明 `kind`：`free-single`、`free-list`、
+`enum-single`、`enum-list`、`number`；枚举还需 `values`。单项和数字要求恰好一个赋值，
+数字必须有限，未约束字段为自由列表。缓存摘要包含原始列表成员及边界。
+
+已有系统或历史版本没有实际 INI 赋值时，继续读取旧 `build/config.toml`，空继承模板不阻止回退。
+有实际赋值时 INI 与 TOML 不混合，INI 无效不会回退；初始化不以空模板覆盖旧 TOML 的设置。
 迁移时把旧 `schema_version`、`system_type`（或 `distribution`）、`architecture` 和 `packages`
 分别改写为 `[Config] SchemaVersion`、`[Distribution] Distribution`、`Architecture`
 及 `[Content] Packages`，另存为 `build/config.conf`。其他自定义设置也应迁入相应分节。
@@ -225,7 +246,7 @@ Cargo 的 `build.rs` 按稳定顺序打包为 gzip 压缩的 tar，并通过 `in
 其他任务先检查宿主 nspawn，再在目标系统中检查系统声明及 Bash。目标根需有
 `/bin/sh` 供固定的工具检查脚本使用。缺少工具时返回插件、任务、执行环境及全部
 缺失项，操作文件不运行。系统任务通过 nspawn 挂载完整插件及独立临时空间后执行。
-版本和阶段缓存流程仍按构建设计接入，包格式和流程设计见 `docs/build-design.md`。
+版本和阶段缓存流程由构建控制器执行，包格式和流程见 [构建设计](../../docs/build-design.md)。
 
 系统、版本和流程标识必须以 ASCII 字母或数字开头，其余字符只能使用字母、数字、
 点、下划线和连字符，避免标识被当成路径使用。
@@ -247,7 +268,8 @@ cargo run -- init-system /mnt/btrfs/@RStarSleep desktop
 cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 ```
 
-本模块不自动编辑 `/etc/fstab`、执行挂载或导出应用入口。
+初始化和配置读取不自动编辑 `/etc/fstab`、执行挂载或导出应用入口。
+构建中的 Mount 继承通过发行版插件生成挂载配置。
 
 `init` 子命令直接调用 `config::initialize()`。目录参数缺失或过多时显示具体错误和
 子命令用法；初始化失败时输出错误原因并返回非零退出码。
@@ -274,6 +296,7 @@ cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 软件缓存还依赖基础字段，未选参数变化保留缓存。Arch 预设检测 Config、Distribution 整节，
 不检测 Packages。完整留档摘要检测历史来源被修改的情况。
 每次构建还固定删除历史 script 及后续阶段缓存；上述删除不影响已发布版本根及配置留档。
+构建开始将当前可执行程序同步到管理根的 `RStarSleep`，内容相同时跳过改写。
 
 构建、插件和软件代码的文件职责见 [构建设计](../../docs/build-design.md)。
 
@@ -296,21 +319,55 @@ config/script/
 输入来自冻结配置，资源写入不修改当前配置或留档。未知文件及不安全条目报错。
 
 此步骤每次直接从本次软件缓存创建可写 CoW 工作根，执行成功后独立提交
-`cache/<版本>/script` 与 `script.toml`，最终版本从 script 缓存发布。
+`cache/<版本>/script` 与 `script.toml`，随后应用配置的继承；无继承时直接从 script 发布。
 旧 script 缓存永不用于构建，无有缓存/无缓存分支；删除或修改脚本不会继承旧脚本效果。
 脚本失败阻止发布，但保留基础和软件缓存。全配置摘要包含脚本及权限，检测留档修改。
 
+## 继承配置与版本数据
 
-构建配置目录内所有普通 INI 文件按文件名排序独立解析后叠加，文件名和扩展名没有语义区别。
-`config.toml` 仅作为没有 INI 文件时的历史格式回退；不参与混合叠加。重复单项核心设置
-（SchemaVersion、Distribution、Architecture）报错，空赋值保留为列表成员，不清空之前的赋值。
+新初始化的 INI 系统生成空的 `systems/<系统>/config/build/inherit.conf` 模板，已有文件保留。
+可将继承设置写入该文件，例如：
 
-插件可在 `[config.constraints.RSTAR_字段名]` 设置 `kind`：`free-single`、`free-list`、
-`enum-single`、`enum-list`、`number`；枚举还需声明 `values=["候选值"]`。
-单项和数字要求恰好一个赋值，数字必须有限；无约束字段默认为自由列表。
-这些规则作用于原始赋值，而非拆分后的软件包名。插件应检查其余业务约束并明确报错。
-缓存摘要包含每一个列表成员及其边界。
+```ini
+[Inheritance]
+# Require CoW copies from the currently running system into each new version.
+# 要求每次从当前运行系统以 CoW 复制到新版本。
+CopyOnWrite=/etc/hostname
+CopyOnWrite=
+    /home/alice
+    /var/lib/myapp
+# Seed once in this system's persistent directory, then reuse it.
+# 在本系统 persistent 中首次初始化，之后复用。
+Mount=/srv/data
+Mount=/etc/myapp.conf
+```
 
+控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，仅接受 CopyOnWrite、Mount，
+不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，不接受 `/`、
+重复、相互包含或持久名称冲突；来源还不能与管理器目录重叠。
+Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn 绑定分隔字符 `:`、`\`。
+
+CopyOnWrite 在软件及 script 之后读取当前运行系统，按 Btrfs UUID 检查来源与构建目录
+属于同一文件系统，并拒绝来源内部的挂载点及子卷。文件使用 `cp --reflink=always`，
+目录填入独立临时子卷，再建立独立子卷快照。`cache/<版本>/inherit` 与 `inherit.toml`
+保存本次继承输出；下次构建从 script 起清理，不复用旧继承缓存。
+Btrfs 父卷快照不会自动包含子卷，发布时显式快照继承目录。缓存和版本的父根、
+继承子卷都只读；需要持续写入或跨版本复用的数据应使用 Mount。
+
+Mount 将绝对路径中的所有 `/` 替换为 `-`，包括开头斜杠：`/home/alice` 保存为
+本系统 `persistent/-home-alice`。不存在时首次复制当前运行系统的数据；已存在时复用，
+不再读取或覆盖当前来源。允许跨分区、嵌套挂载及子卷，并报告 Warning；首次复制
+允许普通复制。目录为可写 Btrfs 子卷，文件为普通文件，`clean` 保留这些数据。
+新根保留挂载点底层内容以便系统工具可用；插件调用和查询期间绑定 persistent，
+继承 `/etc` 时将生成的 fstab 同步到新根。
+
+控制器创建目标路径后调用可选插件接口 `mount_inheritance`，每组参数为
+`source target filesystem options`。Arch 把目录以 UUID/subvol 挂载，把文件通过
+`/rstarsleep` 绑定挂载，必要时生成管理子卷挂载。`[Content] FstabLines` 是自由列表，
+可重复赋值或使用多行值追加完整 fstab 行；该字段须在插件中声明，可独立使用。
+Arch 用专用标记块保存生成行，重复调用替换该块并保留其他配置。
+
+## 主系统启动发布
 
 主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
 `/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
@@ -321,12 +378,12 @@ config/script/
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
 各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
 
-新初始化使用 `@RStarSleep`，已有 `@rstarsleep` 会继续复用。
-每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
-
+## 版本清理
 
 `RStarSleep clean <系统> <版本> [--root <管理根>]` 删除该系统截止版本及之前的版本记录、
 系统根、对应阶段缓存、启动目录和启动项，保留当前配置、身份及 persistent。
-清理与构建共用独占锁，运行中的系统根不能被清理，检查失败不会开始删除。
+清理与构建共用独占锁，拒绝删除运行中的系统根或跨越挂载边界，检查失败不会开始删除。
 `version-counter` 保留已分配的最高编号，清空历史后也不会复用旧版本号。
 删除过程遇到错误会停止，可重试；版本所有权记录随版本保留到对应外部启动文件删除完成。
+
+配置解析、模拟构建和真实 Bash 接口已测试；真实 Btrfs/nspawn 完整链路仍待集成验证。

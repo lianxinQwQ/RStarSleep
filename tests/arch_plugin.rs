@@ -93,6 +93,24 @@ esac
     /// - `case`: Mock query behavior, such as a forced database failure.
     ///   模拟查询行为，例如强制数据库失败。
     fn run(&self, operation: &str, arguments: &[&str], case: &str) -> Output {
+        self.run_with_env(operation, arguments, case, &[])
+    }
+
+    /// Supply additional frozen build parameters to the real Bash operation.
+    /// 向真实 Bash 操作提供额外的冻结构建参数。
+    /// # Arguments
+    /// - `self`: Isolated command environment. 隔离命令环境。
+    /// - `operation`: Same-named operation file. 同名操作文件。
+    /// - `arguments`: Separate operation arguments. 分别传递的操作参数。
+    /// - `case`: Package-manager mock behavior. 包管理器模拟行为。
+    /// - `environment`: Additional build variables. 额外构建变量。
+    fn run_with_env(
+        &self,
+        operation: &str,
+        arguments: &[&str],
+        case: &str,
+        environment: &[(&str, &str)],
+    ) -> Output {
         let mut paths = vec![self.temporary.path().to_path_buf()];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         Command::new("bash")
@@ -107,6 +125,7 @@ esac
             .env("PACMAN_MOCK_CASE", case)
             .env("RSTAR_PLUGIN_TMP", self.temporary.path())
             .env("RSTAR_ROOT", self.temporary.path().join("root"))
+            .envs(environment.iter().copied())
             .output()
             .unwrap()
     }
@@ -121,6 +140,222 @@ esac
     fn trace(&self) -> String {
         fs::read_to_string(&self.trace).unwrap()
     }
+}
+
+/// Verify inherited mounts are safely encoded and appended alongside user-supplied rows.
+/// 验证继承挂载安全编码后与用户配置行一同追加。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn inheritance_mounts_append_escaped_rows_and_extra_configuration() {
+    let fixture = Fixture::new();
+    let fstab = fixture.temporary.path().join("root/etc/fstab");
+    fs::write(&fstab, "# installed defaults without final newline").unwrap();
+    let output = fixture.run_with_env(
+        "mount_inheritance",
+        &[
+            "UUID=1234",
+            "/home/alice",
+            "btrfs",
+            "rw,subvol=@RStarSleep/systems/main/persistent/-home-alice",
+            "/rstarsleep/file with\ttab\\slash#tag\nrow",
+            "/etc/a b",
+            "none",
+            "bind,x-systemd.requires-mounts-for=/rstarsleep",
+        ],
+        "",
+        &[(
+            "RSTAR_CONTENT_FSTABLINES",
+            "tmpfs /tmp tmpfs defaults 0 0\nUUID=abcd /data ext4 defaults 0 2",
+        )],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&fstab).unwrap(),
+        concat!(
+            "# installed defaults without final newline\n",
+            "# BEGIN RStarSleep inherited mounts\n",
+            "UUID=1234 /home/alice btrfs rw,subvol=@RStarSleep/systems/main/persistent/-home-alice 0 0\n",
+            "/rstarsleep/file\\040with\\011tab\\134slash\\043tag\\012row /etc/a\\040b none bind,x-systemd.requires-mounts-for=/rstarsleep 0 0\n",
+            "tmpfs /tmp tmpfs defaults 0 0\n",
+            "UUID=abcd /data ext4 defaults 0 2\n",
+            "# END RStarSleep inherited mounts\n",
+        )
+    );
+    assert!(fixture.trace().is_empty());
+}
+
+/// Extra rows work without inherited mounts; clearing them removes only the owned block.
+/// 无继承挂载时仍处理额外行，清空时仅删除所属配置块。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn inheritance_mounts_support_extra_rows_without_mount_arguments() {
+    let fixture = Fixture::new();
+    let fstab = fixture.temporary.path().join("root/etc/fstab");
+    assert!(fixture.run("mount_inheritance", &[], "").status.success());
+    assert!(!fstab.exists());
+    let output = fixture.run_with_env(
+        "mount_inheritance",
+        &[],
+        "",
+        &[("RSTAR_CONTENT_FSTABLINES", "tmpfs /tmp tmpfs defaults 0 0")],
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read_to_string(&fstab).unwrap(),
+        "# BEGIN RStarSleep inherited mounts\ntmpfs /tmp tmpfs defaults 0 0\n# END RStarSleep inherited mounts\n"
+    );
+    assert_eq!(
+        fs::metadata(&fstab).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    assert!(fixture.run("mount_inheritance", &[], "").status.success());
+    assert_eq!(fs::read_to_string(&fstab).unwrap(), "");
+}
+
+/// Reusing persistent fstab replaces generated rows, without duplicating mounts or losing user rows.
+/// 复用持久 fstab 时替换生成行，不重复挂载或丢失用户行。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn inheritance_mounts_replace_managed_rows_on_repeated_builds() {
+    let fixture = Fixture::new();
+    let fstab = fixture.temporary.path().join("root/etc/fstab");
+    let original = concat!(
+        "# user before\nUUID=user /data ext4 defaults 0 2\n",
+        "# BEGIN RStarSleep inherited mounts\nUUID=old /old btrfs rw 0 0\n",
+        "# END RStarSleep inherited mounts\n# user after\n",
+    );
+    fs::write(&fstab, original).unwrap();
+    let arguments = ["UUID=1234", "/home", "btrfs", "rw"];
+    let environment = [("RSTAR_CONTENT_FSTABLINES", "tmpfs /tmp tmpfs defaults 0 0")];
+    let first = fixture.run_with_env("mount_inheritance", &arguments, "", &environment);
+    assert!(first.status.success());
+    let expected = concat!(
+        "# user before\nUUID=user /data ext4 defaults 0 2\n# user after\n",
+        "# BEGIN RStarSleep inherited mounts\nUUID=1234 /home btrfs rw 0 0\n",
+        "tmpfs /tmp tmpfs defaults 0 0\n# END RStarSleep inherited mounts\n",
+    );
+    assert_eq!(fs::read_to_string(&fstab).unwrap(), expected);
+    for _ in 0..2 {
+        let output = fixture.run_with_env("mount_inheritance", &arguments, "", &environment);
+        assert!(output.status.success());
+        assert_eq!(fs::read_to_string(&fstab).unwrap(), expected);
+    }
+}
+
+/// Ambiguous ownership markers fail before replacing user configuration.
+/// 所有权标记含歧义时，在替换用户配置前失败。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn inheritance_mounts_reject_malformed_ownership_blocks() {
+    let fixture = Fixture::new();
+    let fstab = fixture.temporary.path().join("root/etc/fstab");
+    let arguments = ["UUID=1234", "/home", "btrfs", "rw"];
+    for content in [
+        "# user\n# BEGIN RStarSleep inherited mounts\nUUID=old /old btrfs rw 0 0\n",
+        "# END RStarSleep inherited mounts\n# user\n",
+        "# BEGIN RStarSleep inherited mounts\n# BEGIN RStarSleep inherited mounts\n# END RStarSleep inherited mounts\n",
+    ] {
+        fs::write(&fstab, content).unwrap();
+        assert_eq!(
+            fixture
+                .run("mount_inheritance", &arguments, "")
+                .status
+                .code(),
+            Some(64)
+        );
+        assert_eq!(fs::read_to_string(&fstab).unwrap(), content);
+    }
+    let original = "# retained user\n";
+    fs::write(&fstab, original).unwrap();
+    for marker in [
+        "# BEGIN RStarSleep inherited mounts",
+        "# END RStarSleep inherited mounts",
+    ] {
+        assert_eq!(
+            fixture
+                .run_with_env(
+                    "mount_inheritance",
+                    &arguments,
+                    "",
+                    &[("RSTAR_CONTENT_FSTABLINES", marker)],
+                )
+                .status
+                .code(),
+            Some(64)
+        );
+        assert_eq!(fs::read_to_string(&fstab).unwrap(), original);
+    }
+}
+
+/// Reject malformed groups and symbolic links before touching fstab; break preexisting hard links.
+/// 修改 fstab 前拒绝错误参数组和符号链接，并断开原有硬链接。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn inheritance_mounts_validate_before_writing_and_do_not_follow_file_links() {
+    let fixture = Fixture::new();
+    let root = fixture.temporary.path().join("root");
+    let fstab = root.join("etc/fstab");
+    let original = "# original fstab\n";
+    fs::write(&fstab, original).unwrap();
+    for args in [
+        vec!["UUID=1234"],
+        vec!["UUID=1234", "relative", "btrfs", "rw"],
+        vec!["", "/home", "btrfs", "rw"],
+        vec!["UUID=1234", "/home", "btrfs injected", "rw"],
+        vec!["UUID=1234", "/home", "btrfs", ""],
+        vec![
+            "UUID=1234",
+            "/home",
+            "btrfs",
+            "rw",
+            "invalid",
+            "relative",
+            "none",
+            "bind",
+        ],
+    ] {
+        assert_eq!(
+            fixture.run("mount_inheritance", &args, "").status.code(),
+            Some(64)
+        );
+        assert_eq!(fs::read_to_string(&fstab).unwrap(), original);
+    }
+    let outside = fixture.temporary.path().join("outside-fstab");
+    fs::write(&outside, original).unwrap();
+    fs::remove_file(&fstab).unwrap();
+    std::os::unix::fs::symlink(&outside, &fstab).unwrap();
+    let arguments = ["UUID=1234", "/home", "btrfs", "rw"];
+    assert_eq!(
+        fixture
+            .run("mount_inheritance", &arguments, "")
+            .status
+            .code(),
+        Some(64)
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), original);
+    fs::remove_file(&fstab).unwrap();
+    fs::hard_link(&outside, &fstab).unwrap();
+    assert!(
+        fixture
+            .run("mount_inheritance", &arguments, "")
+            .status
+            .success()
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), original);
+    assert!(
+        fs::read_to_string(&fstab)
+            .unwrap()
+            .contains("UUID=1234 /home btrfs rw 0 0")
+    );
 }
 
 /// Verify that package queries report normalized explicit/dependency installation reasons.

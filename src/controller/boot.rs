@@ -144,6 +144,17 @@ pub(super) fn sync_executable(root: &Path) -> Result<()> {
             return Err(Error::Invalid("管理器二进制目标必须为普通文件".into()));
         }
         if disk::read(&destination).map_err(|e| fs::io(&destination, e))? == bytes {
+            let permissions = disk::metadata(&source)
+                .map_err(|e| fs::io(&source, e))?
+                .permissions();
+            if disk::metadata(&destination)
+                .map_err(|e| fs::io(&destination, e))?
+                .permissions()
+                != permissions
+            {
+                disk::set_permissions(&destination, permissions)
+                    .map_err(|e| fs::io(&destination, e))?;
+            }
             return Ok(());
         }
     }

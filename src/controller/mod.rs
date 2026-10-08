@@ -13,6 +13,7 @@ mod container;
 mod frozen;
 mod fs;
 mod identity;
+mod inheritance;
 mod model;
 mod mounts;
 mod persistent;

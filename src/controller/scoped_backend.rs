@@ -12,6 +12,18 @@ pub(super) struct ScopedBackend<'a, B> {
 }
 
 impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
+    fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
+        self.backend.filesystem_location(path)
+    }
+    fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
+        self.backend.set_readonly(path, readonly)
+    }
+    fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
+        self.backend.copy_inherited(source, target, force_cow)
+    }
+    fn check_cow_source(&self, source: &Path, parent: &Path) -> Result<()> {
+        self.backend.check_cow_source(source, parent)
+    }
     fn publish_boot(
         &self,
         outcome: &super::BuildOutcome,

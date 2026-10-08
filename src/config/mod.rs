@@ -6,6 +6,7 @@
 #![doc = include_str!("layout.md")]
 
 mod build;
+mod inheritance;
 mod ini;
 mod init;
 mod model;
@@ -18,6 +19,7 @@ pub(crate) use build::normalized_build_config;
 pub use build::{
     BuildConfig, read_build_config_at, read_distribution_options_at, read_plugin_parameters_at,
 };
+pub use inheritance::{InheritanceConfig, inheritance_name};
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use parameters::PluginParameters;

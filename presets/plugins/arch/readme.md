@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.6.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.7.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -28,7 +28,7 @@ optional = [
     "RSTAR_CONFIG_SCHEMAVERSION", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_CONTENT_PACKAGES",
     "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
-    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
+    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
 ]
 
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
@@ -40,7 +40,8 @@ software = []
 
 匹配成功后检查全部节及裸参数，包括 SchemaVersion、Distribution 和 Packages。
 必选参数缺失或为空、出现未声明参数时均报错，不执行插件操作。
-声明使用规范大写名称，标量重复赋值取最后一个值；四个列表都必须提供，适用时显式使用空列表。
+控制器独立读取的 `[Inheritance]` 不要求在插件配置中声明。
+声明使用规范大写名称，重复赋值按原始列表保留；四个列表都必须提供，适用时显式使用空列表。
 基础缓存检测 Config、Distribution 整节；Packages 变化由软件维护处理，不使缓存失效。
 新增自定义参数时须登记到 required 或 optional，并按需加入缓存列表。
 缓存可选择裸参数、整节或 `RSTAR_*节名_参数名`，规则见 [构建设计](../../../docs/build-design.md)。
@@ -69,6 +70,30 @@ bootstrap 在宿主运行，其他操作通过 nspawn 在目标系统中运行�
 `[tools]` 声明所需工具，运行前检查对应环境，缺失时不运行操作脚本。
 bootstrap 需要可信 Arch 签名密钥环和元数据中声明的下载、验签、解包及摘要工具。
 API 2 可维护已有兼容缓存，新安装需要 API 3。
+
+## 挂载继承
+
+插件通过顶层 `mount_inheritance = true` 声明 `mount_inheritance.sh`。
+控制器在用户脚本完成并创建目标路径后调用此接口，每组四个参数依次为挂载源、
+系统内绝对挂载点、文件系统类型和挂载选项。插件转义字段并在 `/etc/fstab` 的
+受管理块内写入 `0 0` 结尾的挂载行。目录挂载使用 Btrfs 的 UUID 与 persistent 子卷路径；文件挂载
+使用 `/rstarsleep` 下的持久文件及 `bind,x-systemd.requires-mounts-for=/rstarsleep`。
+挂载点在新根中的底层内容保留，插件调用与包查询期间绑定持久对象；继承 `/etc` 时
+更新其持久 fstab 并同步到新根。重复调用替换 `# BEGIN RStarSleep inherited mounts`
+和 `# END RStarSleep inherited mounts` 间的块，保留所有块外配置。
+
+`[Content] FstabLines` 是自由列表，可重复赋值或使用多行值，为同一版本写入完整配置行。
+这些行保持原文，需自行使用合法 fstab 转义；此字段变化不影响基础或软件缓存。
+额外行不能包含上述所有权标记；既有标记不成对或相互嵌套时报错，不改写 fstab。
+即使没有继承挂载，声明此能力的插件也会处理额外行。例如：
+
+```ini
+[Content]
+# Append complete fstab rows after automatically generated inherited mounts.
+# 在自动生成的继承挂载之后追加完整 fstab 行。
+FstabLines=UUID=01234567-89ab-cdef-0123-456789abcdef /data ext4 defaults 0 2
+FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
+```
 
 每个系统独立执行 bootstrap 和基础安装，随后 `system_init <machine-id>` 写入稳定身份、
 初始化 pacman 密钥。machine-id 保存在此系统的 `identity.toml`，重建仍复用。

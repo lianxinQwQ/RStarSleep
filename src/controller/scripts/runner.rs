@@ -109,6 +109,7 @@ mod tests {
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            inherited_mounts: Vec::new(),
         };
         let root = Path::new("/work/script-root");
         let command = command(
@@ -160,6 +161,7 @@ mod tests {
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            inherited_mounts: Vec::new(),
         };
         let name = OsString::from_vec(b"shell-\xff.sh".to_vec());
         let cmd = command(

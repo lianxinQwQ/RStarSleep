@@ -10,7 +10,7 @@ use std::{
 
 /// Ordered cache stages. Append future stages after script here so startup cleanup covers them.
 /// 有序缓存阶段。未来 script 之后的新阶段须追加于此，以纳入构建前固定清理。
-pub(super) const STAGES: &[&str] = &["base-system", "packages", "script"];
+pub(super) const STAGES: &[&str] = &["base-system", "packages", "script", "inherit"];
 
 /// Delete a stage and its successors across this system's historical cache directories.
 /// 删除此系统历史缓存目录中指定阶段及其后续阶段。

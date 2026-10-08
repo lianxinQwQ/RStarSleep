@@ -102,6 +102,14 @@ impl Document {
         Ok(document)
     }
 
+    /// Whether the document has any configured assignments, ignoring section-only templates.
+    /// 文档是否有实际赋值，忽略只有分节的模板。
+    /// # Arguments
+    /// - `self`: Merged INI document. 合并后的 INI 文档。
+    pub(super) fn has_assignments(&self) -> bool {
+        !self.assignments.is_empty()
+    }
+
     /// Append another independently parsed INI file in filename order.
     /// 按文件名顺序叠加另一个独立解析的 INI 文件。
     /// # Arguments

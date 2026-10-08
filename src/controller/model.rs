@@ -85,6 +85,9 @@ pub struct BuildContext {
     /// Writable CoW copies of globally named persistent subvolumes.
     /// 全局命名持久子卷的可写 CoW 副本。
     pub persistent_mounts: Vec<PersistentMount>,
+    /// Current-system persistent objects bound at their final guest paths after scripts.
+    /// 脚本后绑定到最终容器路径的当前系统持久对象。
+    pub inherited_mounts: Vec<PersistentMount>,
 }
 
 /// Bind one transactional subvolume below the plugin working directory.
@@ -199,6 +202,32 @@ pub trait BuildBackend {
         self.delete_subvolume(path)
     }
 
+    /// Resolve the Btrfs UUID and top-level path used for persistent mounts.
+    /// 解析持久挂载所用的 Btrfs UUID 和顶层路径。
+    /// # Arguments
+    /// - `self`: Filesystem inspection backend. 文件系统检查后端。
+    /// - `path`: Existing Btrfs path. 已有 Btrfs 路径。
+    fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
+        let mount = super::mounts::covering(path)?;
+        let uuid = mount
+            .uuid
+            .clone()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| Error::Invalid("Btrfs 挂载没有 UUID".into()))?;
+        Ok((uuid, mount.subvolume_path(path)?))
+    }
+
+    /// Set an owned subvolume's read-only property after attaching inherited children.
+    /// 附加继承子卷后设置所属子卷只读属性。
+    /// # Arguments
+    /// - `self`: Storage backend. 存储后端。
+    /// - `path`: Owned subvolume. 所属子卷。
+    /// - `readonly`: New property. 新属性。
+    fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
+        let _ = (path, readonly);
+        Err(Error::Invalid("此后端不能修改子卷只读属性".into()))
+    }
+
     /// Copy a file or directory while optionally requiring reflink for all regular files.
     /// 复制文件或目录，可要求所有普通文件强制 reflink。
     /// # Arguments
@@ -218,14 +247,13 @@ pub trait BuildBackend {
     /// - `source`: Current-system path. 当前系统路径。
     /// - `destination_parent`: Existing destination filesystem directory. 目标文件系统上的已有目录。
     fn check_cow_source(&self, source: &Path, destination_parent: &Path) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
         let source_info =
             std::fs::symlink_metadata(source).map_err(|e| super::fs::io(source, e))?;
-        let target_info = std::fs::metadata(destination_parent)
-            .map_err(|e| super::fs::io(destination_parent, e))?;
-        if source_info.dev() != target_info.dev() {
+        let (source_uuid, _) = self.filesystem_location(source)?;
+        let (target_uuid, _) = self.filesystem_location(destination_parent)?;
+        if source_uuid != target_uuid {
             return Err(Error::Invalid(format!(
-                "CoW 继承必须位于同一分区: {}",
+                "CoW 继承必须位于同一 Btrfs 分区: {}",
                 source.display()
             )));
         }

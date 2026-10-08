@@ -12,9 +12,7 @@ use std::{
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct Mount {
     pub target: PathBuf,
-    pub source: String,
     pub fstype: String,
-    pub options: String,
     pub uuid: Option<String>,
     pub fsroot: PathBuf,
 }
@@ -75,6 +73,23 @@ impl Mount {
 /// # Arguments
 /// - `source`: File or directory in the current system. 当前系统中的文件或目录。
 pub(super) fn check_descendant_mounts(source: &Path) -> Result<()> {
+    check_mount_tree(source, false)
+}
+
+/// Reject any mounted cleanup target or descendant.
+/// 拒绝已挂载的清理目标或后代。
+/// # Arguments
+/// - `source`: Owned deletion target. 所属删除目标。
+pub(super) fn check_unmounted_tree(source: &Path) -> Result<()> {
+    check_mount_tree(source, true)
+}
+
+/// Check mount boundaries before recursively reading or deleting paths.
+/// 递归读取或删除路径前检查挂载边界。
+/// # Arguments
+/// - `source`: Tree to inspect. 待检查树。
+/// - `include_self`: Also reject a mounted tree root. 也拒绝挂载的树根。
+fn check_mount_tree(source: &Path, include_self: bool) -> Result<()> {
     let text = std::fs::read_to_string("/proc/self/mountinfo")
         .map_err(|e| fs::io(Path::new("/proc/self/mountinfo"), e))?;
     for line in text.lines() {
@@ -88,7 +103,7 @@ pub(super) fn check_descendant_mounts(source: &Path) -> Result<()> {
             .replace("\\012", "\n")
             .replace("\\134", "\\");
         let target = Path::new(&target);
-        if target != source && target.starts_with(source) {
+        if (include_self || target != source) && target.starts_with(source) {
             return Err(Error::Invalid(format!(
                 "继承来源包含挂载点: {}",
                 target.display()

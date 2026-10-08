@@ -239,10 +239,7 @@ fn rejects_missing_malformed_and_invalid_package_options() {
         assert!(store.read_packages("desktop").is_err(), "accepted: {text}");
     }
     fs::remove_file(layout.config.join("build/config.conf")).unwrap();
-    assert!(matches!(
-        store.read_packages("desktop"),
-        Err(Error::Io { .. })
-    ));
+    assert!(store.read_packages("desktop").is_err());
 }
 
 /// Verify that system initialization requires an initialized manager workspace.

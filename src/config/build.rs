@@ -296,7 +296,9 @@ impl Input {
                 merged = Some(next);
             }
         }
-        if let Some(document) = merged {
+        if let Some(document) = merged
+            && (document.has_assignments() || !directory.join(LEGACY_BUILD_CONFIG_PATH).exists())
+        {
             return Ok(Self::Ini(document));
         }
         let path = directory.join(LEGACY_BUILD_CONFIG_PATH);

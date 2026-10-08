@@ -255,6 +255,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
         let distribution_options = read_distribution_options_at(&attempt.config)?;
         let input = read_plugin_parameters_at(&attempt.config)?;
         loaded.validate_parameter_lists(&input)?;
+        crate::config::InheritanceConfig::read(&input)?;
         let parameters = input
             .values
             .into_iter()
@@ -272,6 +273,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
             config: attempt.config.clone(),
             persistent_mounts: Vec::new(),
             parameter_lists: input.lists,
+            inherited_mounts: Vec::new(),
         };
         let mut upgrade_packages = Vec::new();
         {
@@ -400,11 +402,7 @@ fn build_system(
             software_identity: &software_identity,
             scratch: &scratch,
         };
-        let outcome = stages.run(base, packages, &mut owned)?;
-        if runtime.main_system.as_deref() == Some(id.as_str()) {
-            backend.publish_boot(&outcome, runtime)?;
-        }
-        Ok(outcome)
+        stages.run(base, packages, &mut owned)
     })();
     let cleanup = cleanup(backend, &owned);
     let result = match (result, cleanup) {
@@ -415,6 +413,12 @@ fn build_system(
             "{error}; 工作根清理失败: {cleanup}"
         ))),
     };
+    let result = result.and_then(|outcome| {
+        if runtime.main_system.as_deref() == Some(id.as_str()) {
+            backend.publish_boot(&outcome, runtime)?;
+        }
+        Ok(outcome)
+    });
     match result {
         Ok(outcome) => {
             status(attempt, id, "complete", None, Some(loaded))?;

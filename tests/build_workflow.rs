@@ -282,3 +282,88 @@ fn bounded_clean_preserves_running_roots_data_and_monotonic_versions() {
         .remove(0);
     assert_eq!(next.version, "v00000004");
 }
+
+#[path = "build_workflow/inheritance.rs"]
+mod inheritance;
+
+/// A failed scratch cleanup never publishes a main-system boot entry.
+/// 临时根清理失败时绝不发布主系统启动项。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn main_system_boot_publication_requires_successful_scratch_cleanup() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    fs::write(
+        fixture.store.global_config_path(),
+        "schema_version=1\nmain_system='desktop'\n",
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    backend.fail_cleanup.set(true);
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert_eq!(backend.boot_publications.get(), 0);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    assert_eq!(
+        record(&layout.versions.join("v00000001/state.toml"))["state"].as_str(),
+        Some("failed")
+    );
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    assert_eq!(backend.boot_publications.get(), 1);
+}
+
+/// Cleanup uses version ownership records even after the global main system changes.
+/// 即使全局主系统改变，清理也使用版本所有权记录。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn clean_removes_only_owned_boot_files() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    let boot = fixture.store.root().parent().unwrap().join("esp");
+    let directory = boot.join("RStarSleep").join(&outcome.version);
+    let entry = boot
+        .join("loader/entries")
+        .join(format!("RStarSleep-desktop-{}.conf", outcome.version));
+    fs::create_dir_all(&directory).unwrap();
+    fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    fs::write(directory.join("vmlinuz"), "kernel").unwrap();
+    fs::write(directory.join("initramfs-linux.img"), "initramfs").unwrap();
+    fs::write(&entry, "entry").unwrap();
+    let unrelated = entry.parent().unwrap().join("other.conf");
+    fs::write(&unrelated, "keep").unwrap();
+    let ownership = toml::Table::from_iter([
+        ("system_id".into(), toml::Value::String("desktop".into())),
+        (
+            "version".into(),
+            toml::Value::String(outcome.version.clone()),
+        ),
+        (
+            "directory".into(),
+            toml::Value::String(directory.to_str().unwrap().into()),
+        ),
+        (
+            "entry".into(),
+            toml::Value::String(entry.to_str().unwrap().into()),
+        ),
+    ]);
+    fs::write(
+        outcome.root.parent().unwrap().join("boot.toml"),
+        toml::to_string(&ownership).unwrap(),
+    )
+    .unwrap();
+    rstarsleep::controller::clean_with_backend(
+        &fixture.store,
+        "desktop",
+        &outcome.version,
+        &backend,
+    )
+    .unwrap();
+    assert!(!directory.exists());
+    assert!(!entry.exists());
+    assert!(unrelated.exists());
+}

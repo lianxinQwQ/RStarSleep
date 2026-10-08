@@ -46,6 +46,9 @@ pub struct SnapshotEvent {
 pub struct SimulatedBackend {
     pub events: RefCell<Vec<Event>>,
     pub running_root: RefCell<Option<PathBuf>>,
+    pub fail_inheritance_copy: Cell<bool>,
+    pub fail_cleanup: Cell<bool>,
+    pub boot_publications: Cell<usize>,
     pub snapshots: RefCell<Vec<SnapshotEvent>>,
     pub fail_operation: RefCell<Option<&'static str>>,
     pub fail_restore: Cell<bool>,
@@ -175,14 +178,61 @@ fn copy_simulated_snapshot(source: &Path, destination: &Path) {
 }
 
 impl BuildBackend for SimulatedBackend {
+    fn publish_boot(
+        &self,
+        outcome: &rstarsleep::controller::BuildOutcome,
+        _config: &rstarsleep::config::RuntimeConfig,
+    ) -> Result<()> {
+        self.check_subvolume(&outcome.root, true)?;
+        self.boot_publications.set(self.boot_publications.get() + 1);
+        Ok(())
+    }
+    fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
+        fs::write(
+            path.join(MARKER),
+            if readonly { "readonly" } else { "writable" },
+        )
+        .unwrap();
+        Ok(())
+    }
+    fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
+        Ok(("simulated-uuid".into(), path.to_path_buf()))
+    }
+    fn copy_inherited(&self, source: &Path, target: &Path, _force_cow: bool) -> Result<()> {
+        if self.fail_inheritance_copy.replace(false) {
+            return Err(Error::Invalid("injected inheritance copy failure".into()));
+        }
+        if source.is_dir() {
+            copy_simulated_snapshot(source, target);
+        } else {
+            fs::copy(source, target).unwrap();
+        }
+        Ok(())
+    }
+    fn check_cow_source(&self, source: &Path, _parent: &Path) -> Result<()> {
+        if source.is_dir() {
+            self.check_no_nested_subvolumes(source)?;
+        }
+        Ok(())
+    }
+
     fn is_running_root(&self, path: &Path) -> Result<bool> {
         Ok(self.running_root.borrow().as_deref() == Some(path))
     }
     fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
-        self.check_subvolume(
-            path,
-            fs::read_to_string(path.join(MARKER)).unwrap() == "readonly",
-        )
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    if entry.path().join(MARKER).exists() {
+                        return Err(Error::Invalid("nested simulated subvolume".into()));
+                    }
+                    pending.push(entry.path());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Create a marked writable simulated subvolume.
@@ -271,6 +321,12 @@ impl BuildBackend for SimulatedBackend {
     ///   模拟后端。
     /// - `path`: Owned scratch subvolume.
     ///   所属临时子卷。
+    fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
+        if self.fail_cleanup.replace(false) {
+            return Err(Error::Invalid("injected cleanup failure".into()));
+        }
+        self.delete_subvolume(path)
+    }
     fn delete_subvolume(&self, path: &Path) -> Result<()> {
         assert!(path.join(MARKER).is_file());
         fs::remove_dir_all(path).unwrap();
@@ -355,6 +411,16 @@ impl BuildBackend for SimulatedBackend {
                 fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
             }
             "predownload_install" | "predownload_update" | "predownload" => {}
+            "mount_inheritance" => {
+                fs::create_dir_all(root.join("etc")).unwrap();
+                fs::write(
+                    root.join("etc/fstab"),
+                    args.chunks(4)
+                        .map(|parts| format!("{}\n", parts.join(" ")))
+                        .collect::<String>(),
+                )
+                .unwrap();
+            }
             "update" => {
                 if root.ends_with("root") && self.remove_kept_on_update.replace(false) {
                     packages.remove("kept");

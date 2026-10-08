@@ -64,7 +64,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         let base = self.base_step(base.as_ref(), packages.as_ref(), owned)?;
         let packages = self.packages_step(packages.as_ref(), &base, owned)?;
         let scripts = self.script_step(&packages, owned)?;
-        self.publish(&scripts)
+        self.inheritance_step(&scripts, owned)
     }
 
     /// Create or restore this system's own base, then always maintain it before committing.
@@ -189,6 +189,74 @@ impl<B: BuildBackend> Stages<'_, B> {
             packages.record.software.clone()
         };
         self.commit("script", &root, software, None)
+    }
+
+    /// Reapply inheritance from the running system and explicitly publish directory subvolumes.
+    /// 重新从运行系统应用继承，并显式发布目录子卷。
+    /// # Arguments
+    /// - `self`: Frozen stage inputs. 冻结阶段输入。
+    /// - `scripts`: Completed script output. 完成的脚本输出。
+    /// - `owned`: Work roots reserved for cleanup. 为清理预留的工作根。
+    fn inheritance_step(&self, scripts: &Cache, owned: &mut Vec<PathBuf>) -> Result<BuildOutcome> {
+        let input = crate::config::read_plugin_parameters_at(&self.context.config)?;
+        let config = crate::config::InheritanceConfig::read(&input)?;
+        if config.copy_on_write.is_empty()
+            && config.mounts.is_empty()
+            && !self
+                .context
+                .parameters
+                .contains_key("RSTAR_CONTENT_FSTABLINES")
+        {
+            return self.publish(scripts);
+        }
+        let root = self.scratch.join("inherit-root");
+        owned.push(root.clone());
+        self.backend.snapshot(&scripts.root, &root, false)?;
+        let inherited = super::inheritance::apply(
+            self.backend,
+            self.plugin,
+            self.context,
+            &root,
+            self.scratch,
+            &self.attempt.layout.root,
+            owned,
+        )?;
+        let mut inherited_context = self.context.clone();
+        inherited_context.inherited_mounts = inherited.mounts;
+        let session = PackageSession {
+            backend: self.backend,
+            plugin: self.plugin,
+            root: &root,
+            context: &inherited_context,
+        };
+        let software = session.capture(scripts.record.software.requested.clone())?;
+        let record = self.record("inherit", software, None)?;
+        let directory = self.attempt.layout.cache.join(&self.attempt.version);
+        let cache = directory.join("inherit");
+        if super::fs::exists(&cache)? {
+            return Err(super::Error::Invalid("不覆盖已有继承缓存".into()));
+        }
+        super::inheritance::snapshot_tree(
+            self.backend,
+            &root,
+            &cache,
+            &inherited.directories,
+            true,
+        )?;
+        super::fs::write(&directory.join("inherit.toml"), &record)?;
+        let published = self.attempt.directory.join("root");
+        super::inheritance::snapshot_tree(
+            self.backend,
+            &cache,
+            &published,
+            &inherited.directories,
+            true,
+        )?;
+        Ok(BuildOutcome {
+            system_id: self.context.system_id.clone(),
+            version: self.attempt.version.clone(),
+            root: published,
+        })
     }
 
     /// Commit one successful step before allowing the next step to run.

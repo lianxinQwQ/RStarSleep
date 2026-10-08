@@ -80,6 +80,19 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
+        fs::checked(path)?;
+        btrfs(&[
+            "property".into(),
+            "set".into(),
+            "-ts".into(),
+            "--".into(),
+            path.into(),
+            "ro".into(),
+            readonly.to_string().into(),
+        ])?;
+        self.check_subvolume(path, readonly)
+    }
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
         fs::checked(source)?;
         fs::checked(target)?;
@@ -126,6 +139,15 @@ impl BuildBackend for SystemBackend {
     }
     fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
         fs::checked(path)?;
+        super::mounts::check_descendant_mounts(path)?;
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(path).map_err(|e| fs::io(path, e))?.ino() != 256 {
+            let children = nested_subvolumes(path)?;
+            if !children.is_empty() {
+                return Err(Error::Invalid(format!("继承目录含嵌套子卷: {children:?}")));
+            }
+            return Ok(());
+        }
         // Kernel enumeration also detects subvolumes hidden by a mounted directory.
         let output = btrfs(&[
             "subvolume".into(),
@@ -146,10 +168,18 @@ impl BuildBackend for SystemBackend {
 
     fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
         fs::checked(path)?;
+        super::mounts::check_unmounted_tree(path)?;
         // Validate the owned root before deleting any descendants; readonly roots
         // are also valid cleanup targets after a failed plugin operation.
         btrfs(&["subvolume".into(), "show".into(), "--".into(), path.into()])?;
-        for child in nested_subvolumes(path)? {
+        let children = nested_subvolumes(path)?;
+        if !children.is_empty() {
+            self.set_readonly(path, false)?;
+        }
+        for child in children.iter().rev() {
+            self.set_readonly(child, false)?;
+        }
+        for child in children {
             self.delete_subvolume(&child)?;
         }
         self.delete_subvolume(path)
