@@ -19,7 +19,13 @@ pub(crate) fn environment_name(name: &str) -> Result<String> {
     }
     if matches!(
         suffix,
-        "ROOT" | "CONFIG_DIR" | "SYSTEM_ID" | "PLUGIN_ROOT" | "PLUGIN_TMP" | "ARCH"
+        "ROOT"
+            | "CONFIG_DIR"
+            | "SYSTEM_ID"
+            | "PLUGIN_ROOT"
+            | "PLUGIN_TMP"
+            | "ARCH"
+            | "PARAMETERS_JSON"
     ) {
         return Err(Error::Invalid(format!(
             "插件参数占用控制器保留变量: {name}"
@@ -36,6 +42,23 @@ impl ConfigRequirements {
                 return Err(Error::Invalid(format!(
                     "插件配置声明重复或环境变量冲突: {name}"
                 )));
+            }
+        }
+        for (name, constraint) in &self.constraints {
+            if !names.contains(name) {
+                return Err(Error::Invalid(format!("约束字段未声明: {name}")));
+            }
+            if !matches!(
+                constraint.kind.as_str(),
+                "free-single" | "free-list" | "enum-single" | "enum-list" | "number"
+            ) {
+                return Err(Error::Invalid(format!("未知配置约束: {}", constraint.kind)));
+            }
+            if constraint.kind.starts_with("enum-") && constraint.values.is_empty() {
+                return Err(Error::Invalid(format!("枚举约束没有候选值: {name}")));
+            }
+            if !constraint.kind.starts_with("enum-") && !constraint.values.is_empty() {
+                return Err(Error::Invalid(format!("非枚举约束不能声明候选值: {name}")));
             }
         }
         Ok(())
@@ -120,6 +143,50 @@ impl LoadedPlugin {
         Ok(())
     }
 
+    /// Validate raw assignment cardinality and values before executing any operation.
+    /// 运行任何操作前校验原始赋值的数量和值。
+    /// # Arguments
+    /// - `self`: Selected plugin. 所选插件。
+    /// - `parameters`: Merged frozen INI assignments. 合并后的冻结 INI 赋值。
+    pub fn validate_parameter_lists(
+        &self,
+        parameters: &crate::config::PluginParameters,
+    ) -> Result<()> {
+        let mut plugin_values = parameters.values.clone();
+        plugin_values.retain(|name, _| !name.starts_with("RSTAR_INHERITANCE_"));
+        self.validate_configuration(&plugin_values)?;
+        for (name, values) in &parameters.lists {
+            let Some(rule) = self.metadata.config.constraints.get(name) else {
+                continue;
+            };
+            if matches!(rule.kind.as_str(), "free-single" | "enum-single" | "number")
+                && values.len() != 1
+            {
+                return Err(Error::Invalid(format!(
+                    "配置 {name} 要求单项，实际 {} 项",
+                    values.len()
+                )));
+            }
+            if rule.kind.starts_with("enum-")
+                && values.iter().any(|value| !rule.values.contains(value))
+            {
+                return Err(Error::Invalid(format!(
+                    "配置 {name} 不在枚举候选值中: {values:?}"
+                )));
+            }
+            if rule.kind == "number"
+                && values.iter().any(|value| {
+                    value.parse::<f64>().is_err() || !value.parse::<f64>().unwrap().is_finite()
+                })
+            {
+                return Err(Error::Invalid(format!(
+                    "配置 {name} 必须是有限数字: {values:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn configuration_environment(
         &self,
         options: &BTreeMap<String, String>,
@@ -160,5 +227,48 @@ impl LoadedPlugin {
             .entry("RSTAR_ARCHITECTURE".into())
             .or_insert_with(|| architecture.into());
         Ok(environment)
+    }
+}
+
+#[cfg(test)]
+mod constraint_tests {
+
+    /// Reject duplicated singles, unsupported enums and non-finite numbers before work.
+    /// 在工作前拒绝重复单项、无效枚举和非有限数字。
+    /// # Arguments
+    /// No parameters. 无参数。
+    #[test]
+    fn constraints_validate_original_lists() {
+        let mut plugin = super::super::runner::tests::fixture(&[], &[]);
+        plugin.metadata.config.optional.push("RSTAR_SETTING".into());
+        let mut parameters = crate::config::PluginParameters::default();
+        parameters
+            .values
+            .insert("RSTAR_SETTING".into(), "one\ntwo".into());
+        for (kind, candidates, input, accepted) in [
+            ("free-single", vec![], vec!["one", "two"], false),
+            ("free-list", vec![], vec!["one", "two"], true),
+            ("enum-single", vec!["one"], vec!["two"], false),
+            ("enum-list", vec!["one", "two"], vec!["one", "two"], true),
+            ("number", vec![], vec!["NaN"], false),
+            ("number", vec![], vec!["1.5"], true),
+        ] {
+            plugin.metadata.config.constraints.insert(
+                "RSTAR_SETTING".into(),
+                super::super::model::ValueConstraint {
+                    kind: kind.into(),
+                    values: candidates.into_iter().map(String::from).collect(),
+                },
+            );
+            parameters.lists.insert(
+                "RSTAR_SETTING".into(),
+                input.into_iter().map(String::from).collect(),
+            );
+            assert_eq!(
+                plugin.validate_parameter_lists(&parameters).is_ok(),
+                accepted,
+                "{kind}"
+            );
+        }
     }
 }

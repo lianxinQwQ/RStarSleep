@@ -30,6 +30,35 @@ optional = [
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
 ]
 
+[config.constraints.RSTAR_CONFIG_SCHEMAVERSION]
+kind = "number"
+
+[config.constraints.RSTAR_DISTRIBUTION_DISTRIBUTION]
+kind = "enum-single"
+values = ["arch"]
+
+[config.constraints.RSTAR_CONTENT_PACKAGES]
+kind = "free-list"
+
+[config.constraints.RSTAR_DISTRIBUTION_ARCHITECTURE]
+kind = "enum-single"
+values = ["x86_64"]
+
+[config.constraints.RSTAR_DISTRIBUTION_BOOTSTRAPURL]
+kind = "free-single"
+
+[config.constraints.RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL]
+kind = "free-single"
+
+[config.constraints.RSTAR_DISTRIBUTION_KEYRING]
+kind = "free-single"
+
+[config.constraints.RSTAR_DISTRIBUTION_MIRROR]
+kind = "free-single"
+
+[config.constraints.RSTAR_DISTRIBUTION_AURKEYSERVER]
+kind = "free-single"
+
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
 # 基础变化使后续缓存失效；软件目标在维护中协调。
 [cache]

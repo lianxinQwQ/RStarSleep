@@ -40,7 +40,7 @@ API 2 仍支持已有缓存的维护；无基础缓存的创建需要 API 3。
 RStarSleep build
 RStarSleep build --all
 RStarSleep build <系统标识>
-RStarSleep build desktop --root /mnt/btrfs/@rstarsleep
+RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 ```
 
 单个系统与 `--all` 不能同时指定。全部系统指 `systems/` 下已初始化的被管理系统，
@@ -647,3 +647,30 @@ AUR 二进制写入共享包缓存，并由 repo-add 发布到标识为 `[rstars
 所有 Arch 操作经同一个 pacman 包装函数使用共享缓存与本地仓库；目标系统消费准备好的
 官方元数据，预下载环境维护仍正常刷新仓库。基础 rootfs 获取不属于软件预下载接口。
 真实 Btrfs/nspawn、官方镜像与 AUR 构建链路需在具备相应运行条件的集成环境验证。
+
+
+## 叠加配置与列表约束
+
+`config/build/` 的全部普通 INI 文件按文件名顺序叠加，不按文件名区分配置职责。
+重复键追加为字符串列表，空赋值不会清空先前值，多行赋值保留为一个字符串。
+`RSTAR_PARAMETERS_JSON` 向单系统插件和脚本提供完整参数名到字符串列表的映射。
+传统环境变量仍使用换行连接值，Packages 提供已拆分包名，供现有 shell 脚本使用。
+`config.toml` 仅在没有 INI 文件时回退读取，不和 INI 混合。
+
+插件在 `[config.constraints.RSTAR_字段名]` 声明 `kind`，支持 `free-single`、`free-list`、
+`enum-single`、`enum-list` 和 `number`；枚举用 `values` 声明允许值。
+单项和数字拒绝重复赋值，数字拒绝 NaN/Infinity。未约束字段保持自由列表，
+插件负责检查业务上不能处理的配置并报错。缓存摘要保留全部成员和列表边界。
+
+
+主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
+`/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
+随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
+通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
+全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
+实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
+缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
+各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
+
+新初始化使用 `@RStarSleep`，已有 `@rstarsleep` 会继续复用。
+每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。

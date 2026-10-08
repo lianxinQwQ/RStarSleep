@@ -80,6 +80,13 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn publish_boot(
+        &self,
+        outcome: &super::BuildOutcome,
+        config: &crate::config::RuntimeConfig,
+    ) -> Result<()> {
+        super::boot::publish(outcome, config)
+    }
     fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
         fs::checked(path)?;
         // Kernel enumeration also detects subvolumes hidden by a mounted directory.

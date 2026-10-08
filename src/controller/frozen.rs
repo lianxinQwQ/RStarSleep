@@ -116,9 +116,7 @@ fn hash_directory(root: &Path, relative: &Path, digest: &mut Sha256) -> Result<(
             File::open(entry.path())
                 .and_then(|mut f| f.read_to_end(&mut content))
                 .map_err(|e| disk::io(&entry.path(), e))?;
-            if path == Path::new(crate::config::BUILD_CONFIG_PATH)
-                || path == Path::new(crate::config::LEGACY_BUILD_CONFIG_PATH)
-            {
+            if path.starts_with("build") {
                 let text =
                     std::str::from_utf8(&content).map_err(|e| Error::Invalid(e.to_string()))?;
                 content = crate::config::normalized_build_config(text, &entry.path())?;

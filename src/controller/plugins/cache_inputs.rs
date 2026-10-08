@@ -41,7 +41,7 @@ impl LoadedPlugin {
                             .chain(&self.metadata.config.optional)
                             .any(|field| field.starts_with(&format!("{name}_")))));
             if is_section {
-                if parameters.values.contains_key(&name) {
+                if parameters.lists.contains_key(&name) {
                     return Err(Error::Invalid(format!(
                         "缓存选择器同时匹配裸参数和节，请使用不冲突的名称: {selector}"
                     )));
@@ -49,7 +49,7 @@ impl LoadedPlugin {
                 digest.update(b"section");
                 digest.update([u8::from(parameters.sections.contains(section))]);
                 let fields: Vec<_> = parameters
-                    .values
+                    .lists
                     .iter()
                     .filter(|(key, _)| {
                         parameters
@@ -61,7 +61,10 @@ impl LoadedPlugin {
                 digest.update((fields.len() as u64).to_le_bytes());
                 for (key, value) in fields {
                     field(&mut digest, key);
-                    field(&mut digest, value);
+                    field(
+                        &mut digest,
+                        &serde_json::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?,
+                    );
                 }
             } else {
                 if explicit
@@ -75,9 +78,12 @@ impl LoadedPlugin {
                     )));
                 }
                 digest.update(b"parameter");
-                if let Some(value) = parameters.values.get(&name) {
+                if let Some(value) = parameters.lists.get(&name) {
                     digest.update([1]);
-                    field(&mut digest, value);
+                    field(
+                        &mut digest,
+                        &serde_json::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?,
+                    );
                 } else {
                     digest.update([0]);
                 }
@@ -125,7 +131,7 @@ mod tests {
                     ("Enabled=true", "Enabled=false"),
                     ("Mode=stable", "Mode=new"),
                 ],
-                vec![("Value=one", "Value=two"), ("Enabled=old\n", "")],
+                vec![("Value=one", "Value=two")],
             ),
             (
                 "RSTAR_*CUSTOM_ENABLED",
@@ -133,7 +139,7 @@ mod tests {
                     ("Enabled=true", "Enabled=false"),
                     ("Enabled=old\nEnabled=true\n", ""),
                 ],
-                vec![("Mode=stable", "Mode=new"), ("Enabled=old\n", "")],
+                vec![("Mode=stable", "Mode=new")],
             ),
         ] {
             plugin.metadata.cache.base_system = vec![selector.into()];

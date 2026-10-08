@@ -73,6 +73,9 @@ pub struct BuildContext {
     /// All explicit effective settings keyed by canonical RSTAR_ names, frozen before execution.
     /// 执行前冻结的全部显式生效设置，以规范 RSTAR_ 名称索引。
     pub parameters: std::collections::BTreeMap<String, String>,
+    /// Original frozen assignment lists delivered as RSTAR_PARAMETERS_JSON.
+    /// 通过 RSTAR_PARAMETERS_JSON 传递的原始冻结赋值列表。
+    pub parameter_lists: std::collections::BTreeMap<String, Vec<String>>,
     /// Distribution-only settings retained for the unified download operation.
     /// 为统一下载操作保留的仅 Distribution 设置。
     pub distribution_options: std::collections::BTreeMap<String, String>,
@@ -194,6 +197,21 @@ pub trait BuildBackend {
     fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
         self.check_no_nested_subvolumes(path)?;
         self.delete_subvolume(path)
+    }
+
+    /// Publish a completed main system to its configured boot filesystem.
+    /// 将完成的主系统发布到配置的启动文件系统。
+    /// # Arguments
+    /// - `self`: Runtime publication backend. 运行发布后端。
+    /// - `outcome`: Completed root. 完成根。
+    /// - `config`: Global boot settings. 全局启动设置。
+    fn publish_boot(
+        &self,
+        outcome: &BuildOutcome,
+        config: &crate::config::RuntimeConfig,
+    ) -> Result<()> {
+        let _ = (outcome, config);
+        Err(Error::Invalid("此后端不支持启动发布".into()))
     }
 
     /// Run a checked plugin operation and return query output.

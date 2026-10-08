@@ -209,14 +209,31 @@ pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParame
                             .sections
                             .insert(super::parameters::component(name)?);
                         for (key, value) in value.as_table().unwrap() {
-                            parameters.insert(name, key, legacy_parameter(value)?)?;
+                            parameters.insert_list(name, key, legacy_list(value)?)?;
                         }
                     }
-                    _ => parameters.insert("", name, legacy_parameter(value)?)?,
+                    _ => parameters.insert_list("", name, legacy_list(value)?)?,
+                }
+            }
+            for (name, list) in &mut parameters.lists {
+                if name == "RSTAR_CONTENT_PACKAGES" {
+                    *list = parameters.values[name].lines().map(String::from).collect();
                 }
             }
             Ok(parameters)
         }
+    }
+}
+
+/// Preserve each historical array element as its own string value.
+/// 将历史数组的每个元素保留为独立字符串值。
+/// # Arguments
+/// - `value`: Historical TOML value. 历史 TOML 值。
+fn legacy_list(value: &toml::Value) -> Result<Vec<String>> {
+    if let toml::Value::Array(values) = value {
+        values.iter().map(legacy_parameter).collect()
+    } else {
+        Ok(vec![legacy_parameter(value)?])
     }
 }
 
@@ -253,21 +270,38 @@ impl Input {
     /// - `directory`: Current or recorded config root.
     ///   当前或留档配置根。
     fn read(directory: &Path) -> Result<Self> {
-        let path = directory.join(BUILD_CONFIG_PATH);
-        match fs::read_to_string(&path) {
-            Ok(text) => Ok(Self::Ini(Document::parse(&text, &path)?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let legacy = directory.join(LEGACY_BUILD_CONFIG_PATH);
-                match fs::read_to_string(&legacy) {
-                    Ok(text) => Ok(Self::Toml { path: legacy, text }),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        Err(io_error(path, error))
-                    }
-                    Err(error) => Err(io_error(legacy, error)),
-                }
+        let build = directory.join("build");
+        let mut files = fs::read_dir(&build)
+            .map_err(|e| io_error(&build, e))?
+            .map(|entry| entry.map(|e| e.path()).map_err(|e| io_error(&build, e)))
+            .collect::<Result<Vec<_>>>()?;
+        files.sort();
+        let mut merged: Option<Document> = None;
+        for path in files {
+            if path.ends_with(LEGACY_BUILD_CONFIG_PATH) {
+                continue;
             }
-            Err(error) => Err(io_error(path, error)),
+            let info = fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
+            if !info.is_file() {
+                return Err(Error::Invalid(format!(
+                    "build 配置必须为普通文件: {}",
+                    path.display()
+                )));
+            }
+            let text = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+            let next = Document::parse(&text, &path)?;
+            if let Some(document) = &mut merged {
+                document.append(next);
+            } else {
+                merged = Some(next);
+            }
         }
+        if let Some(document) = merged {
+            return Ok(Self::Ini(document));
+        }
+        let path = directory.join(LEGACY_BUILD_CONFIG_PATH);
+        let text = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        Ok(Self::Toml { path, text })
     }
 }
 
@@ -311,7 +345,7 @@ pub(super) fn read_system_type_at(directory: &Path) -> Result<SystemTypeConfig> 
 /// - `path`: Build file path identifying its format.
 ///   标识格式的构建文件路径。
 pub(crate) fn normalized_build_config(text: &str, path: &Path) -> Result<Vec<u8>> {
-    if path.ends_with(BUILD_CONFIG_PATH) {
+    if !path.ends_with(LEGACY_BUILD_CONFIG_PATH) {
         return Document::parse(text, path)?.normalized();
     }
     let value: toml::Value = toml::from_str(text).map_err(|source| Error::Parse {

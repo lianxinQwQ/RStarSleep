@@ -51,8 +51,8 @@ schema_version = 1\n\
 # Runtime options, including application exports, will be added with their features.\n\
 # 子系统运行选项（包括应用入口导出）随对应功能添加。\n";
 
-/// Create or reuse `@rstarsleep` within the mounted Btrfs top-level tree (ID 5).
-/// 在已挂载的 Btrfs 顶层树（标识为 5）中创建或复用 `@rstarsleep`。
+/// Create or reuse `@RStarSleep` within the mounted Btrfs top-level tree (ID 5).
+/// 在已挂载的 Btrfs 顶层树（标识为 5）中创建或复用 `@RStarSleep`。
 ///
 /// The caller supplies an absolute directory and permissions to run `btrfs` and write files.
 /// 调用者提供绝对目录，并具备执行 `btrfs` 和写入文件所需的权限。
@@ -208,7 +208,13 @@ fn initialize_with(parent: &Path, btrfs: &impl Subvolumes) -> Result<ConfigStore
         return Err(Error::Invalid("请提供已挂载的 Btrfs 顶层绝对目录".into()));
     }
     btrfs.check_top_level(parent)?;
-    let root = parent.join(SUBVOLUME_NAME);
+    let new_root = parent.join(SUBVOLUME_NAME);
+    let legacy_root = parent.join("@rstarsleep");
+    let root = if !new_root.exists() && legacy_root.exists() {
+        legacy_root
+    } else {
+        new_root
+    };
     // Inspect the entry itself so a symlink cannot stand in for the dedicated subvolume.
     // 检查目录项本身，避免符号链接替代专用子卷。
     match fs::symlink_metadata(&root) {

@@ -54,6 +54,8 @@ pub fn build_with_backend(
     } else {
         store.list_systems()?
     };
+    let runtime = store.runtime_config()?;
+    super::boot::sync_executable(store.root())?;
     let work = store.build_work_dir()?;
     check_workspace(store, &work)?;
     let backend = super::scoped_backend::ScopedBackend {
@@ -126,7 +128,7 @@ pub fn build_with_backend(
         if failed.contains(&index) {
             continue;
         }
-        match build_system(value, &work, &backend) {
+        match build_system(value, &work, &backend, &runtime) {
             Ok(outcome) => outcomes.push(outcome),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{}: {error}", value.context.system_id)),
@@ -251,8 +253,13 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
         )?);
         let loaded = plugin.as_ref().unwrap();
         let distribution_options = read_distribution_options_at(&attempt.config)?;
-        let parameters = read_plugin_parameters_at(&attempt.config)?.values;
-        loaded.validate_configuration(&parameters)?;
+        let input = read_plugin_parameters_at(&attempt.config)?;
+        loaded.validate_parameter_lists(&input)?;
+        let parameters = input
+            .values
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with("RSTAR_INHERITANCE_"))
+            .collect();
         for warning in &loaded.discovery_warnings {
             eprintln!("{warning}");
         }
@@ -264,6 +271,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
             parameters,
             config: attempt.config.clone(),
             persistent_mounts: Vec::new(),
+            parameter_lists: input.lists,
         };
         let mut upgrade_packages = Vec::new();
         {
@@ -347,6 +355,7 @@ fn build_system(
     prepared: &Prepared,
     work: &Path,
     backend: &impl BuildBackend,
+    runtime: &crate::config::RuntimeConfig,
 ) -> Result<BuildOutcome> {
     let Prepared {
         attempt,
@@ -391,7 +400,11 @@ fn build_system(
             software_identity: &software_identity,
             scratch: &scratch,
         };
-        stages.run(base, packages, &mut owned)
+        let outcome = stages.run(base, packages, &mut owned)?;
+        if runtime.main_system.as_deref() == Some(id.as_str()) {
+            backend.publish_boot(&outcome, runtime)?;
+        }
+        Ok(outcome)
     })();
     let cleanup = cleanup(backend, &owned);
     let result = match (result, cleanup) {

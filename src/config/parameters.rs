@@ -10,6 +10,9 @@ pub struct PluginParameters {
     /// Values keyed by the canonical environment name.
     /// 以规范环境名称索引的值。
     pub values: BTreeMap<String, String>,
+    /// Original assignment lists, preserving empty and multiline values.
+    /// 原始赋值列表，保留空值及多行值。
+    pub lists: BTreeMap<String, Vec<String>>,
     /// Normalized sections, including explicitly empty sections.
     /// 规范化的节，包括显式空节。
     pub sections: BTreeSet<String>,
@@ -32,6 +35,23 @@ pub(super) fn component(name: &str) -> Result<String> {
 
 impl PluginParameters {
     pub(super) fn insert(&mut self, section: &str, key: &str, value: String) -> Result<()> {
+        self.insert_list(section, key, vec![value])
+    }
+
+    /// Register a list without losing assignment boundaries.
+    /// 登记列表，保留赋值边界。
+    /// # Arguments
+    /// - `self`: Parameter collection. 参数集合。
+    /// - `section`: Original section. 原始节。
+    /// - `key`: Setting name. 设置名。
+    /// - `values`: Ordered assignment values. 有序赋值值。
+    pub(super) fn insert_list(
+        &mut self,
+        section: &str,
+        key: &str,
+        values: Vec<String>,
+    ) -> Result<()> {
+        let value = values.join("\n");
         let key = component(key)?;
         let normalized_section = if section.is_empty() {
             String::new()
@@ -48,6 +68,7 @@ impl PluginParameters {
         if self.values.insert(name.clone(), value).is_some() {
             return Err(Error::Invalid(format!("插件参数环境变量冲突: {name}")));
         }
+        self.lists.insert(name.clone(), values);
         self.field_sections.insert(name, normalized_section);
         Ok(())
     }

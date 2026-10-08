@@ -21,7 +21,7 @@ const USAGE: &str = "\
   RStarSleep packages <工作目录绝对路径> <系统标识>
   RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]
 
-init 创建 @rstarsleep 子卷；工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
+init 创建 @RStarSleep 子卷；工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
 
 /// Read process arguments and delegate command handling to the dispatcher.
 /// 读取进程参数，并将命令处理委托给分派函数。

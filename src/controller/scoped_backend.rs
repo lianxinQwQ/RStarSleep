@@ -12,6 +12,13 @@ pub(super) struct ScopedBackend<'a, B> {
 }
 
 impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
+    fn publish_boot(
+        &self,
+        outcome: &super::BuildOutcome,
+        config: &crate::config::RuntimeConfig,
+    ) -> Result<()> {
+        self.backend.publish_boot(outcome, config)
+    }
     fn create_subvolume(&self, path: &Path) -> Result<()> {
         self.backend.create_subvolume(path)
     }

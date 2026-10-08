@@ -102,6 +102,16 @@ impl Document {
         Ok(document)
     }
 
+    /// Append another independently parsed INI file in filename order.
+    /// 按文件名顺序叠加另一个独立解析的 INI 文件。
+    /// # Arguments
+    /// - `self`: Accumulated settings. 累积设置。
+    /// - `other`: Next parsed file. 下一个已解析文件。
+    pub(super) fn append(&mut self, other: Self) {
+        self.sections.extend(other.sections);
+        self.assignments.extend(other.assignments);
+    }
+
     /// Attach the INI path and line number to a parsing or value error.
     /// 为解析或值错误附加 INI 路径及行号。
     /// # Arguments
@@ -119,8 +129,8 @@ impl Document {
         }
     }
 
-    /// Resolve a scalar using the last assignment, as mkosi does.
-    /// 与 mkosi 一样，使用最后一次赋值解析标量。
+    /// Locate a scalar assignment; required scalar readers reject repetition.
+    /// 定位标量赋值；必需标量读取接口拒绝重复。
     /// # Arguments
     /// - `self`: Ordered build settings.
     ///   有序构建设置。
@@ -131,7 +141,6 @@ impl Document {
     fn scalar(&self, section: &str, key: &str) -> Option<&Assignment> {
         self.assignments
             .iter()
-            .rev()
             .find(|a| a.section == section && a.key == key)
     }
 
@@ -148,6 +157,15 @@ impl Document {
         let entry = self
             .scalar(section, key)
             .ok_or_else(|| self.error(0, &format!("缺少 [{section}] {key}")))?;
+        if self
+            .assignments
+            .iter()
+            .filter(|a| a.section == section && a.key == key)
+            .count()
+            != 1
+        {
+            return Err(self.error(entry.line, &format!("[{section}] {key} 必须恰好配置一次")));
+        }
         if entry.value.is_empty() {
             return Err(self.error(entry.line, &format!("[{section}] {key} 不能为空")));
         }
@@ -178,6 +196,7 @@ impl Document {
             .map_err(|e| self.error(distribution.line, &e.to_string()))?;
         let architecture = self.scalar("Distribution", "Architecture");
         if let Some(entry) = architecture {
+            self.required("Distribution", "Architecture")?;
             super::validate_identifier(&entry.value)
                 .map_err(|e| self.error(entry.line, &e.to_string()))?;
         }
@@ -187,16 +206,26 @@ impl Document {
         })
     }
 
-    /// Read the last value of every plugin setting, excluding the distribution selector.
-    /// 读取每个插件设置的最后一次赋值，排除发行版选择字段。
+    /// Read all values of every plugin setting, excluding the distribution selector.
+    /// 读取每个插件设置的全部赋值，排除发行版选择字段。
     /// # Arguments
     /// - `self`: Parsed configuration retaining case-sensitive setting names.
     ///   保留大小写敏感设置名的已解析配置。
     pub(super) fn distribution_options(&self) -> BTreeMap<String, String> {
-        self.assignments
+        let mut options: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for entry in self
+            .assignments
             .iter()
             .filter(|entry| entry.section == "Distribution" && entry.key != "Distribution")
-            .map(|entry| (entry.key.clone(), entry.value.clone()))
+        {
+            options
+                .entry(entry.key.clone())
+                .or_default()
+                .push(entry.value.clone());
+        }
+        options
+            .into_iter()
+            .map(|(key, values)| (key, values.join("\n")))
             .collect()
     }
 
@@ -212,27 +241,27 @@ impl Document {
                 return Err(self.error(0, "节名大小写冲突"));
             }
         }
-        let mut values = BTreeMap::new();
+        let mut values: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
         for entry in &self.assignments {
-            values.insert(
-                (entry.section.as_str(), entry.key.as_str()),
-                entry.value.clone(),
-            );
+            values
+                .entry((&entry.section, &entry.key))
+                .or_default()
+                .push(entry.value.clone());
+        }
+        for ((section, key), values) in values {
+            parameters.insert_list(section, key, values)?;
         }
         if self.scalar("Content", "Packages").is_some() {
-            values.insert(
-                ("Content", "Packages"),
+            parameters.values.insert(
+                "RSTAR_CONTENT_PACKAGES".into(),
                 self.packages()?.packages.join("\n"),
             );
-        }
-        for ((section, key), value) in values {
-            parameters.insert(section, key, value)?;
         }
         Ok(parameters)
     }
 
-    /// Append package assignments, resetting on empty values, and split on commas or whitespace.
-    /// 追加软件包赋值，空值清空列表，并按逗号或空白分隔。
+    /// Append package assignments, retaining earlier values, and split on commas or whitespace.
+    /// 追加软件包赋值，空值不清空列表，并按逗号或空白分隔。
     /// # Arguments
     /// - `self`: Parsed build settings preserving assignment order.
     ///   保留赋值顺序的已解析构建设置。
@@ -251,7 +280,7 @@ impl Document {
                 .filter(|s| !s.is_empty())
                 .collect();
             if names.is_empty() {
-                packages.clear();
+                continue;
             }
             for name in names {
                 crate::software::valid_name(name)
@@ -273,21 +302,10 @@ impl Document {
     pub(super) fn normalized(&self) -> Result<Vec<u8>> {
         let mut values: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
         for entry in &self.assignments {
-            if entry.section == "Content" && entry.key == "Packages" {
-                continue;
-            }
             values
                 .entry((&entry.section, &entry.key))
                 .or_default()
                 .push(&entry.value);
-        }
-        let packages;
-        if self.scalar("Content", "Packages").is_some() {
-            packages = self.packages()?;
-            values.insert(
-                ("Content", "Packages"),
-                packages.packages.iter().map(String::as_str).collect(),
-            );
         }
         let mut bytes = b"rstarsleep-ini-v1".to_vec();
         let sections: Vec<_> = self.sections.iter().collect();

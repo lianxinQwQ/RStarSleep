@@ -16,7 +16,7 @@ cargo run -- init --help
 cargo run -- init /mnt/btrfs
 ```
 
-该命令调用配置模块的初始化代码，在 `/mnt/btrfs/@rstarsleep` 创建或复用专用子卷，
+该命令调用配置模块的初始化代码，在 `/mnt/btrfs/@RStarSleep` 创建或复用专用子卷，
 生成管理器目录和默认全局配置，并将内嵌 Arch 插件写入 `plugins/arch.tar.gz`，
 保留已有配置和插件文件。执行时需要 `btrfs` 工具及相应的
 子卷创建和文件写入权限。成功后输出工作目录路径；失败时输出原因并返回非零退出码。
@@ -69,7 +69,7 @@ Packages=
     vim
 ```
 
-也可以用空格或逗号分隔包名。重复 `Packages=` 会追加，空值赋值会清空之前的列表；
+也可以用空格或逗号分隔包名。重复 `Packages=` 会追加，空值赋值不清空之前的列表；
 缩进续行和 `#` 注释采用 mkosi 的写法。文件必须显式提供 `Packages=`，空列表有效。
 新系统生成 INI 模板；已有 `build/config.toml` 和旧版本留档仍可读取。
 同一配置目录中同时存在两种格式时，优先读取 `config.conf`；迁移时将旧文件中的字段
@@ -87,7 +87,7 @@ Arch 配置与迁移说明见 [插件说明](presets/plugins/arch/readme.md)。
 RStarSleep init-system /rstarsleep desktop
 RStarSleep build desktop
 RStarSleep build --all
-RStarSleep build desktop --root /mnt/btrfs/@rstarsleep
+RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 ```
 
 省略系统标识默认构建全部系统，逐个执行，个别失败不阻断其他系统。
@@ -134,3 +134,27 @@ script 每次从本次软件缓存创建可写 CoW 副本，执行成功后提�
 - 预下载：单一可选插件接口、批次需求合并、独立环境初始化/维护与 CoW 缓存
 - 全局持久数据：直属子卷申请与目标映射、事务快照、失败回滚及中断恢复、嵌套子卷检查
 - Arch AUR：非 root 构建、共享源码/包缓存及 rstarsleep 本地二进制仓库（实际安装链路待集成验证）
+
+
+构建配置目录内所有普通 INI 文件按文件名排序独立解析后叠加，文件名和扩展名没有语义区别。
+`config.toml` 仅作为没有 INI 文件时的历史格式回退；不参与混合叠加。重复单项核心设置
+（SchemaVersion、Distribution、Architecture）报错，空赋值保留为列表成员，不清空之前的赋值。
+
+插件可在 `[config.constraints.RSTAR_字段名]` 设置 `kind`：`free-single`、`free-list`、
+`enum-single`、`enum-list`、`number`；枚举还需声明 `values=["候选值"]`。
+单项和数字要求恰好一个赋值，数字必须有限；无约束字段默认为自由列表。
+这些规则作用于原始赋值，而非拆分后的软件包名。插件应检查其余业务约束并明确报错。
+缓存摘要包含每一个列表成员及其边界。
+
+
+主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
+`/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
+随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
+通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
+全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
+实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
+缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
+各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
+
+新初始化使用 `@RStarSleep`，已有 `@rstarsleep` 会继续复用。
+每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。

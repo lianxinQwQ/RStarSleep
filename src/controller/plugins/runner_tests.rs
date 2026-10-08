@@ -47,6 +47,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
                 software: vec![],
             },
             config: super::super::ConfigRequirements {
+                constraints: Default::default(),
                 required: vec![],
                 optional: vec!["RSTAR_DISTRIBUTION_ARCHITECTURE".into()],
             },

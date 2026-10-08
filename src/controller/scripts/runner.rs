@@ -45,6 +45,11 @@ fn command(
             context.architecture
         ));
     }
+    command.arg(format!(
+        "--setenv=RSTAR_PARAMETERS_JSON={}",
+        serde_json::to_string(&context.parameter_lists)
+            .map_err(|e| Error::Invalid(e.to_string()))?
+    ));
     command.arg("--").arg("bash").arg("--").arg(entrypoint);
     Ok(command)
 }
@@ -103,6 +108,7 @@ mod tests {
             )]),
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
+            parameter_lists: Default::default(),
         };
         let root = Path::new("/work/script-root");
         let command = command(
@@ -153,6 +159,7 @@ mod tests {
             distribution_options: Default::default(),
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
+            parameter_lists: Default::default(),
         };
         let name = OsString::from_vec(b"shell-\xff.sh".to_vec());
         let cmd = command(

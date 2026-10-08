@@ -28,6 +28,7 @@ fn passes_frozen_configuration_to_host_operations() {
         distribution_options: Default::default(),
         config: config.clone(),
         persistent_mounts: Vec::new(),
+        parameter_lists: Default::default(),
     };
     let path = plugin.temporary.path().join("host-bin");
     plugin
@@ -76,6 +77,7 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
         ]),
         config,
         persistent_mounts: Vec::new(),
+        parameter_lists: Default::default(),
     };
     fs::write(plugin.operation_path("bootstrap").unwrap(),
         "test -z \"${RSTAR_ARCH+x}\" && test -z \"${RSTAR_DISTRIBUTION+x}\"\nprintf '%s\\0%s\\0%s' \"$RSTAR_DISTRIBUTION_ARCHITECTURE\" \"$RSTAR_DISTRIBUTION_CHANNEL\" \"$RSTAR_DISTRIBUTION_MIRROR\" > \"$RSTAR_ROOT/options\"\n").unwrap();
@@ -152,6 +154,7 @@ fn validates_configuration_before_host_and_container_execution() {
             distribution_options: Default::default(),
             config: config.clone(),
             persistent_mounts: Vec::new(),
+            parameter_lists: Default::default(),
         };
         for operation in ["bootstrap", "update"] {
             let error = plugin
@@ -192,6 +195,7 @@ fn passes_build_context_to_guest_probe_and_task_before_delimiter() {
         distribution_options: Default::default(),
         config: config.clone(),
         persistent_mounts: Vec::new(),
+        parameter_lists: Default::default(),
     };
     plugin
         .invoke_environment(
@@ -246,6 +250,7 @@ fn mount_arguments_preserve_native_bytes_and_reject_ambiguous_paths() {
             .path()
             .join(OsString::from_vec(b"frozen-\xff".to_vec())),
         persistent_mounts: Vec::new(),
+        parameter_lists: Default::default(),
     };
     let command = nspawn(
         &plugin,
@@ -296,6 +301,7 @@ fn host_operation_gets_transactional_directory_without_mutating_frozen_resources
         parameters: Default::default(),
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
+        parameter_lists: Default::default(),
         persistent_mounts: vec![crate::controller::PersistentMount {
             source: source.clone(),
             target: "state/cache".into(),
@@ -338,6 +344,7 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         parameters: Default::default(),
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
+        parameter_lists: Default::default(),
         persistent_mounts: vec![crate::controller::PersistentMount {
             source: source.clone(),
             target: "state/cache".into(),
@@ -389,6 +396,7 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
         ]),
         config: root.clone(),
         persistent_mounts: Vec::new(),
+        parameter_lists: Default::default(),
     };
     plugin
         .invoke_environment(

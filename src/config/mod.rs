@@ -11,22 +11,24 @@ mod init;
 mod model;
 mod parameters;
 mod presets;
+mod runtime;
 mod store;
 
-pub(crate) use build::{BUILD_CONFIG_PATH, LEGACY_BUILD_CONFIG_PATH, normalized_build_config};
+pub(crate) use build::normalized_build_config;
 pub use build::{
     BuildConfig, read_build_config_at, read_distribution_options_at, read_plugin_parameters_at,
 };
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use parameters::PluginParameters;
+pub use runtime::RuntimeConfig;
 pub use store::{ConfigStore, SystemLayout};
 
 use std::path::PathBuf;
 
 /// Dedicated workspace subvolume name beneath the Btrfs top level.
 /// Btrfs 顶层下的专用工作目录子卷名称。
-pub const SUBVOLUME_NAME: &str = "@rstarsleep";
+pub const SUBVOLUME_NAME: &str = "@RStarSleep";
 /// Recommended runtime mount point; this module does not mount the subvolume.
 /// 建议的运行时挂载点；本模块不会执行子卷挂载。
 pub const DEFAULT_MOUNT_POINT: &str = "/rstarsleep";

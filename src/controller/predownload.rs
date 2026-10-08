@@ -107,6 +107,7 @@ pub(super) fn run(
         parameters: target.parameters.clone(),
         config: plugin.root().join("predownload"),
         persistent_mounts: Vec::new(),
+        parameter_lists: target.parameter_lists.clone(),
     };
     let result = (|| {
         let reused = disk::exists(&completed)?;

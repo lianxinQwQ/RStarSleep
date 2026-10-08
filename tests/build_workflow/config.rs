@@ -54,7 +54,7 @@ fn multiline_ini_freezes_and_preserves_cache_compatibility() {
             .read_recorded_build_config("desktop", &first.version)
             .unwrap()
             .packages,
-        ["old", "kept", "kept"]
+        ["discarded", "old", "kept", "kept"]
     );
     let updated = text.replace("old # Initial applications", "new # Changed applications");
     fs::write(&path, &updated).unwrap();

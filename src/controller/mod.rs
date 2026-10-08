@@ -6,12 +6,14 @@
 pub mod plugins;
 
 mod backend;
+mod boot;
 mod cache;
 mod container;
 mod frozen;
 mod fs;
 mod identity;
 mod model;
+mod mounts;
 mod persistent;
 mod predownload;
 mod records;

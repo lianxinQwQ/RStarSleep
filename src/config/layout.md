@@ -1,14 +1,14 @@
 # RStarSleep 工作目录
 
 RStarSleep 的工作目录属于整个管理体系，不依附任何被管理系统的 `/etc`。
-在 Btrfs 顶层（subvolid=5）创建专用子卷 `@rstarsleep`，建议运行时挂载到
+在 Btrfs 顶层（subvolid=5）创建专用子卷 `@RStarSleep`，建议运行时挂载到
 `/rstarsleep`。存储路径与挂载路径指向同一份数据；初始化接口不执行挂载。
 
 ## 目录树
 
 ```text
 Btrfs 顶层/
-└── @rstarsleep/                         # 管理器专用子卷
+└── @RStarSleep/                         # 管理器专用子卷
     ├── config/
     │   └── rstarsleep.toml              # 全局配置
     ├── plugins/                        # 用户存放的插件压缩包或目录
@@ -46,13 +46,13 @@ Btrfs 顶层/
             └── persistent/             # 此系统跨版本共享的持久化目录和文件
 ```
 
-初始化管理器时创建 `@rstarsleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
+初始化管理器时创建 `@RStarSleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
 并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。已有同名普通文件不覆盖；
 缺失的预设包会在再次初始化时补充。
 初始化一个被管理系统时创建其当前配置（包括空 `script/`）、版本、缓存和持久化目录及默认配置。
 这些系统目录目前是普通目录；具体版本根、阶段缓存是否使用子卷由对应功能实现。
 初始化不会生成系统版本、配置留档或修改主/子系统角色，也不会覆盖已有配置。
-子卷创建失败时返回错误，不使用普通目录代替；既有 `@rstarsleep` 必须为真实子卷。
+子卷创建失败时返回错误，不使用普通目录代替；既有 `@RStarSleep` 必须为真实子卷。
 
 ## 系统归属与角色
 
@@ -121,13 +121,15 @@ Packages=
 
 构建配置采用 mkosi 风格的 INI：分节名与键名区分大小写，首节之前允许裸参数。
 缩进续行延续上一设置的值，空行和 `#` 注释不打断续行；支持行内 `#` 注释。
-软件包值按逗号或空白分隔，重复 `[Content] Packages=` 按顺序追加，空值清空先前列表。
+软件包值按逗号或空白分隔，重复 `[Content] Packages=` 按顺序追加，空值不清空先前列表。
 无需 TOML 的引号、方括号或逗号列表语法；要求显式声明 `Packages=`，允许空列表。
 全部节和裸参数都原样留档，并作为插件参数读取。匹配插件后根据 `[config] required`、
 `optional` 校验全部生效值：必选参数缺失或为空、显式参数未声明时退出。
 声明和环境变量使用同一规范大写名称：裸参数 `Channel` 为 `RSTAR_CHANNEL`，
 `[Distribution] Architecture` 为 `RSTAR_DISTRIBUTION_ARCHITECTURE`。
-标量重复赋值取最后一个值，多行值保留换行，Packages 以换行分隔的生效列表传入；
+全部 INI 赋值均为字符串列表，重复项追加，多行赋值作为一个含换行的成员；
+插件及脚本通过 `RSTAR_PARAMETERS_JSON` 读取准确的列表边界，传统 `RSTAR_*` 值以换行连接。
+Packages 的传统变量保留按逗号/空白拆分后的包列表。
 变量值不作为 shell 源码执行。名称组件以 ASCII 字母开头，后续只能含字母、数字、下划线；
 不能发生大写或节/键拼接冲突，不能占用控制器变量。
 Architecture 若声明为必选则必须显式提供；若声明为可选并省略，则传入用于插件匹配的默认架构。
@@ -241,8 +243,8 @@ cargo run -- init /mnt/btrfs
 
 # Access the created subvolume directly or use the mounted /rstarsleep workspace.
 # 可直接访问已创建子卷，也可使用已挂载的 /rstarsleep。
-cargo run -- init-system /mnt/btrfs/@rstarsleep desktop
-cargo run -- packages /mnt/btrfs/@rstarsleep desktop
+cargo run -- init-system /mnt/btrfs/@RStarSleep desktop
+cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 ```
 
 本模块不自动编辑 `/etc/fstab`、执行挂载或导出应用入口。
@@ -297,3 +299,27 @@ config/script/
 `cache/<版本>/script` 与 `script.toml`，最终版本从 script 缓存发布。
 旧 script 缓存永不用于构建，无有缓存/无缓存分支；删除或修改脚本不会继承旧脚本效果。
 脚本失败阻止发布，但保留基础和软件缓存。全配置摘要包含脚本及权限，检测留档修改。
+
+
+构建配置目录内所有普通 INI 文件按文件名排序独立解析后叠加，文件名和扩展名没有语义区别。
+`config.toml` 仅作为没有 INI 文件时的历史格式回退；不参与混合叠加。重复单项核心设置
+（SchemaVersion、Distribution、Architecture）报错，空赋值保留为列表成员，不清空之前的赋值。
+
+插件可在 `[config.constraints.RSTAR_字段名]` 设置 `kind`：`free-single`、`free-list`、
+`enum-single`、`enum-list`、`number`；枚举还需声明 `values=["候选值"]`。
+单项和数字要求恰好一个赋值，数字必须有限；无约束字段默认为自由列表。
+这些规则作用于原始赋值，而非拆分后的软件包名。插件应检查其余业务约束并明确报错。
+缓存摘要包含每一个列表成员及其边界。
+
+
+主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
+`/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
+随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
+通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
+全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
+实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
+缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
+各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
+
+新初始化使用 `@RStarSleep`，已有 `@rstarsleep` 会继续复用。
+每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。

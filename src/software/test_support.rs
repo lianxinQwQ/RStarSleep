@@ -352,6 +352,7 @@ impl Fixture {
             distribution_options: Default::default(),
             config: temporary.path().join("config"),
             persistent_mounts: Vec::new(),
+            parameter_lists: Default::default(),
         };
         Self {
             _temporary: temporary,

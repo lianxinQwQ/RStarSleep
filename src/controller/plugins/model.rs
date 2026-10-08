@@ -96,6 +96,24 @@ pub struct ConfigRequirements {
     /// Accepted settings whose omission is handled by the plugin or architecture default.
     /// 接受的可选设置；缺省由插件或架构默认值处理。
     pub optional: Vec<String>,
+    /// Optional value constraints keyed by canonical parameter names.
+    /// 以规范参数名索引的可选值约束。
+    #[serde(default)]
+    pub constraints: std::collections::BTreeMap<String, ValueConstraint>,
+}
+
+/// Strict validation of raw INI assignment lists.
+/// 对原始 INI 赋值列表进行严格校验。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValueConstraint {
+    /// free-single, free-list, enum-single, enum-list, or number.
+    /// 自由单项、自由列表、枚举单项、枚举列表或数字。
+    pub kind: String,
+    /// Allowed values for enum constraints.
+    /// 枚举约束允许的值。
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 /// Explicit per-stage parameter dependencies; empty lists opt out of field invalidation.

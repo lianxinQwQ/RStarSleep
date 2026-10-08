@@ -52,7 +52,7 @@ fn reads_plugin_distribution_options_without_renaming_or_splitting_values() {
     );
     let options = read_distribution_options_at(&directory).unwrap();
     assert_eq!(options.len(), 5);
-    assert_eq!(options["Channel"], "stable");
+    assert_eq!(options["Channel"], "old\nstable");
     assert_eq!(options["Architecture"], "x86_64");
     assert_eq!(options["Mirror"], "https://example/$repo/$arch");
     assert_eq!(options["List"], "first\nsecond");
@@ -249,13 +249,13 @@ fn handles_repeated_assignments_continuations_and_empty_resets() {
     let directory = store.system_layout("desktop").unwrap().config;
     write_build(
         &directory,
-        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=obsolete\nDistribution=arch\n[Content]\nPackages=discarded\nPackages=\nPackages=vim, linux\n    libstdc++\n    # Comment inside the continuation\n\n    vim\n[Content]\nPackages=nano\n[Future]\nPackages=ignored\n",
+        "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=discarded\nPackages=\nPackages=vim, linux\n    libstdc++\n    # Comment inside the continuation\n\n    vim\n[Content]\nPackages=nano\n[Future]\nPackages=ignored\n",
     );
     let config = store.read_build_config("desktop").unwrap();
     assert_eq!(config.system_type, "arch");
     assert_eq!(
         config.packages,
-        ["vim", "linux", "libstdc++", "vim", "nano"]
+        ["discarded", "vim", "linux", "libstdc++", "vim", "nano"]
     );
     write_build(
         &directory,
@@ -269,13 +269,7 @@ fn handles_repeated_assignments_continuations_and_empty_resets() {
         &directory,
         "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=vim\nPackages= # Explicitly clear all packages\n",
     );
-    assert!(
-        store
-            .read_build_config("desktop")
-            .unwrap()
-            .packages
-            .is_empty()
-    );
+    assert!(store.read_build_config("desktop").unwrap().packages == ["vim"]);
 }
 
 /// Preserve historical TOML inputs on initialization and prefer INI without hiding its errors.
@@ -330,7 +324,7 @@ fn normalizes_ini_packages_and_preserves_all_provenance() {
     let path = Path::new(BUILD_CONFIG_PATH);
     let compact = "[Content]\nPackages=vim,linux\n[Future]\nPackages=retained\n";
     let multiline = "# Different presentation\n[Content]\nPackages=discarded\nPackages=\nPackages=\n    vim\nPackages=linux\n[Future]\nPackages=retained\n";
-    assert_eq!(
+    assert_ne!(
         normalized_build_config(compact, path).unwrap(),
         normalized_build_config(multiline, path).unwrap()
     );
@@ -368,9 +362,15 @@ fn reads_unified_parameters_from_all_sections_and_legacy_inputs() {
     fs::write(&path, "Channel=bare\n[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nChannel=old\nChannel=stable\n[Content]\nPackages=discarded\nPackages=\nPackages=vim,linux\n[Custom]\nChannel=first\n    second\n[Empty]\n").unwrap();
     let parameters = read_plugin_parameters_at(directory).unwrap();
     assert_eq!(parameters.values["RSTAR_CHANNEL"], "bare");
-    assert_eq!(parameters.values["RSTAR_DISTRIBUTION_CHANNEL"], "stable");
+    assert_eq!(
+        parameters.values["RSTAR_DISTRIBUTION_CHANNEL"],
+        "old\nstable"
+    );
     assert_eq!(parameters.values["RSTAR_CUSTOM_CHANNEL"], "first\nsecond");
-    assert_eq!(parameters.values["RSTAR_CONTENT_PACKAGES"], "vim\nlinux");
+    assert_eq!(
+        parameters.values["RSTAR_CONTENT_PACKAGES"],
+        "discarded\nvim\nlinux"
+    );
     assert!(parameters.sections.contains("EMPTY"));
     assert_eq!(parameters.field_sections["RSTAR_CUSTOM_CHANNEL"], "CUSTOM");
     fs::remove_file(path).unwrap();
@@ -398,4 +398,48 @@ fn rejects_ambiguous_unified_parameter_names() {
             "accepted {text}"
         );
     }
+}
+
+/// Verify cross-file lists, independent sections, and repeated scalar rejection.
+/// 验证跨文件列表、独立分节以及重复标量拒绝。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn overlays_all_ini_files_and_retains_assignment_boundaries() {
+    let (_temporary, store) = fixture();
+    store.initialize_system("desktop").unwrap();
+    let directory = store.system_layout("desktop").unwrap().config;
+    let build = directory.join("build");
+    fs::write(
+        build.join("00-values.any"),
+        "Channel=first\n[Custom]\nValue=one\n    two\n",
+    )
+    .unwrap();
+    fs::write(
+        build.join("zz-extra"),
+        "Channel=second\n[Custom]\nValue=\nValue=three\n[Content]\nPackages=vim\n",
+    )
+    .unwrap();
+    let parameters = read_plugin_parameters_at(&directory).unwrap();
+    assert_eq!(parameters.lists["RSTAR_CHANNEL"], ["first", "second"]);
+    assert_eq!(
+        parameters.lists["RSTAR_CUSTOM_VALUE"],
+        ["one\ntwo", "", "three"]
+    );
+    assert_eq!(
+        store.read_build_config("desktop").unwrap().packages,
+        ["vim"]
+    );
+    fs::write(
+        build.join("zz-duplicate"),
+        "[Distribution]\nDistribution=arch\n",
+    )
+    .unwrap();
+    assert!(
+        store
+            .read_build_config("desktop")
+            .unwrap_err()
+            .to_string()
+            .contains("恰好配置一次")
+    );
 }

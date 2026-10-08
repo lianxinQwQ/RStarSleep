@@ -156,11 +156,24 @@ impl LoadedPlugin {
         let options = context
             .map(|value| &value.parameters)
             .unwrap_or(&standalone);
-        let configuration = if operation == "predownload" {
+        let mut configuration = if operation == "predownload" {
             self.download_environment(context, architecture)?
         } else {
             self.configuration_environment(options, architecture)?
         };
+        if let Some(context) = context {
+            let parameters = crate::config::PluginParameters {
+                values: context.parameters.clone(),
+                lists: context.parameter_lists.clone(),
+                ..Default::default()
+            };
+            self.validate_parameter_lists(&parameters)?;
+            configuration.insert(
+                "RSTAR_PARAMETERS_JSON".into(),
+                serde_json::to_string(&parameters.lists)
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
+            );
+        }
         let mappings = self.persistent_directories()?;
         let mounts = context
             .map(|c| c.persistent_mounts.as_slice())
