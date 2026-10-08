@@ -90,8 +90,8 @@ pub(super) struct Identity {
     /// Normalized protected explicit base targets.
     /// 规范化受保护显式基础目标。
     pub protected_packages: Vec<String>,
-    /// Configuration digest excluding the package table and later script inputs.
-    /// 排除包表及后续脚本输入的配置摘要。
+    /// Digest of the parameter dependencies selected by the plugin for this stage.
+    /// 插件为此阶段选定的参数依赖摘要。
     pub options_sha256: String,
 }
 
@@ -239,7 +239,7 @@ pub(super) fn load(
     if !root_exists {
         return Ok(None);
     }
-    if config_hash(config, false)? != record.config_sha256 {
+    if config_hash(config)? != record.config_sha256 {
         return Err(Error::Invalid(format!("缓存来源配置已改变: {version}")));
     }
     if &record.identity != identity {

@@ -75,12 +75,13 @@ Packages=
 同一配置目录中同时存在两种格式时，优先读取 `config.conf`；迁移时将旧文件中的字段
 改写为上述分节格式并保存为 `config.conf`。全局配置、运行配置及插件元数据继续使用 TOML。
 
-`[Distribution]` 中除 `Distribution` 外的设置保留原名并转大写，作为 `RSTAR_<键名>`
-环境变量传入插件和构建脚本，例如 `Architecture` → `RSTAR_ARCHITECTURE`。
-插件必须在 `plugin.toml` 的 `[config]` 显式提供 `required`、`optional` 两个列表，
-使用原始键名。匹配成功后，必选项缺失或为空、配置包含未声明的键时均报错退出，
-不运行插件脚本。Arch 的可选字段见 [插件说明](presets/plugins/arch/readme.md)。
-旧插件（包括 API 2）也必须补充这一声明。
+单系统插件和构建脚本接收全部配置的统一大写名称：裸参数 `Channel` 为 `RSTAR_CHANNEL`，
+`[Distribution] Architecture` 为 `RSTAR_DISTRIBUTION_ARCHITECTURE`。
+插件在 `[config] required`、`optional` 中声明这些同名参数；必选值缺失或为空、
+配置包含未声明参数时退出。还须显式声明 `[cache] base_system`、`software` 两组检测字段，
+可选裸参数、整节或 `RSTAR_*节名_参数名`；空列表表示不按配置字段失效。
+旧插件（包括 API 2）须改名并补齐声明。统一预下载接口保留原来的环境名及包需求参数。
+Arch 配置与迁移说明见 [插件说明](presets/plugins/arch/readme.md)。
 
 ```sh
 RStarSleep init-system /rstarsleep desktop
@@ -102,9 +103,10 @@ Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
 成功后再提交基础缓存；软件有缓存时仍单独执行软件维护。
 同一系统保持稳定的 machine-id，不同系统拥有独立身份。
 
-构建开始固定删除本系统所有历史 `script` 及后续阶段缓存；基础配置与最新过往留档变化时，
-删除本系统历史基础及后续阶段缓存后继续。比较排除 `Packages` 和 `script/`，因此软件包增删
-和脚本变化保留基础缓存。已发布版本根和配置留档保留。插件哈希变化不会强制重建兼容缓存。
+构建开始固定删除本系统所有历史 `script` 及后续阶段缓存。按插件声明比较当前与最新过往留档：
+基础字段变化删除历史基础及后续缓存；仅软件字段变化从软件缓存开始清理。
+Arch 预设检测 Config、Distribution 整节，软件包增删和脚本变化保留基础缓存。
+已发布版本根和配置留档保留。插件哈希变化不会强制重建兼容缓存。
 软件维护执行一次完整更新，补装缺失目标，将移除目标改为依赖并清理不再需要的软件。
 软件步骤完成后执行 `systems/<系统>/config/script/`：目录或压缩包运行 `main.sh`，
 独立 `*.sh` 复制进空目录后运行。按文件名顺序，在系统内部以各资源目录为工作目录执行。

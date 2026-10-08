@@ -85,8 +85,8 @@ pub struct ToolRequirements {
     pub predownload: Vec<String>,
 }
 
-/// Explicit plugin configuration contract using original [Distribution] key names.
-/// 使用原始 [Distribution] 键名声明的插件配置契约。
+/// Explicit plugin configuration contract using canonical RSTAR_ parameter names.
+/// 使用规范 RSTAR_ 参数名声明的插件配置契约。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigRequirements {
@@ -96,6 +96,15 @@ pub struct ConfigRequirements {
     /// Accepted settings whose omission is handled by the plugin or architecture default.
     /// 接受的可选设置；缺省由插件或架构默认值处理。
     pub optional: Vec<String>,
+}
+
+/// Explicit per-stage parameter dependencies; empty lists opt out of field invalidation.
+/// 显式阶段参数依赖；空列表表示不按字段使缓存失效。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheRequirements {
+    pub base_system: Vec<String>,
+    pub software: Vec<String>,
 }
 
 /// Metadata describing one packaged distribution plugin.
@@ -131,6 +140,9 @@ pub struct Metadata {
     /// Required and optional settings; both lists must be present, even when empty.
     /// 必选和可选设置；两个列表都必须提供，即使为空。
     pub config: ConfigRequirements,
+    /// Parameter changes that invalidate base and software caches.
+    /// 使基础与软件缓存失效的参数变化。
+    pub cache: CacheRequirements,
     /// Protected explicit base targets.
     /// 受保护的显式基础目标。
     #[serde(default)]

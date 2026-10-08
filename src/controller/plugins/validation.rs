@@ -57,6 +57,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
     metadata.config.validate()?;
+    metadata.cache.validate(&metadata.config)?;
     for operation in REQUIRED_OPERATIONS {
         operation_path(root, operation)?;
     }

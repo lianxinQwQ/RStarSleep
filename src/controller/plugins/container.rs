@@ -49,9 +49,17 @@ pub(super) fn nspawn(
         launcher,
         root,
         host_path,
-        architecture,
         context,
         plugin.root(),
+        &plugin.configuration_environment(
+            context
+                .map(|value| &value.parameters)
+                .unwrap_or(&std::collections::BTreeMap::from([(
+                    "RSTAR_DISTRIBUTION_ARCHITECTURE".into(),
+                    architecture.into(),
+                )])),
+            architecture,
+        )?,
     )
 }
 
@@ -60,9 +68,9 @@ pub(super) fn nspawn_from(
     launcher: &Path,
     root: &Path,
     host_path: &OsStr,
-    architecture: &str,
     context: Option<&crate::controller::BuildContext>,
     resources: &Path,
+    configuration: &std::collections::BTreeMap<String, String>,
 ) -> Result<Command> {
     let mut command = crate::controller::container::command(launcher, root);
     command
@@ -74,12 +82,7 @@ pub(super) fn nspawn_from(
         .arg(format!("--setenv=RSTAR_PLUGIN_ROOT={SYSTEM_PLUGIN}"))
         .arg(format!("--setenv=RSTAR_PLUGIN_TMP={SYSTEM_TMP}"))
         .arg("--setenv=RSTAR_ROOT=/");
-    let standalone =
-        std::collections::BTreeMap::from([("Architecture".into(), architecture.into())]);
-    let options = context
-        .map(|value| &value.distribution_options)
-        .unwrap_or(&standalone);
-    for (name, value) in plugin.configuration_environment(options, architecture)? {
+    for (name, value) in configuration {
         command.arg(format!("--setenv={name}={value}"));
     }
     if let Some(context) = context {

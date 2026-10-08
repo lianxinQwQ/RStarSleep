@@ -16,7 +16,7 @@ use std::fs;
 ///   声明的宿主工具需求。
 /// - `system`: Declared target-system tool requirements.
 ///   声明的目标系统工具需求。
-pub(super) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
+pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("plugin");
     fs::create_dir(&root).unwrap();
@@ -42,9 +42,13 @@ pub(super) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             protected_packages: vec![],
             predownload: false,
             persistent_dirs: vec![],
+            cache: super::super::CacheRequirements {
+                base_system: vec![],
+                software: vec![],
+            },
             config: super::super::ConfigRequirements {
                 required: vec![],
-                optional: vec!["Architecture".into()],
+                optional: vec!["RSTAR_DISTRIBUTION_ARCHITECTURE".into()],
             },
             tools: ToolRequirements {
                 host: host.iter().map(|tool| (*tool).into()).collect(),
@@ -231,7 +235,7 @@ fn invokes_target_only_after_successful_probe() {
     assert!(plugin.root().join("executed-inside").is_file());
     let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
     assert!(trace.contains("--bind-ro="));
-    assert!(trace.contains("--setenv=RSTAR_ARCHITECTURE=x86_64"));
+    assert!(trace.contains("--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE=x86_64"));
     assert!(trace.contains("bash /run/rstarsleep/plugin/install.sh vim"));
 }
 
@@ -310,7 +314,7 @@ fn invokes_unsuffixed_host_entry_without_bash() {
         r#"#!/bin/sh
 test "$PWD" = "$RSTAR_PLUGIN_ROOT" || exit 8
 test -d "$RSTAR_PLUGIN_TMP" || exit 9
-test "$RSTAR_ARCHITECTURE" = x86_64 || exit 10
+test "$RSTAR_DISTRIBUTION_ARCHITECTURE" = x86_64 || exit 10
 printf '%s\0' "$@" > "$RSTAR_ROOT/arguments"
 printf 'done\n'
 "#,

@@ -11,7 +11,7 @@ source "$plugin_root/lib/common.sh"
 # 参数：无；已声明的 [Distribution] 设置通过 RSTAR_ 变量提供。
 bootstrap() {
     local architecture url signature_url keyring path cache_key cache
-    architecture=${RSTAR_ARCHITECTURE:-x86_64}
+    architecture=${RSTAR_DISTRIBUTION_ARCHITECTURE:-x86_64}
     [[ $architecture == x86_64 ]] || { log "Unsupported architecture: $architecture"; return 64; }
     [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
         log 'RSTAR_ROOT must be an existing absolute root directory'; return 64;
@@ -21,10 +21,10 @@ bootstrap() {
     entries=("$RSTAR_ROOT"/*)
     shopt -u nullglob dotglob
     (( ${#entries[@]} == 0 )) || { log 'Bootstrap destination must be empty'; return 64; }
-    keyring=${RSTAR_KEYRING:-/usr/share/pacman/keyrings/archlinux.gpg}
+    keyring=${RSTAR_DISTRIBUTION_KEYRING:-/usr/share/pacman/keyrings/archlinux.gpg}
     [[ -f $keyring ]] || { log "Missing trusted Arch signing keyring: $keyring"; return 1; }
-    url=${RSTAR_BOOTSTRAPURL:-https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst}
-    signature_url=${RSTAR_BOOTSTRAPSIGNATUREURL:-$url.sig}
+    url=${RSTAR_DISTRIBUTION_BOOTSTRAPURL:-https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst}
+    signature_url=${RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL:-$url.sig}
     [[ -d $plugin_root/state/bootstrap ]] || { log 'Missing persistent bootstrap directory'; return 1; }
     cache_key=$(printf '%s\0%s' "$url" "$signature_url" | sha256sum)
     cache="$plugin_root/state/bootstrap/${cache_key%% *}"
@@ -53,8 +53,8 @@ bootstrap() {
         case "/$path/" in */../*) log "Invalid bootstrap archive path: $path"; return 1 ;; esac
     done <"$bootstrap_tmp/entries"
     tar -xpf "$cache/rootfs.tar.zst" --strip-components=1 -C "$RSTAR_ROOT"
-    if [[ -n ${RSTAR_MIRROR:-} ]]; then
-        printf 'Server = %s\n' "$RSTAR_MIRROR" >"$RSTAR_ROOT/etc/pacman.d/mirrorlist"
+    if [[ -n ${RSTAR_DISTRIBUTION_MIRROR:-} ]]; then
+        printf 'Server = %s\n' "$RSTAR_DISTRIBUTION_MIRROR" >"$RSTAR_ROOT/etc/pacman.d/mirrorlist"
     else
         cp -- "$plugin_root/data/mirrorlist" "$RSTAR_ROOT/etc/pacman.d/mirrorlist"
     fi

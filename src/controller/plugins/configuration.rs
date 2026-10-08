@@ -1,44 +1,34 @@
-//! Validate explicit plugin configuration contracts and map original names to environment variables.
-//! 校验显式插件配置契约，并将原始名称映射为环境变量。
-use super::{ConfigRequirements, Error, LoadedPlugin, Result};
+//! Validate the same parameter names used by plugin environments and cache declarations.
+//! 按插件环境与缓存声明使用的同一参数名称进行校验。
+use super::{CacheRequirements, ConfigRequirements, Error, LoadedPlugin, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Convert one original setting name to its uppercase RSTAR_ environment name.
-/// 将一个原始设置名转换为大写 RSTAR_ 环境变量名。
-/// # Arguments
-/// - `name`: Case-sensitive [Distribution] key, excluding the selector and reserved context names.
-///   大小写敏感的 [Distribution] 键，不包括选择字段及保留上下文名称。
+/// Require a canonical RSTAR_ parameter name and protect controller-owned context.
+/// 要求规范的 RSTAR_ 参数名，并保护控制器所属上下文。
 pub(crate) fn environment_name(name: &str) -> Result<String> {
-    let mut bytes = name.bytes();
-    if !bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
-        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    let suffix = name
+        .strip_prefix("RSTAR_")
+        .ok_or_else(|| Error::Invalid(format!("插件参数须使用 RSTAR_ 名称: {name}")))?;
+    if suffix.is_empty()
+        || !suffix.as_bytes()[0].is_ascii_uppercase()
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
     {
-        return Err(Error::Invalid(format!("无效插件配置名称: {name:?}")));
+        return Err(Error::Invalid(format!("无效插件参数名称: {name:?}")));
     }
-    let suffix = name.to_ascii_uppercase();
     if matches!(
-        suffix.as_str(),
-        "DISTRIBUTION"
-            | "ROOT"
-            | "CONFIG_DIR"
-            | "SYSTEM_ID"
-            | "PLUGIN_ROOT"
-            | "PLUGIN_TMP"
-            | "ARCH"
+        suffix,
+        "ROOT" | "CONFIG_DIR" | "SYSTEM_ID" | "PLUGIN_ROOT" | "PLUGIN_TMP" | "ARCH"
     ) {
         return Err(Error::Invalid(format!(
-            "插件配置名称占用控制器保留变量: {name}"
+            "插件参数占用控制器保留变量: {name}"
         )));
     }
-    Ok(format!("RSTAR_{suffix}"))
+    Ok(name.into())
 }
 
 impl ConfigRequirements {
-    /// Reject duplicate, overlapping, reserved, and case-colliding configuration declarations.
-    /// 拒绝重复、交叉、保留名称和大小写冲突的配置声明。
-    /// # Arguments
-    /// - `self`: Explicit required and optional original setting names.
-    ///   显式声明的必选和可选原始设置名。
     pub(super) fn validate(&self) -> Result<()> {
         let mut names = BTreeSet::new();
         for name in self.required.iter().chain(&self.optional) {
@@ -52,17 +42,45 @@ impl ConfigRequirements {
     }
 }
 
+impl CacheRequirements {
+    pub(super) fn validate(&self, config: &ConfigRequirements) -> Result<()> {
+        for selectors in [&self.base_system, &self.software] {
+            let mut names = BTreeSet::new();
+            for selector in selectors {
+                let name = selector
+                    .strip_prefix("RSTAR_*")
+                    .map(|suffix| format!("RSTAR_{suffix}"))
+                    .unwrap_or_else(|| selector.clone());
+                environment_name(&name)?;
+                if !names.insert(name.clone()) {
+                    return Err(Error::Invalid(format!("缓存检测字段重复: {selector}")));
+                }
+                let fields = config.required.iter().chain(&config.optional);
+                let declared = if selector.starts_with("RSTAR_*") {
+                    // Explicit section/parameter selector; unlike a section selector it never expands.
+                    // 显式节/参数选择器；与节选择器不同，永不展开。
+                    name.strip_prefix("RSTAR_")
+                        .is_some_and(|suffix| suffix.contains('_'))
+                        && fields.clone().any(|field| field == &name)
+                } else {
+                    fields
+                        .clone()
+                        .any(|field| field == &name || field.starts_with(&format!("{name}_")))
+                };
+                if !declared {
+                    return Err(Error::Invalid(format!(
+                        "缓存检测字段未在 config 中声明: {selector}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl LoadedPlugin {
-    /// Validate every explicit setting and report all missing and undeclared keys before execution.
-    /// 执行前校验所有显式设置，并报告全部缺失和未声明的键。
-    /// # Arguments
-    /// - `self`: Selected plugin with its configuration contract.
-    ///   已选定并包含配置契约的插件。
-    /// - `options`: Explicit [Distribution] settings excluding Distribution; defaults are not inputs.
-    ///   [Distribution] 中排除 Distribution 的显式设置；默认值不算输入。
-    /// # Errors
-    /// Returns an error for a missing or empty required key, an undeclared key, or invalid values.
-    /// 必选键缺失或为空、键未声明或值无效时返回错误。
+    /// Validate all explicit effective parameters before any plugin execution.
+    /// 任何插件运行之前校验全部显式生效参数。
     pub fn validate_configuration(&self, options: &BTreeMap<String, String>) -> Result<()> {
         self.metadata.config.validate()?;
         let missing: Vec<_> = self
@@ -87,7 +105,7 @@ impl LoadedPlugin {
             .collect();
         if !missing.is_empty() || !unknown.is_empty() {
             return Err(Error::Invalid(format!(
-                "插件 {} 的 [Distribution] 配置不满足声明：缺少或为空的必选配置 [{}]；未声明的配置 [{}]",
+                "插件 {} 的配置不满足声明：缺少或为空的必选配置 [{}]；未声明的配置 [{}]",
                 self.metadata.id,
                 missing.join(", "),
                 unknown.join(", ")
@@ -102,36 +120,45 @@ impl LoadedPlugin {
         Ok(())
     }
 
-    /// Resolve accepted settings for Bash, using the effective architecture only if declared optional.
-    /// 解析 Bash 接受的设置，仅在 Architecture 声明为可选时使用生效架构默认值。
-    /// # Arguments
-    /// - `self`: Selected plugin configuration contract.
-    ///   已选定的插件配置契约。
-    /// - `options`: Explicit frozen settings, checked before adding defaults.
-    ///   添加默认值前先校验的显式冻结设置。
-    /// - `architecture`: Effective target architecture used for plugin matching.
-    ///   插件匹配使用的生效目标架构。
     pub(super) fn configuration_environment(
         &self,
         options: &BTreeMap<String, String>,
         architecture: &str,
     ) -> Result<BTreeMap<String, String>> {
         self.validate_configuration(options)?;
-        let mut environment = BTreeMap::new();
-        for (name, value) in options {
-            environment.insert(environment_name(name)?, value.clone());
-        }
+        let mut environment = options.clone();
         if self
             .metadata
             .config
             .optional
             .iter()
-            .any(|name| name == "Architecture")
+            .any(|name| name == "RSTAR_DISTRIBUTION_ARCHITECTURE")
         {
             environment
-                .entry("RSTAR_ARCHITECTURE".into())
+                .entry("RSTAR_DISTRIBUTION_ARCHITECTURE".into())
                 .or_insert_with(|| architecture.into());
         }
+        Ok(environment)
+    }
+
+    /// Preserve the unified multi-system download operation's original Distribution environment.
+    /// 保留统一多系统下载操作原来的 Distribution 环境。
+    pub(super) fn download_environment(
+        &self,
+        context: Option<&crate::controller::BuildContext>,
+        architecture: &str,
+    ) -> Result<BTreeMap<String, String>> {
+        let mut environment = BTreeMap::new();
+        if let Some(context) = context {
+            for (name, value) in &context.distribution_options {
+                let name = format!("RSTAR_{}", name.to_ascii_uppercase());
+                environment_name(&name)?;
+                environment.insert(name, value.clone());
+            }
+        }
+        environment
+            .entry("RSTAR_ARCHITECTURE".into())
+            .or_insert_with(|| architecture.into());
         Ok(environment)
     }
 }

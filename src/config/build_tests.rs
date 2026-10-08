@@ -320,48 +320,82 @@ fn preserves_legacy_inputs_and_prioritizes_ini() {
     ));
 }
 
-/// Keep cache compatibility independent of package syntax while fingerprinting unknown settings.
-/// 缓存兼容性不依赖包列表写法，同时为未知设置保留指纹。
+/// Normalize package syntax while fingerprinting every archived setting.
+/// 规范化包列表写法，同时为所有留档设置保留指纹。
 /// # Arguments
 /// No parameters.
 /// 无参数。
 #[test]
-fn normalizes_ini_packages_and_excludes_only_the_content_package_setting() {
+fn normalizes_ini_packages_and_preserves_all_provenance() {
     let path = Path::new(BUILD_CONFIG_PATH);
     let compact = "[Content]\nPackages=vim,linux\n[Future]\nPackages=retained\n";
     let multiline = "# Different presentation\n[Content]\nPackages=discarded\nPackages=\nPackages=\n    vim\nPackages=linux\n[Future]\nPackages=retained\n";
     assert_eq!(
-        normalized_build_config(compact, path, false).unwrap(),
-        normalized_build_config(multiline, path, false).unwrap()
+        normalized_build_config(compact, path).unwrap(),
+        normalized_build_config(multiline, path).unwrap()
     );
     let changed = compact.replace("vim,linux", "nano");
     assert_ne!(
-        normalized_build_config(compact, path, false).unwrap(),
-        normalized_build_config(&changed, path, false).unwrap()
-    );
-    assert_eq!(
-        normalized_build_config(compact, path, true).unwrap(),
-        normalized_build_config(&changed, path, true).unwrap()
+        normalized_build_config(compact, path).unwrap(),
+        normalized_build_config(&changed, path).unwrap()
     );
     let unknown_change = compact.replace("retained", "changed");
     assert_ne!(
-        normalized_build_config(compact, path, true).unwrap(),
-        normalized_build_config(&unknown_change, path, true).unwrap()
+        normalized_build_config(compact, path).unwrap(),
+        normalized_build_config(&unknown_change, path).unwrap()
     );
     let empty_section = format!("{compact}[FutureSection]\n");
     assert_ne!(
-        normalized_build_config(compact, path, true).unwrap(),
-        normalized_build_config(&empty_section, path, true).unwrap()
+        normalized_build_config(compact, path).unwrap(),
+        normalized_build_config(&empty_section, path).unwrap()
     );
     let legacy = "schema_version=1\nsystem_type='arch'\npackages=['vim']\ncustom=true\n";
-    let mut value: toml::Value = toml::from_str(legacy).unwrap();
+    let value: toml::Value = toml::from_str(legacy).unwrap();
     assert_eq!(
-        normalized_build_config(legacy, Path::new(LEGACY_BUILD_CONFIG_PATH), false).unwrap(),
+        normalized_build_config(legacy, Path::new(LEGACY_BUILD_CONFIG_PATH)).unwrap(),
         toml::to_string(&value).unwrap().into_bytes()
     );
-    value.as_table_mut().unwrap().remove("packages");
-    assert_eq!(
-        normalized_build_config(legacy, Path::new(LEGACY_BUILD_CONFIG_PATH), true).unwrap(),
-        toml::to_string(&value).unwrap().into_bytes()
-    );
+}
+
+/// Keep all sections distinct, canonicalize effective values, and support bare parameters.
+/// 保持各节独立，规范化生效值，并支持裸参数。
+#[test]
+fn reads_unified_parameters_from_all_sections_and_legacy_inputs() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary.path();
+    fs::create_dir(directory.join("build")).unwrap();
+    let path = directory.join(BUILD_CONFIG_PATH);
+    fs::write(&path, "Channel=bare\n[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\nChannel=old\nChannel=stable\n[Content]\nPackages=discarded\nPackages=\nPackages=vim,linux\n[Custom]\nChannel=first\n    second\n[Empty]\n").unwrap();
+    let parameters = read_plugin_parameters_at(directory).unwrap();
+    assert_eq!(parameters.values["RSTAR_CHANNEL"], "bare");
+    assert_eq!(parameters.values["RSTAR_DISTRIBUTION_CHANNEL"], "stable");
+    assert_eq!(parameters.values["RSTAR_CUSTOM_CHANNEL"], "first\nsecond");
+    assert_eq!(parameters.values["RSTAR_CONTENT_PACKAGES"], "vim\nlinux");
+    assert!(parameters.sections.contains("EMPTY"));
+    assert_eq!(parameters.field_sections["RSTAR_CUSTOM_CHANNEL"], "CUSTOM");
+    fs::remove_file(path).unwrap();
+    fs::write(directory.join(LEGACY_BUILD_CONFIG_PATH), "Channel='bare'\nschema_version=1\nsystem_type='arch'\npackages=['vim','linux']\n[distribution_options]\nChannel='stable'\n[Custom]\nChannel='first\\nsecond'\n[Empty]\n").unwrap();
+    let legacy = read_plugin_parameters_at(directory).unwrap();
+    assert_eq!(legacy.values["RSTAR_CHANNEL"], "bare");
+    assert_eq!(legacy.values["RSTAR_DISTRIBUTION_CHANNEL"], "stable");
+    assert_eq!(legacy.values["RSTAR_CONTENT_PACKAGES"], "vim\nlinux");
+    assert!(legacy.sections.contains("EMPTY"));
+}
+
+#[test]
+fn rejects_ambiguous_unified_parameter_names() {
+    let temporary = tempfile::tempdir().unwrap();
+    fs::create_dir(temporary.path().join("build")).unwrap();
+    for text in [
+        "[Custom]\nKey=one\nkey=two\n",
+        "Custom_Key=bare\n[Custom]\nKey=section\n",
+        "[Custom]\n[custom]\n",
+        "[Bad-Section]\nKey=value\n",
+    ] {
+        fs::write(temporary.path().join(BUILD_CONFIG_PATH), text).unwrap();
+        assert!(
+            read_plugin_parameters_at(temporary.path()).is_err(),
+            "accepted {text}"
+        );
+    }
 }

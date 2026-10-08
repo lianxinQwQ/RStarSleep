@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.5.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.6.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -19,29 +19,45 @@ Architecture=x86_64
 # AurKeyserver=hkps://keyserver.ubuntu.com
 ```
 
-元数据必须显式声明接受的原始配置键：
+元数据必须显式声明全部统一参数，以及基础和软件缓存检测字段：
 
 ```toml
 [config]
 required = []
-optional = ["Architecture", "BootstrapUrl", "BootstrapSignatureUrl", "Keyring", "Mirror", "AurKeyserver"]
+optional = [
+    "RSTAR_CONFIG_SCHEMAVERSION", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_CONTENT_PACKAGES",
+    "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
+    "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
+    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
+]
+
+# Base changes invalidate downstream caches; package targets are reconciled during maintenance.
+# 基础变化使后续缓存失效；软件目标在维护中协调。
+[cache]
+base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
+software = []
 ```
 
-匹配成功后检查全部 `[Distribution]` 设置（不包括 `Distribution`）。必选设置缺失或为空、
-出现未声明设置时均报错，不执行任何插件操作。键名区分大小写；同名重复赋值取最后一个值。
-必选和可选列表均必须提供，适用时显式使用空列表；旧 API 2 插件也必须补充声明。
+匹配成功后检查全部节及裸参数，包括 SchemaVersion、Distribution 和 Packages。
+必选参数缺失或为空、出现未声明参数时均报错，不执行插件操作。
+声明使用规范大写名称，标量重复赋值取最后一个值；四个列表都必须提供，适用时显式使用空列表。
+基础缓存检测 Config、Distribution 整节；Packages 变化由软件维护处理，不使缓存失效。
+新增自定义参数时须登记到 required 或 optional，并按需加入缓存列表。
+缓存可选择裸参数、整节或 `RSTAR_*节名_参数名`，规则见 [构建设计](../../../docs/build-design.md)。
 
 | 配置键 | Bash 环境变量 | 缺省行为 |
 | --- | --- | --- |
-| Architecture | RSTAR_ARCHITECTURE | 使用程序运行架构匹配插件并传入脚本 |
-| BootstrapUrl | RSTAR_BOOTSTRAPURL | 官方 latest bootstrap |
-| BootstrapSignatureUrl | RSTAR_BOOTSTRAPSIGNATUREURL | BootstrapUrl 加 `.sig` |
-| Keyring | RSTAR_KEYRING | `/usr/share/pacman/keyrings/archlinux.gpg` |
-| Mirror | RSTAR_MIRROR | 使用包内 `data/mirrorlist` |
-| AurKeyserver | RSTAR_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
+| Architecture | RSTAR_DISTRIBUTION_ARCHITECTURE | 使用程序运行架构匹配插件并传入脚本 |
+| BootstrapUrl | RSTAR_DISTRIBUTION_BOOTSTRAPURL | 官方 latest bootstrap |
+| BootstrapSignatureUrl | RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL | BootstrapUrl 加 `.sig` |
+| Keyring | RSTAR_DISTRIBUTION_KEYRING | `/usr/share/pacman/keyrings/archlinux.gpg` |
+| Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用包内 `data/mirrorlist` |
+| AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
 
 控制器把配置值直接放入进程环境，不作为位置参数或 shell 源码。
-`RSTAR_ARCH` 及旧的 `RSTAR_ARCH_*` 配置覆盖名已替换为上述名称。
+单系统接口和预下载环境的初始化、维护使用上述名称。
+统一 `predownload` 下载接口仍接收原来的 `RSTAR_ARCHITECTURE`、`RSTAR_AURKEYSERVER` 等
+Distribution 环境变量和独立包需求参数。旧插件需改名并补充 `[cache]` 声明。
 `RSTAR_ROOT`、`RSTAR_PLUGIN_ROOT`、`RSTAR_PLUGIN_TMP`、`RSTAR_CONFIG_DIR`、
 `RSTAR_SYSTEM_ID` 是控制器提供的上下文，不能由插件配置覆盖。
 

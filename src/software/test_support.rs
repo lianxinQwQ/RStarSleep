@@ -328,7 +328,7 @@ impl Fixture {
         let temporary = tempfile::tempdir().unwrap();
         let archive_path = temporary.path().join("plugin.tar");
         let mut archive = tar::Builder::new(fs::File::create(&archive_path).unwrap());
-        let metadata = b"schema_version=1\napi_version=2\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\nprotected_packages=['base']\n[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n";
+        let metadata = b"schema_version=1\napi_version=2\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\nprotected_packages=['base']\n[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n[cache]\nbase_system=[]\nsoftware=[]\n[tools]\nhost=[]\nsystem=[]\n";
         let mut files = vec![("plugin.toml".to_owned(), metadata.as_slice())];
         files.extend(
             plugins::REQUIRED_OPERATIONS
@@ -348,6 +348,7 @@ impl Fixture {
         let context = BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
+            parameters: Default::default(),
             distribution_options: Default::default(),
             config: temporary.path().join("config"),
             persistent_mounts: Vec::new(),

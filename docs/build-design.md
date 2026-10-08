@@ -137,7 +137,7 @@ arch-plugin.tar.zst
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.5.0"
+version = "0.6.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -149,11 +149,22 @@ protected_packages = ["base"]
 # 初始安装下载文件必须保留，供后续独立安装使用。
 persistent_dirs = ["arch-bootstrap:state/bootstrap"]
 
-# Original [Distribution] settings accepted by plugin operations.
-# 插件操作接受的原始 [Distribution] 设置。
+# Unified effective parameters accepted by single-system operations.
+# 单系统操作接受的统一生效参数。
 [config]
 required = []
-optional = ["Architecture", "BootstrapUrl", "BootstrapSignatureUrl", "Keyring", "Mirror", "AurKeyserver"]
+optional = [
+    "RSTAR_CONFIG_SCHEMAVERSION", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_CONTENT_PACKAGES",
+    "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
+    "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
+    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
+]
+
+# Base changes invalidate downstream caches; package targets are reconciled during maintenance.
+# 基础变化使后续缓存失效；软件目标在维护中协调。
+[cache]
+base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
+software = []
 
 # External executables required by each execution environment.
 # 各执行环境所需的外部可执行工具。
@@ -204,26 +215,44 @@ API 3 要求 `system_init`，未升级的 API 2 插件仍可维护已有
 
 ## 插件配置声明与环境变量
 
-`plugin.toml` 必须提供 `[config] required` 与 `optional` 两个字符串列表，即使为空。
-列表使用 `[Distribution]` 原始键名，例如 `required = ["Release"]`、
-`optional = ["Architecture", "Mirror"]`。声明覆盖所有脚本使用的发行版配置，
-不包括选择插件的 `Distribution`、软件包列表或控制器提供的上下文变量。
+`plugin.toml` 必须提供 `[config] required`、`optional` 和 `[cache] base_system`、
+`software` 四个字符串列表，即使为空。配置声明和单系统插件接口共用规范的大写名称：
+首节之前的裸参数 `Channel` 为 `RSTAR_CHANNEL`；`[Distribution] Architecture` 为
+`RSTAR_DISTRIBUTION_ARCHITECTURE`。读取全部节，包括控制器使用的 SchemaVersion、
+Distribution 和 Packages；同名参数位于不同节时独立传入。名称组件以 ASCII 字母开头，
+后续仅允许字母、数字、下划线；拒绝大写转换冲突以及节/键拼接冲突。
 
-插件匹配成功后、预下载及任意插件脚本运行前，检查必选键是否显式存在且非空，
-并检查每个配置键是否出现在必选或可选列表。缺失、空必选值或未声明键均报错退出；
-声明本身重复、大小写转换冲突、包含无效环境名或占用控制器变量时插件加载失败。
-设置名区分大小写，以 ASCII 字母开头，后续仅允许字母、数字、下划线。
+插件匹配成功后、预下载及任意插件脚本运行前，检查所有显式生效参数：必选值须存在且非空，
+每个参数须在必选或可选列表中声明。声明重复、包含无效名称或占用 `RSTAR_ROOT`、
+`RSTAR_CONFIG_DIR` 等控制器变量时加载失败。值保留空格、换行和 `$`；标量取最后赋值，
+Packages 按追加、空值重置规则解析为换行分隔的生效列表。配置值不拆成位置参数，也不交给 shell 求值。
+bootstrap 通过进程环境接收，系统内任务通过 nspawn `--setenv` 接收，构建脚本接收同一组冻结参数。
+操作自身的位置参数（如包目标、安装原因和 machine-id）继续独立传递。
 
-`[Distribution]` 中除 `Distribution` 外的设置按原键名转大写后添加 `RSTAR_` 前缀，
-例如 `Architecture` → `RSTAR_ARCHITECTURE`，`BootstrapUrl` → `RSTAR_BOOTSTRAPURL`。
-值保留原样，包括空格、换行和 `$`；同名标量取最后赋值。不拆成位置参数，不交给 shell 求值。
-bootstrap 通过进程环境接收，系统内任务通过 nspawn 的 `--setenv` 接收，
-`config/script/` 构建脚本也接收这些冻结设置。
+`RSTAR_DISTRIBUTION_ARCHITECTURE` 若为必选，省略不会被默认值补齐；若为可选，
+省略时传入用于匹配插件的默认架构。其他可选项省略时不传入，也不继承宿主的同名配置变量。
+统一多系统 `predownload` 接口保留包需求参数以及原来的 Distribution 环境名（如
+`RSTAR_ARCHITECTURE`、`RSTAR_AURKEYSERVER`）；环境初始化、维护和其他接口使用新名称。
+旧 TOML 的顶层已知字段映射到对应节，`distribution_options` 映射到 Distribution 节，
+其他顶层字段作为裸参数，其他表作为同名节。旧插件须修改名称、补充缓存声明并重新打包。
 
-Architecture 若声明为必选，省略不会被默认值补齐；若声明为可选，省略时传入用于
-匹配插件的默认架构。其他可选项省略时不传入，由插件处理缺省值，也不继承宿主的同名配置变量。
-旧 TOML 顶层 `architecture` 映射为 Architecture；额外设置可放在 `distribution_options`
-字符串表中。旧插件必须补充 `[config]` 声明后重新打包。
+缓存列表使用以下选择器（名称均大写）：
+
+| 选择器 | 检测范围 |
+| --- | --- |
+| `RSTAR_CHANNEL` | 裸参数 Channel 的生效值、存在或缺失 |
+| `RSTAR_DISTRIBUTION` | Distribution 整节的存在状态及全部生效参数 |
+| `RSTAR_*DISTRIBUTION_MIRROR` | 仅 Distribution 节的 Mirror 参数 |
+| `RSTAR_DISTRIBUTION_MIRROR` | 已声明的精确参数名，也可以直接使用 |
+
+被选字段须在 config 中声明；整节选择器的字段前缀须对应已声明的配置。
+`*` 只出现在精确字段选择器中，不出现在实际环境变量中，不是通配符。
+若裸参数与整节同名，选择器报歧义错误，应调整配置名称。
+基础字段变化清理全部历史基础及后续缓存；仅软件字段变化清理软件及后续缓存。
+软件兼容性同时依赖基础和软件两组字段。空列表不按配置字段使对应阶段失效；
+插件身份、缓存格式、系统类型、架构和受保护基础目标仍须兼容。
+未选字段、其他普通配置文件和 script 不参与这些字段摘要；完整留档摘要仍检测来源是否被修改。
+Arch 预设检测 Config 和 Distribution 整节，software 列表为空，因此 Packages 变化由维护协调。
 
 ## 工具声明与调用前检查
 
@@ -297,7 +326,7 @@ Arch 还提供无参数的 `clean_orphans.sh`，用于自动查询并清理孤�
 首次实现不要求插件提供双向 JSON 回调协议。
 
 控制器传递明确的上下文变量，例如 `RSTAR_PLUGIN_ROOT`、`RSTAR_PLUGIN_TMP`、
-`RSTAR_ROOT`、`RSTAR_CONFIG_DIR`、`RSTAR_SYSTEM_ID` 和 `RSTAR_ARCHITECTURE`。
+`RSTAR_ROOT`、`RSTAR_CONFIG_DIR`、`RSTAR_SYSTEM_ID` 和 `RSTAR_DISTRIBUTION_ARCHITECTURE`。
 这些路径必须对应当前宿主或容器内的实际可见路径。包名作为独立参数传递，
 脚本使用 Bash 数组及正确引用，不将参数拼接后交给 `eval`。
 
@@ -396,14 +425,13 @@ systems/<系统>/versions/<版本>/root/
 架构和实际包清单。
 控制器按插件 ID、cache_format、系统类型、架构、受保护目标以及配置摘要判断兼容性。
 插件发布版本与归档摘要保留为来源信息；同一 cache_format 下允许发布版本变化。
-摘要涵盖留档中的全部普通配置文件，包括未知构建选项；仅在基础和软件兼容性摘要中排除
-全部 `[Content] Packages` 赋值和 `script/`：包变化由软件维护处理，脚本在后续独立步骤重新应用。
-INI 摘要规范化包列表、注释及排版，保留未知设置；旧 TOML 摘要规则保持兼容。
-另存完整配置摘要，检测旧留档被修改的情况。
-选择基础创建或维护前，比较当前冻结配置与最新过往配置的基础兼容性摘要。
-发生变化时实际删除本系统所有历史基础及后续阶段的缓存根和完成旁记录，再继续独立创建。
-`Packages` 与 `script/` 变化不触发基础失效。清理先撤销完成标记，随后通过 Btrfs 递归删除子卷，
-避免中断后误复用旧根；存储删除失败报错退出。
+阶段兼容性摘要仅涵盖插件 `[cache]` 声明选定的生效参数，并包含选择器本身，
+因此检测字段的声明变化也会阻止复用旧摘要。完整配置摘要另存，涵盖全部普通配置文件及 script，
+规范化 INI 包列表、注释及排版，保留未知设置；旧 TOML 的完整摘要规则保持兼容。
+选择创建或维护前，比较当前冻结配置与最新过往配置的阶段字段摘要。
+基础字段变化时实际删除本系统所有历史基础及后续缓存根和完成旁记录；仅软件字段变化时
+从软件阶段起删除。清理先撤销完成标记，再通过 Btrfs 递归删除子卷；存储删除失败报错退出。
+新摘要与旧硬编码摘要不相容，旧阶段缓存会重新建立；配置留档与已发布版本根保留。
 
 阶段旁记录为 `base-system.toml`、`packages.toml` 与 `script.toml`，记录所在版本、实际来源版本、
 最初内容版本、插件版本和摘要、兼容性身份、完整配置摘要及实际软件清单。
@@ -440,7 +468,7 @@ INI 摘要规范化包列表、注释及排版，保留未知设置；旧 TOML �
   `main.sh`，允许与插件相同的单层包装目录。独立 `*.sh` 保留原名并置于空目录。
 - 每项资源实际复制到系统根内一个独立可写临时目录，避免被 nspawn 的 `/run`、
   `/tmp` 挂载遮蔽；在系统内部以该目录为 cwd 执行 `bash -- <入口>`，执行结束清理。
-- 传入 `RSTAR_SYSTEM_ID`、`RSTAR_ARCHITECTURE`、`RSTAR_ROOT=/`，冻结配置只读绑定，
+- 传入 `RSTAR_SYSTEM_ID`、`RSTAR_DISTRIBUTION_ARCHITECTURE`、`RSTAR_ROOT=/`，冻结配置只读绑定，
   `RSTAR_CONFIG_DIR=/run/rstarsleep/config`。未知文件、特殊条目及越界链接直接报错。
 - 执行成功后捕获实际包清单，并提交 `cache/<版本>/script` 只读快照和 `script.toml`。
   脚本失败时不提交 script 缓存、不发布版本，已完成的基础和软件缓存仍可复用。

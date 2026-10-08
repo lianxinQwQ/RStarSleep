@@ -56,7 +56,7 @@ pub(super) fn run(
     target: &BuildContext,
     packages: &[String],
 ) -> Result<()> {
-    plugin.validate_configuration(&target.distribution_options)?;
+    plugin.validate_configuration(&target.parameters)?;
     let architecture = &target.architecture;
     let options = toml::to_string(&target.distribution_options)
         .map_err(|e| Error::Invalid(format!("预下载配置无法编码: {e}")))?;
@@ -104,6 +104,7 @@ pub(super) fn run(
         system_id: "predownload".into(),
         architecture: architecture.clone(),
         distribution_options: target.distribution_options.clone(),
+        parameters: target.parameters.clone(),
         config: plugin.root().join("predownload"),
         persistent_mounts: Vec::new(),
     };

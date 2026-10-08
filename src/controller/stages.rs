@@ -35,6 +35,7 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Compatibility requirements of this completed stage.
     /// 此完成阶段的兼容性要求。
     pub(super) identity: &'a Identity,
+    pub(super) software_identity: &'a Identity,
     /// Independent owned temporary build directory.
     /// 独立所属构建临时目录。
     pub(super) scratch: &'a Path,
@@ -263,8 +264,12 @@ impl<B: BuildBackend> Stages<'_, B> {
             origin_version: self.attempt.version.clone(),
             plugin_version: self.plugin.metadata.version.clone(),
             plugin_sha256: self.plugin.archive_sha256.clone(),
-            identity: self.identity.clone(),
-            config_sha256: config_hash(&self.attempt.config, false)?,
+            identity: if stage == "base-system" {
+                self.identity.clone()
+            } else {
+                self.software_identity.clone()
+            },
+            config_sha256: config_hash(&self.attempt.config)?,
             software,
         })
     }

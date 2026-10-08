@@ -189,7 +189,10 @@ fn plugin_configuration_contract_is_checked_before_work() {
             &fixture,
             "plugin.toml",
             metadata
-                .replace("required = []", "required = [\"Channel\"]")
+                .replace(
+                    "required = []",
+                    "required = [\"RSTAR_DISTRIBUTION_CHANNEL\"]",
+                )
                 .as_bytes(),
         );
         let layout = fixture.store.system_layout("desktop").unwrap();

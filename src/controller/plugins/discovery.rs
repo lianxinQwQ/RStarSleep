@@ -28,9 +28,9 @@ pub fn for_system(store: &ConfigStore, id: &str) -> Result<LoadedPlugin> {
             .as_deref()
             .unwrap_or(std::env::consts::ARCH),
     )?;
-    plugin.validate_configuration(&crate::config::read_distribution_options_at(
-        &store.system_layout(id)?.config,
-    )?)?;
+    plugin.validate_configuration(
+        &crate::config::read_plugin_parameters_at(&store.system_layout(id)?.config)?.values,
+    )?;
     Ok(plugin)
 }
 

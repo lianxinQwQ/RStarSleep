@@ -119,19 +119,18 @@ Packages=
     vim
 ```
 
-构建配置采用 mkosi 风格的 INI：分节名与键名区分大小写，设置必须位于分节内。
+构建配置采用 mkosi 风格的 INI：分节名与键名区分大小写，首节之前允许裸参数。
 缩进续行延续上一设置的值，空行和 `#` 注释不打断续行；支持行内 `#` 注释。
 软件包值按逗号或空白分隔，重复 `[Content] Packages=` 按顺序追加，空值清空先前列表。
 无需 TOML 的引号、方括号或逗号列表语法；要求显式声明 `Packages=`，允许空列表。
-其他分节中的未知设置原样留档并参与摘要。
-`[Distribution]` 中除 `Distribution` 外的全部键均属于插件配置，匹配插件后根据
-`[config] required` 和 `optional` 校验：必选项缺失或为空、显式键未声明时退出。
-键名保留原始写法，环境变量使用 `RSTAR_` 加原键名的大写，例如
-`Architecture` → `RSTAR_ARCHITECTURE`，`BootstrapUrl` → `RSTAR_BOOTSTRAPURL`。
-标量重复赋值取最后一个值，多行值保留换行；变量值不作为 shell 源码执行。
-原键名必须以 ASCII 字母开头，后续只能包含字母、数字或下划线，不能发生大写冲突
-或占用 `RSTAR_ROOT` 等控制器变量。Architecture 若声明为必选则必须显式提供；
-若声明为可选并省略，则传入用于插件匹配的默认架构。
+全部节和裸参数都原样留档，并作为插件参数读取。匹配插件后根据 `[config] required`、
+`optional` 校验全部生效值：必选参数缺失或为空、显式参数未声明时退出。
+声明和环境变量使用同一规范大写名称：裸参数 `Channel` 为 `RSTAR_CHANNEL`，
+`[Distribution] Architecture` 为 `RSTAR_DISTRIBUTION_ARCHITECTURE`。
+标量重复赋值取最后一个值，多行值保留换行，Packages 以换行分隔的生效列表传入；
+变量值不作为 shell 源码执行。名称组件以 ASCII 字母开头，后续只能含字母、数字、下划线；
+不能发生大写或节/键拼接冲突，不能占用控制器变量。
+Architecture 若声明为必选则必须显式提供；若声明为可选并省略，则传入用于插件匹配的默认架构。
 
 已有系统或历史版本缺少 `build/config.conf` 时，继续读取旧 `build/config.toml`。
 两种文件都存在时优先读取 INI，INI 无效不会回退到 TOML；初始化不以空模板覆盖旧 TOML 的设置。
@@ -263,12 +262,17 @@ cargo run -- packages /mnt/btrfs/@rstarsleep desktop
 
 `ConfigStore::read_build_config()` 读取 `[Config] SchemaVersion`、`[Distribution] Distribution`、
 可选 `Architecture` 和必需 `[Content] Packages`，返回现有 `BuildConfig` 数据结构。
-`read_distribution_options_at()` 独立读取传给插件的原始键和值；旧 TOML 可使用
-`distribution_options` 字符串表配置额外字段，顶层 `architecture` 映射为 `Architecture`。
-构建先冻结全部普通配置文件，之后只读
-冻结版本；基础和软件缓存兼容性摘要排除全部 `[Content] Packages` 赋值及 `script/`，
-其余选项变化在构建前实际删除本系统历史基础及后续缓存。
-每次构建还固定删除历史 script 及其后续阶段缓存；这些删除不影响已发布版本根及配置留档。包列表的空白、注释、续行和追加方式在摘要中规范化。
+`read_plugin_parameters_at()` 读取所有节和裸参数，返回规范环境名、生效值、节名和字段所属节。
+旧 TOML 已知顶层字段映射到对应节；`distribution_options` 字符串表映射到 Distribution 节，
+其他顶层字段保留为裸参数，其他表作为同名节。`read_distribution_options_at()` 仅为统一预下载
+保留原来的 Distribution 环境和分组方式。
+构建先冻结全部普通配置文件，后续只读冻结版本。插件必须声明 `[cache] base_system`、
+`software`；支持 `RSTAR_裸参数名`、`RSTAR_节名`（整节）和 `RSTAR_*节名_参数名`（精确字段）。
+基础字段变化清理历史基础及后续缓存；仅软件字段变化清理软件及后续缓存；空列表不按字段失效。
+软件缓存还依赖基础字段，未选参数变化保留缓存。Arch 预设检测 Config、Distribution 整节，
+不检测 Packages。完整留档摘要检测历史来源被修改的情况。
+每次构建还固定删除历史 script 及后续阶段缓存；上述删除不影响已发布版本根及配置留档。
+
 构建、插件和软件代码的文件职责见 [构建设计](../../docs/build-design.md)。
 
 ## 系统构建脚本

@@ -3,13 +3,14 @@
 use super::{
     BuildBackend, BuildContext, BuildOutcome, Error, Result, SystemBackend,
     cache::{self, Cache, Identity},
-    frozen::config_hash,
     fs,
     plugins::{self, LoadedPlugin},
     records::{Attempt, Status},
     stages::Stages,
 };
-use crate::config::{ConfigStore, read_build_config_at, read_distribution_options_at};
+use crate::config::{
+    ConfigStore, read_build_config_at, read_distribution_options_at, read_plugin_parameters_at,
+};
 use std::path::{Path, PathBuf};
 
 /// Build one named system or every configured system using native CoW storage.
@@ -250,7 +251,8 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
         )?);
         let loaded = plugin.as_ref().unwrap();
         let distribution_options = read_distribution_options_at(&attempt.config)?;
-        loaded.validate_configuration(&distribution_options)?;
+        let parameters = read_plugin_parameters_at(&attempt.config)?.values;
+        loaded.validate_configuration(&parameters)?;
         for warning in &loaded.discovery_warnings {
             eprintln!("{warning}");
         }
@@ -259,6 +261,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
             system_id: id.into(),
             architecture,
             distribution_options,
+            parameters,
             config: attempt.config.clone(),
             persistent_mounts: Vec::new(),
         };
@@ -273,18 +276,27 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
                 system_type: config.system_type.clone(),
                 architecture: context.architecture.clone(),
                 protected_packages: protected,
-                options_sha256: config_hash(&attempt.config, true)?,
+                options_sha256: loaded.cache_configuration_hash(&attempt.config, false)?,
             };
-            let (base, packages) = previous_caches(&attempt, &identity, backend)?;
+            let (base, packages) = previous_caches(&attempt, &identity, loaded, backend)?;
             if let Some(version) = &attempt.previous {
                 let previous = attempt.layout.versions.join(version).join("config");
                 // Completed donors above have verified provenance. A failed attempt without a
                 // readable config has no donor; retire older caches and install independently.
                 // 上方完成来源已校验出处。失败尝试若无可读配置则没有来源；清理旧缓存并独立安装。
                 if fs::exists(&previous)?
-                    && config_hash(&previous, true).ok().as_ref() != Some(&identity.options_sha256)
+                    && loaded
+                        .cache_configuration_hash(&previous, false)
+                        .ok()
+                        .as_ref()
+                        != Some(&identity.options_sha256)
                 {
                     cache::clear_from(backend, &attempt.layout.cache, "base-system")?;
+                } else if fs::exists(&previous)?
+                    && loaded.cache_configuration_hash(&previous, true).ok()
+                        != Some(loaded.cache_configuration_hash(&attempt.config, true)?)
+                {
+                    cache::clear_from(backend, &attempt.layout.cache, "packages")?;
                 }
             }
             if loaded.metadata.predownload
@@ -356,9 +368,9 @@ fn build_system(
             system_type: config.system_type.clone(),
             architecture: context.architecture.clone(),
             protected_packages: protected,
-            options_sha256: config_hash(&attempt.config, true)?,
+            options_sha256: loaded.cache_configuration_hash(&attempt.config, false)?,
         };
-        let (base, packages) = previous_caches(attempt, &identity, backend)?;
+        let (base, packages) = previous_caches(attempt, &identity, loaded, backend)?;
         if fs::exists(&scratch)? {
             return Err(Error::Invalid(format!(
                 "构建工作目录已存在: {}",
@@ -366,6 +378,9 @@ fn build_system(
             )));
         }
         fs::directory(&scratch)?;
+        let mut software_identity = identity.clone();
+        software_identity.options_sha256 =
+            loaded.cache_configuration_hash(&attempt.config, true)?;
         let stages = Stages {
             backend,
             plugin: loaded,
@@ -373,6 +388,7 @@ fn build_system(
             attempt,
             config,
             identity: &identity,
+            software_identity: &software_identity,
             scratch: &scratch,
         };
         stages.run(base, packages, &mut owned)
@@ -417,6 +433,7 @@ fn build_system(
 fn previous_caches(
     attempt: &Attempt,
     identity: &Identity,
+    plugin: &LoadedPlugin,
     backend: &impl BuildBackend,
 ) -> Result<(Option<Cache>, Option<Cache>)> {
     let Some(version) = &attempt.previous else {
@@ -424,17 +441,27 @@ fn previous_caches(
     };
     let directory = attempt.layout.cache.join(version);
     let config = attempt.layout.versions.join(version).join("config");
-    Ok((
-        cache::load(
-            backend,
-            &directory,
-            &config,
-            version,
-            "base-system",
-            identity,
-        )?,
-        cache::load(backend, &directory, &config, version, "packages", identity)?,
-    ))
+    let mut software_identity = identity.clone();
+    software_identity.options_sha256 = plugin.cache_configuration_hash(&attempt.config, true)?;
+    let base = cache::load(
+        backend,
+        &directory,
+        &config,
+        version,
+        "base-system",
+        identity,
+    )?;
+    let packages = cache::load(
+        backend,
+        &directory,
+        &config,
+        version,
+        "packages",
+        &software_identity,
+    )?;
+    // The base identity must match even when only the software donor is available.
+    // 即使仅有软件来源，基础身份也必须相符。
+    Ok((base, packages))
 }
 
 /// Delete only owned scratch subvolumes, collecting all cleanup failures.

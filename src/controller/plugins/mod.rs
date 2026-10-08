@@ -1,5 +1,6 @@
 //! Archive and directory distribution plugins.
 //! 压缩包及目录形式的发行版插件。
+mod cache_inputs;
 pub(crate) mod configuration;
 mod container;
 mod discovery;
@@ -11,7 +12,9 @@ mod tools;
 mod validation;
 pub use discovery::{find, for_system};
 pub use loader::load;
-pub use model::{ConfigRequirements, Error, LoadedPlugin, Metadata, Result, ToolRequirements};
+pub use model::{
+    CacheRequirements, ConfigRequirements, Error, LoadedPlugin, Metadata, Result, ToolRequirements,
+};
 pub use persistent::PersistentDirectory;
 /// Operations shared by API 2 and 3, provided as <operation>.sh or <operation>.
 /// API 2 和 3 共用操作；由插件根内的 <操作名>.sh 或无后缀文件提供。

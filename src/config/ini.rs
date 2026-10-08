@@ -84,9 +84,6 @@ impl Document {
                 document.sections.insert(section.clone());
                 continue;
             }
-            if section.is_empty() {
-                return Err(document.error(line, "设置必须位于分节内"));
-            }
             let (key, value) = value
                 .split_once('=')
                 .ok_or_else(|| document.error(line, "设置必须包含 ="))?;
@@ -203,6 +200,37 @@ impl Document {
             .collect()
     }
 
+    /// Export effective values in every section, including bare settings before the first section.
+    /// 导出所有节中的生效值，包括首节之前的裸参数。
+    pub(super) fn plugin_parameters(&self) -> Result<super::PluginParameters> {
+        let mut parameters = super::PluginParameters::default();
+        for section in &self.sections {
+            if !parameters
+                .sections
+                .insert(super::parameters::component(section)?)
+            {
+                return Err(self.error(0, "节名大小写冲突"));
+            }
+        }
+        let mut values = BTreeMap::new();
+        for entry in &self.assignments {
+            values.insert(
+                (entry.section.as_str(), entry.key.as_str()),
+                entry.value.clone(),
+            );
+        }
+        if self.scalar("Content", "Packages").is_some() {
+            values.insert(
+                ("Content", "Packages"),
+                self.packages()?.packages.join("\n"),
+            );
+        }
+        for ((section, key), value) in values {
+            parameters.insert(section, key, value)?;
+        }
+        Ok(parameters)
+    }
+
     /// Append package assignments, resetting on empty values, and split on commas or whitespace.
     /// 追加软件包赋值，空值清空列表，并按逗号或空白分隔。
     /// # Arguments
@@ -237,14 +265,12 @@ impl Document {
         Ok(PackageConfig { packages })
     }
 
-    /// Normalize parsed inputs for provenance, optionally omitting all package assignments.
-    /// 规范化解析输入以记录来源，可选忽略全部软件包赋值。
+    /// Normalize all parsed inputs for provenance.
+    /// 规范化全部解析输入以记录来源。
     /// # Arguments
     /// - `self`: Complete parsed document, including unknown settings.
     ///   完整解析文档，包括未知设置。
-    /// - `exclude_packages`: Whether package changes remain cache-compatible.
-    ///   软件包变化是否保持缓存兼容。
-    pub(super) fn normalized(&self, exclude_packages: bool) -> Result<Vec<u8>> {
+    pub(super) fn normalized(&self) -> Result<Vec<u8>> {
         let mut values: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
         for entry in &self.assignments {
             if entry.section == "Content" && entry.key == "Packages" {
@@ -256,7 +282,7 @@ impl Document {
                 .push(&entry.value);
         }
         let packages;
-        if !exclude_packages && self.scalar("Content", "Packages").is_some() {
+        if self.scalar("Content", "Packages").is_some() {
             packages = self.packages()?;
             values.insert(
                 ("Content", "Packages"),
@@ -264,15 +290,7 @@ impl Document {
             );
         }
         let mut bytes = b"rstarsleep-ini-v1".to_vec();
-        let sections: Vec<_> = self
-            .sections
-            .iter()
-            .filter(|section| {
-                !exclude_packages
-                    || section.as_str() != "Content"
-                    || values.keys().any(|(section, _)| *section == "Content")
-            })
-            .collect();
+        let sections: Vec<_> = self.sections.iter().collect();
         bytes.extend_from_slice(&(sections.len() as u64).to_le_bytes());
         for section in sections {
             field(&mut bytes, section);

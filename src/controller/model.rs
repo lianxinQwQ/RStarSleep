@@ -70,8 +70,11 @@ pub struct BuildContext {
     /// Target architecture selected before cache reuse.
     /// 缓存复用前确定的目标架构。
     pub architecture: String,
-    /// Explicit [Distribution] settings other than Distribution, frozen before execution.
-    /// 执行前冻结的 [Distribution] 显式设置，不包括 Distribution。
+    /// All explicit effective settings keyed by canonical RSTAR_ names, frozen before execution.
+    /// 执行前冻结的全部显式生效设置，以规范 RSTAR_ 名称索引。
+    pub parameters: std::collections::BTreeMap<String, String>,
+    /// Distribution-only settings retained for the unified download operation.
+    /// 为统一下载操作保留的仅 Distribution 设置。
     pub distribution_options: std::collections::BTreeMap<String, String>,
     /// Version's frozen configuration directory.
     /// 版本的冻结配置目录。

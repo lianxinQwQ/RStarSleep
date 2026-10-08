@@ -22,6 +22,7 @@ pub struct Event {
     pub root: PathBuf,
     pub packages: Vec<String>,
     pub system_id: String,
+    pub parameters: BTreeMap<String, String>,
     pub distribution_options: BTreeMap<String, String>,
     pub persistent_mounts: Vec<rstarsleep::controller::PersistentMount>,
 }
@@ -316,6 +317,7 @@ impl BuildBackend for SimulatedBackend {
             packages: frozen_packages,
             system_id: context.system_id.clone(),
             distribution_options: context.distribution_options.clone(),
+            parameters: context.parameters.clone(),
             persistent_mounts: context.persistent_mounts.clone(),
         });
         if operation == "predownload" {
@@ -425,6 +427,7 @@ impl BuildBackend for SimulatedBackend {
             packages: read_build_config_at(&context.config)?.packages,
             system_id: context.system_id.clone(),
             distribution_options: context.distribution_options.clone(),
+            parameters: context.parameters.clone(),
             persistent_mounts: context.persistent_mounts.clone(),
         });
         let payload = root.join(directory.strip_prefix("/").unwrap());

@@ -161,6 +161,80 @@ pub fn read_distribution_options_at(directory: &Path) -> Result<BTreeMap<String,
     }
 }
 
+/// Read every effective build parameter using the unified RSTAR_ namespace.
+/// 使用统一 RSTAR_ 命名空间读取所有生效构建参数。
+pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParameters> {
+    match Input::read(directory)? {
+        Input::Ini(document) => document.plugin_parameters(),
+        Input::Toml { path, text } => {
+            let value: toml::Value =
+                toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+            let mut parameters = super::PluginParameters::default();
+            for (name, value) in value
+                .as_table()
+                .ok_or_else(|| Error::Invalid("构建配置不是表".into()))?
+            {
+                match name.as_str() {
+                    "schema_version" => {
+                        parameters.insert("Config", "SchemaVersion", value.to_string())?
+                    }
+                    "system_type" | "distribution" => parameters.insert(
+                        "Distribution",
+                        "Distribution",
+                        legacy_parameter(value)?,
+                    )?,
+                    "architecture" => parameters.insert(
+                        "Distribution",
+                        "Architecture",
+                        legacy_parameter(value)?,
+                    )?,
+                    "packages" => {
+                        parameters.insert("Content", "Packages", legacy_parameter(value)?)?
+                    }
+                    "distribution_options" => {
+                        let table = value.as_table().ok_or_else(|| {
+                            Error::Invalid("distribution_options 必须是字符串表".into())
+                        })?;
+                        for (key, value) in table {
+                            if matches!(key.as_str(), "Distribution" | "Architecture")
+                                || !value.is_str()
+                            {
+                                return Err(Error::Invalid(format!("无效旧 TOML 插件选项: {key}")));
+                            }
+                            parameters.insert("Distribution", key, legacy_parameter(value)?)?;
+                        }
+                    }
+                    _ if value.is_table() => {
+                        parameters
+                            .sections
+                            .insert(super::parameters::component(name)?);
+                        for (key, value) in value.as_table().unwrap() {
+                            parameters.insert(name, key, legacy_parameter(value)?)?;
+                        }
+                    }
+                    _ => parameters.insert("", name, legacy_parameter(value)?)?,
+                }
+            }
+            Ok(parameters)
+        }
+    }
+}
+
+/// Represent historical scalar and list values without TOML quoting.
+/// 将历史标量与列表表示为不带 TOML 引号的值。
+fn legacy_parameter(value: &toml::Value) -> Result<String> {
+    match value {
+        toml::Value::String(value) => Ok(value.clone()),
+        toml::Value::Array(values) => values
+            .iter()
+            .map(legacy_parameter)
+            .collect::<Result<Vec<_>>>()
+            .map(|values| values.join("\n")),
+        toml::Value::Table(_) => Err(Error::Invalid("插件参数不支持嵌套表".into())),
+        _ => Ok(value.to_string()),
+    }
+}
+
 /// Current INI input or a historical TOML input selected only when INI is absent.
 /// 当前 INI 输入，或仅在 INI 缺失时选择的历史 TOML 输入。
 enum Input {
@@ -236,26 +310,14 @@ pub(super) fn read_system_type_at(directory: &Path) -> Result<SystemTypeConfig> 
 ///   完整 UTF-8 构建文件。
 /// - `path`: Build file path identifying its format.
 ///   标识格式的构建文件路径。
-/// - `exclude_packages`: Whether to omit the configured package list for cache compatibility.
-///   是否为缓存兼容性忽略配置软件包列表。
-pub(crate) fn normalized_build_config(
-    text: &str,
-    path: &Path,
-    exclude_packages: bool,
-) -> Result<Vec<u8>> {
+pub(crate) fn normalized_build_config(text: &str, path: &Path) -> Result<Vec<u8>> {
     if path.ends_with(BUILD_CONFIG_PATH) {
-        return Document::parse(text, path)?.normalized(exclude_packages);
+        return Document::parse(text, path)?.normalized();
     }
-    let mut value: toml::Value = toml::from_str(text).map_err(|source| Error::Parse {
+    let value: toml::Value = toml::from_str(text).map_err(|source| Error::Parse {
         path: path.into(),
         source,
     })?;
-    if exclude_packages {
-        value
-            .as_table_mut()
-            .ok_or_else(|| Error::Invalid("构建配置不是表".into()))?
-            .remove("packages");
-    }
     toml::to_string(&value)
         .map(String::into_bytes)
         .map_err(|e| Error::Invalid(e.to_string()))

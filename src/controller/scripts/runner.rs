@@ -32,13 +32,16 @@ fn command(
         .arg("--setenv=RSTAR_CONFIG_DIR=/run/rstarsleep/config")
         .arg(format!("--setenv=RSTAR_SYSTEM_ID={}", context.system_id))
         .arg("--setenv=RSTAR_ROOT=/");
-    for (name, value) in &context.distribution_options {
+    for (name, value) in &context.parameters {
         let name = super::super::plugins::configuration::environment_name(name)?;
         command.arg(format!("--setenv={name}={value}"));
     }
-    if !context.distribution_options.contains_key("Architecture") {
+    if !context
+        .parameters
+        .contains_key("RSTAR_DISTRIBUTION_ARCHITECTURE")
+    {
         command.arg(format!(
-            "--setenv=RSTAR_ARCHITECTURE={}",
+            "--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE={}",
             context.architecture
         ));
     }
@@ -93,8 +96,9 @@ mod tests {
         let context = BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
-            distribution_options: std::collections::BTreeMap::from([(
-                "Mirror".into(),
+            distribution_options: Default::default(),
+            parameters: std::collections::BTreeMap::from([(
+                "RSTAR_DISTRIBUTION_MIRROR".into(),
                 "https://example.invalid/$repo/$arch".into(),
             )]),
             config: "/manager/config".into(),
@@ -118,11 +122,12 @@ mod tests {
         assert!(args.contains(&"--chdir=/.rstarsleep-script-123".into()));
         assert!(args.contains(&"--bind-ro=/manager/config:/run/rstarsleep/config".into()));
         let delimiter = args.iter().position(|argument| argument == "--").unwrap();
+        assert!(args[..delimiter].contains(
+            &"--setenv=RSTAR_DISTRIBUTION_MIRROR=https://example.invalid/$repo/$arch".into()
+        ));
         assert!(
-            args[..delimiter]
-                .contains(&"--setenv=RSTAR_MIRROR=https://example.invalid/$repo/$arch".into())
+            args[..delimiter].contains(&"--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE=x86_64".into())
         );
-        assert!(args[..delimiter].contains(&"--setenv=RSTAR_ARCHITECTURE=x86_64".into()));
         assert_eq!(
             args.iter()
                 .filter(|arg| arg.to_string_lossy().starts_with("--bind"))
@@ -144,6 +149,7 @@ mod tests {
         let mut context = BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
+            parameters: Default::default(),
             distribution_options: Default::default(),
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),

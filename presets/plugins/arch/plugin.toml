@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.5.0"
+version = "0.6.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -19,11 +19,22 @@ persistent_dirs = [
     "arch-sources:state/sources",
 ]
 
-# Original [Distribution] keys accepted by all plugin operations.
-# 所有插件操作接受的原始 [Distribution] 键名。
+# Unified effective build parameters accepted by single-system operations.
+# 单系统操作接受的统一生效构建参数。
 [config]
 required = []
-optional = ["Architecture", "BootstrapUrl", "BootstrapSignatureUrl", "Keyring", "Mirror", "AurKeyserver"]
+optional = [
+    "RSTAR_CONFIG_SCHEMAVERSION", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_CONTENT_PACKAGES",
+    "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
+    "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
+    "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER",
+]
+
+# Base changes invalidate downstream caches; package targets are reconciled during maintenance.
+# 基础变化使后续缓存失效；软件目标在维护中协调。
+[cache]
+base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
+software = []
 
 [tools]
 host = ["bash", "curl", "tar", "zstd", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]

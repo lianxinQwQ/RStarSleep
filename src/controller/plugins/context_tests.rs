@@ -20,10 +20,11 @@ fn passes_frozen_configuration_to_host_operations() {
     fs::create_dir(&config).unwrap();
     let root = plugin.temporary.path().join("target");
     fs::write(plugin.operation_path("bootstrap").unwrap(),
-        "printf '%s\\0%s\\0%s' \"$RSTAR_CONFIG_DIR\" \"$RSTAR_SYSTEM_ID\" \"$RSTAR_ARCHITECTURE\" > \"$RSTAR_ROOT/context\"\n").unwrap();
+        "printf '%s\\0%s\\0%s' \"$RSTAR_CONFIG_DIR\" \"$RSTAR_SYSTEM_ID\" \"$RSTAR_DISTRIBUTION_ARCHITECTURE\" > \"$RSTAR_ROOT/context\"\n").unwrap();
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        parameters: Default::default(),
         distribution_options: Default::default(),
         config: config.clone(),
         persistent_mounts: Vec::new(),
@@ -54,8 +55,12 @@ fn passes_frozen_configuration_to_host_operations() {
 #[test]
 fn passes_declared_configuration_values_literally_to_host_and_guest() {
     let mut plugin = fixture(&[], &[]);
-    plugin.metadata.config.required = vec!["Channel".into()];
-    plugin.metadata.config.optional.push("Mirror".into());
+    plugin.metadata.config.required = vec!["RSTAR_DISTRIBUTION_CHANNEL".into()];
+    plugin
+        .metadata
+        .config
+        .optional
+        .push("RSTAR_DISTRIBUTION_MIRROR".into());
     let config = plugin.temporary.path().join("config");
     fs::create_dir(&config).unwrap();
     let root = plugin.temporary.path().join("target");
@@ -64,15 +69,16 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
-        distribution_options: std::collections::BTreeMap::from([
-            ("Channel".into(), "stable".into()),
-            ("Mirror".into(), value.into()),
+        distribution_options: Default::default(),
+        parameters: std::collections::BTreeMap::from([
+            ("RSTAR_DISTRIBUTION_CHANNEL".into(), "stable".into()),
+            ("RSTAR_DISTRIBUTION_MIRROR".into(), value.into()),
         ]),
         config,
         persistent_mounts: Vec::new(),
     };
     fs::write(plugin.operation_path("bootstrap").unwrap(),
-        "test -z \"${RSTAR_ARCH+x}\" && test -z \"${RSTAR_DISTRIBUTION+x}\"\nprintf '%s\\0%s\\0%s' \"$RSTAR_ARCHITECTURE\" \"$RSTAR_CHANNEL\" \"$RSTAR_MIRROR\" > \"$RSTAR_ROOT/options\"\n").unwrap();
+        "test -z \"${RSTAR_ARCH+x}\" && test -z \"${RSTAR_DISTRIBUTION+x}\"\nprintf '%s\\0%s\\0%s' \"$RSTAR_DISTRIBUTION_ARCHITECTURE\" \"$RSTAR_DISTRIBUTION_CHANNEL\" \"$RSTAR_DISTRIBUTION_MIRROR\" > \"$RSTAR_ROOT/options\"\n").unwrap();
     plugin
         .invoke_environment(
             "bootstrap",
@@ -102,14 +108,16 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
     assert_eq!(
         fields
             .iter()
-            .filter(|field| **field == format!("--setenv=RSTAR_MIRROR={value}").as_bytes())
+            .filter(
+                |field| **field == format!("--setenv=RSTAR_DISTRIBUTION_MIRROR={value}").as_bytes()
+            )
             .count(),
         2
     );
     assert_eq!(
         fields
             .iter()
-            .filter(|field| **field == b"--setenv=RSTAR_CHANNEL=stable")
+            .filter(|field| **field == b"--setenv=RSTAR_DISTRIBUTION_CHANNEL=stable")
             .count(),
         2
     );
@@ -123,7 +131,7 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
 #[test]
 fn validates_configuration_before_host_and_container_execution() {
     let mut plugin = fixture(&[], &[]);
-    plugin.metadata.config.required = vec!["Channel".into()];
+    plugin.metadata.config.required = vec!["RSTAR_DISTRIBUTION_CHANNEL".into()];
     let config = plugin.temporary.path().join("config");
     fs::create_dir(&config).unwrap();
     let root = plugin.temporary.path().join("target");
@@ -131,16 +139,17 @@ fn validates_configuration_before_host_and_container_execution() {
     launcher(&plugin, "", false);
     for options in [
         std::collections::BTreeMap::new(),
-        std::collections::BTreeMap::from([("Channel".into(), " ".into())]),
+        std::collections::BTreeMap::from([("RSTAR_DISTRIBUTION_CHANNEL".into(), " ".into())]),
         std::collections::BTreeMap::from([
-            ("Channel".into(), "stable".into()),
-            ("Chanel".into(), "typo".into()),
+            ("RSTAR_DISTRIBUTION_CHANNEL".into(), "stable".into()),
+            ("RSTAR_DISTRIBUTION_CHANEL".into(), "typo".into()),
         ]),
     ] {
         let context = crate::controller::BuildContext {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
-            distribution_options: options,
+            parameters: options,
+            distribution_options: Default::default(),
             config: config.clone(),
             persistent_mounts: Vec::new(),
         };
@@ -179,6 +188,7 @@ fn passes_build_context_to_guest_probe_and_task_before_delimiter() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        parameters: Default::default(),
         distribution_options: Default::default(),
         config: config.clone(),
         persistent_mounts: Vec::new(),
@@ -229,6 +239,7 @@ fn mount_arguments_preserve_native_bytes_and_reject_ambiguous_paths() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        parameters: Default::default(),
         distribution_options: Default::default(),
         config: plugin
             .temporary
@@ -282,6 +293,7 @@ fn host_operation_gets_transactional_directory_without_mutating_frozen_resources
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        parameters: Default::default(),
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
         persistent_mounts: vec![crate::controller::PersistentMount {
@@ -323,6 +335,7 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
     let context = crate::controller::BuildContext {
         system_id: "desktop".into(),
         architecture: "x86_64".into(),
+        parameters: Default::default(),
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
         persistent_mounts: vec![crate::controller::PersistentMount {
@@ -339,9 +352,11 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         Path::new("/bin/nspawn"),
         &context.config,
         OsStr::new("/usr/bin"),
-        "x86_64",
         Some(&context),
         resources.path(),
+        &plugin
+            .configuration_environment(&context.parameters, &context.architecture)
+            .unwrap(),
     )
     .unwrap();
     let expected = format!(
@@ -350,4 +365,48 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         "/run/rstarsleep/plugin/state/cache"
     );
     assert!(command.get_args().any(|a| a == OsStr::new(&expected)));
+}
+
+/// Preserve the download exception while every target operation uses canonical parameter names.
+/// 保留下载例外，其余目标操作使用规范参数名。
+#[test]
+fn unified_download_keeps_legacy_environment_and_package_arguments() {
+    let plugin = fixture(&[], &[]);
+    fs::write(plugin.root().join("predownload.sh"), "exit 0\n").unwrap();
+    launcher(&plugin, "", false);
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let context = crate::controller::BuildContext {
+        system_id: "predownload".into(),
+        architecture: "x86_64".into(),
+        parameters: std::collections::BTreeMap::from([(
+            "RSTAR_DISTRIBUTION_ARCHITECTURE".into(),
+            "x86_64".into(),
+        )]),
+        distribution_options: std::collections::BTreeMap::from([
+            ("Architecture".into(), "x86_64".into()),
+            ("AurKeyserver".into(), "hkps://example.invalid".into()),
+        ]),
+        config: root.clone(),
+        persistent_mounts: Vec::new(),
+    };
+    plugin
+        .invoke_environment(
+            "predownload",
+            &["vim".into(), "linux".into()],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+    let fields: Vec<_> = trace.split(|byte| *byte == 0).collect();
+    assert!(fields.contains(&b"--setenv=RSTAR_ARCHITECTURE=x86_64".as_slice()));
+    assert!(fields.contains(&b"--setenv=RSTAR_AURKEYSERVER=hkps://example.invalid".as_slice()));
+    assert!(
+        !fields
+            .iter()
+            .any(|value| value.starts_with(b"--setenv=RSTAR_DISTRIBUTION_"))
+    );
+    assert!(trace.ends_with(b"--\0bash\0/run/rstarsleep/plugin/predownload.sh\0vim\0linux\0"));
 }

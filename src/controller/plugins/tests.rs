@@ -20,18 +20,18 @@ fn requires_valid_explicit_configuration_declarations() {
         let text = fs::read_to_string(plugin.root().join("plugin.toml"))
             .unwrap()
             .replace(
-                "[config]\nrequired=[]\noptional=['Architecture']\n",
+                "[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n",
                 declaration,
             );
         assert!(toml::from_str::<Metadata>(&text).is_err());
     }
     for names in [
-        vec!["Root"],
-        vec!["PLUGIN_TMP"],
+        vec!["RSTAR_ROOT"],
+        vec!["RSTAR_PLUGIN_TMP"],
         vec!["Distribution"],
-        vec!["Bad-Name"],
-        vec!["Architecture", "architecture"],
-        vec!["Channel", "Channel"],
+        vec!["RSTAR_BAD-NAME"],
+        vec!["RSTAR_ARCHITECTURE", "RSTAR_architecture"],
+        vec!["RSTAR_CHANNEL", "RSTAR_CHANNEL"],
     ] {
         let mut metadata = plugin.metadata.clone();
         metadata.config.required = names.into_iter().map(String::from).collect();
@@ -39,7 +39,7 @@ fn requires_valid_explicit_configuration_declarations() {
         assert!(validate_metadata(&metadata, plugin.root()).is_err());
     }
     let mut metadata = plugin.metadata.clone();
-    metadata.config.required = vec!["Architecture".into()];
+    metadata.config.required = vec!["RSTAR_DISTRIBUTION_ARCHITECTURE".into()];
     assert!(validate_metadata(&metadata, plugin.root()).is_err());
 }
 
@@ -91,7 +91,7 @@ fn tar_bytes_with_operations(
     operations: &[&str],
 ) -> Vec<u8> {
     let metadata = format!(
-        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\narchitectures=['x86_64']\ncache_format='test-v1'\n[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n"
+        "schema_version=1\napi_version={api_version}\nid='test-plugin'\nversion='1'\nsystem_types=['arch']\narchitectures=['x86_64']\ncache_format='test-v1'\n[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n[cache]\nbase_system=[]\nsoftware=[]\n[tools]\nhost=[]\nsystem=[]\n"
     );
     let mut archive = tar::Builder::new(Vec::new());
     let mut files = vec![
@@ -414,7 +414,7 @@ fn requires_and_validates_declared_tools() {
     let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
     assert!(
         toml::from_str::<Metadata>(&text.replace(
-            "[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n",
+            "[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n[cache]\nbase_system=[]\nsoftware=[]\n[tools]\nhost=[]\nsystem=[]\n",
             ""
         ))
         .is_err()
@@ -553,7 +553,7 @@ fn directory_plugins_reject_escaping_links_and_duplicate_matches() {
 #[test]
 fn predownload_capability_requires_its_entrypoint_and_independent_lifecycle() {
     let root = tempfile::tempdir().unwrap();
-    let mut metadata:Metadata=toml::from_str("schema_version=1\napi_version=3\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\npredownload=true\n[config]\nrequired=[]\noptional=['Architecture']\n[tools]\nhost=[]\nsystem=[]\n").unwrap();
+    let mut metadata:Metadata=toml::from_str("schema_version=1\napi_version=3\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\npredownload=true\n[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n[cache]\nbase_system=[]\nsoftware=[]\n[tools]\nhost=[]\nsystem=[]\n").unwrap();
     for op in REQUIRED_OPERATIONS.iter().chain(SYSTEM_OPERATIONS) {
         fs::write(root.path().join(format!("{op}.sh")), "exit 0").unwrap();
     }
@@ -658,4 +658,40 @@ fn validates_unsuffixed_entry_permissions_and_shell_precedence() {
     fs::remove_file(&entry).unwrap();
     fs::create_dir(&entry).unwrap();
     assert!(plugin.operation_path("update").is_err());
+}
+
+#[test]
+fn requires_explicit_cache_dependencies_and_validates_selectors() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
+    for declaration in ["", "[cache]\nbase_system=[]\n", "[cache]\nsoftware=[]\n"] {
+        assert!(
+            toml::from_str::<Metadata>(
+                &text.replace("[cache]\nbase_system=[]\nsoftware=[]\n", declaration)
+            )
+            .is_err()
+        );
+    }
+    for selectors in [
+        vec!["Architecture"],
+        vec!["RSTAR_ROOT"],
+        vec!["RSTAR_MISSING"],
+        vec!["RSTAR_DISTRIBUTION", "RSTAR_DISTRIBUTION"],
+        vec!["RSTAR_*DISTRIBUTION_MISSING"],
+        vec![
+            "RSTAR_DISTRIBUTION_ARCHITECTURE",
+            "RSTAR_*DISTRIBUTION_ARCHITECTURE",
+        ],
+    ] {
+        let mut metadata = plugin.metadata.clone();
+        metadata.cache.base_system = selectors.into_iter().map(String::from).collect();
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+    let mut metadata = plugin.metadata.clone();
+    metadata.cache.base_system = vec!["RSTAR_DISTRIBUTION".into()];
+    metadata.cache.software = vec!["RSTAR_*DISTRIBUTION_ARCHITECTURE".into()];
+    validate_metadata(&metadata, plugin.root()).unwrap();
 }

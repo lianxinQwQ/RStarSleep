@@ -149,12 +149,18 @@ impl LoadedPlugin {
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
     ) -> Result<Output> {
         let (host_path, context) = environment;
-        let standalone =
-            std::collections::BTreeMap::from([("Architecture".into(), architecture.into())]);
+        let standalone = std::collections::BTreeMap::from([(
+            "RSTAR_DISTRIBUTION_ARCHITECTURE".into(),
+            architecture.into(),
+        )]);
         let options = context
-            .map(|value| &value.distribution_options)
+            .map(|value| &value.parameters)
             .unwrap_or(&standalone);
-        let configuration = self.configuration_environment(options, architecture)?;
+        let configuration = if operation == "predownload" {
+            self.download_environment(context, architecture)?
+        } else {
+            self.configuration_environment(options, architecture)?
+        };
         let mappings = self.persistent_directories()?;
         let mounts = context
             .map(|c| c.persistent_mounts.as_slice())
@@ -237,9 +243,9 @@ impl LoadedPlugin {
                 &launcher,
                 root,
                 host_path,
-                architecture,
                 context,
                 visible_root,
+                &configuration,
             )?;
             probe
                 .arg("--")
@@ -272,9 +278,9 @@ impl LoadedPlugin {
                 &launcher,
                 root,
                 host_path,
-                architecture,
                 context,
                 visible_root,
+                &configuration,
             )?;
             command.arg("--");
             if shell_script {
@@ -305,6 +311,30 @@ impl LoadedPlugin {
         {
             command.env_remove(super::configuration::environment_name(name)?);
         }
+        // Clear inherited plugin/context variables before restoring this invocation's values.
+        // 恢复本次调用值之前清除继承的插件及上下文变量。
+        for (name, _) in std::env::vars_os() {
+            if (name.as_encoded_bytes().starts_with(b"RSTAR_")
+                || name.as_encoded_bytes().starts_with(b"RSTAT_"))
+                && !matches!(
+                    name.to_str(),
+                    Some(
+                        "RSTAR_PLUGIN_ROOT"
+                            | "RSTAR_PLUGIN_TMP"
+                            | "RSTAR_ROOT"
+                            | "RSTAR_CONFIG_DIR"
+                            | "RSTAR_SYSTEM_ID"
+                    )
+                )
+            {
+                command.env_remove(name);
+            }
+        }
+        if context.is_none() {
+            command
+                .env_remove("RSTAR_CONFIG_DIR")
+                .env_remove("RSTAR_SYSTEM_ID");
+        }
         command.env_remove("RSTAR_ARCH");
         command.envs(configuration);
         command.args(arguments);
@@ -320,7 +350,7 @@ impl LoadedPlugin {
 
 #[cfg(all(test, unix))]
 #[path = "runner_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(all(test, unix))]
 #[path = "context_tests.rs"]

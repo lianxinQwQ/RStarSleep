@@ -92,10 +92,13 @@ actual=$(sha256sum "${@: -1}")
             .env("RSTAR_PLUGIN_ROOT", &plugin)
             .env("RSTAR_PLUGIN_TMP", plugin.join("tmp"))
             .env("RSTAR_ROOT", &root)
-            .env("RSTAR_ARCHITECTURE", "x86_64")
-            .env("RSTAR_KEYRING", &keyring)
-            .env("RSTAR_BOOTSTRAPURL", url)
-            .env("RSTAR_MIRROR", "https://mirror.invalid/$repo/os/$arch")
+            .env("RSTAR_DISTRIBUTION_ARCHITECTURE", "x86_64")
+            .env("RSTAR_DISTRIBUTION_KEYRING", &keyring)
+            .env("RSTAR_DISTRIBUTION_BOOTSTRAPURL", url)
+            .env(
+                "RSTAR_DISTRIBUTION_MIRROR",
+                "https://mirror.invalid/$repo/os/$arch",
+            )
             .env("BOOTSTRAP_SOURCE", &source)
             .env("BOOTSTRAP_SIGNATURE", &signature)
             .env("BOOTSTRAP_TRACE", &trace)

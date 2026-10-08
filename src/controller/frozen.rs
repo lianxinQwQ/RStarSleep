@@ -71,18 +71,16 @@ fn entries(path: &Path) -> Result<Vec<fs::DirEntry>> {
     Ok(result)
 }
 
-/// Hash all archived inputs; optionally exclude the package table and later script inputs.
-/// 散列全部留档输入；可选排除包表及后续脚本输入。
+/// Hash all archived inputs to detect provenance changes.
+/// 散列全部留档输入以检测来源变化。
 /// # Arguments
 ///
 /// - `config`: Archived configuration directory.
 ///   留档配置目录。
-/// - `exclude_packages`: Whether package changes remain maintenance-compatible.
-///   包变化是否保持维护兼容。
-pub(super) fn config_hash(config: &Path, exclude_packages: bool) -> Result<String> {
+pub(super) fn config_hash(config: &Path) -> Result<String> {
     disk::checked(config)?;
     let mut digest = Sha256::new();
-    hash_directory(config, Path::new(""), exclude_packages, &mut digest)?;
+    hash_directory(config, Path::new(""), &mut digest)?;
     Ok(format!("{:x}", digest.finalize()))
 }
 
@@ -94,24 +92,12 @@ pub(super) fn config_hash(config: &Path, exclude_packages: bool) -> Result<Strin
 ///   配置根。
 /// - `relative`: Current relative directory.
 ///   当前相对目录。
-/// - `exclude_packages`: Omit the main package array and script tree.
-///   省略主包数组及脚本树。
 /// - `digest`: Accumulated SHA-256 state.
 ///   累积 SHA-256 状态。
-fn hash_directory(
-    root: &Path,
-    relative: &Path,
-    exclude_packages: bool,
-    digest: &mut Sha256,
-) -> Result<()> {
+fn hash_directory(root: &Path, relative: &Path, digest: &mut Sha256) -> Result<()> {
     for entry in entries(&root.join(relative))? {
         let path = relative.join(entry.file_name());
-        // Script inputs affect only the later script stage, not base/software cache compatibility.
-        // 脚本输入仅影响后续脚本阶段，不影响基础和软件缓存兼容性。
         if path == Path::new("script") {
-            if exclude_packages {
-                continue;
-            }
             let hash = super::resources::tree_hash(&entry.path())?;
             digest.update(b"script-tree");
             digest.update(hash.as_bytes());
@@ -123,7 +109,7 @@ fn hash_directory(
         let kind = entry.file_type().map_err(|e| disk::io(&entry.path(), e))?;
         if kind.is_dir() {
             digest.update(b"D");
-            hash_directory(root, &path, exclude_packages, digest)?;
+            hash_directory(root, &path, digest)?;
         } else if kind.is_file() {
             digest.update(b"F");
             let mut content = Vec::new();
@@ -135,8 +121,7 @@ fn hash_directory(
             {
                 let text =
                     std::str::from_utf8(&content).map_err(|e| Error::Invalid(e.to_string()))?;
-                content =
-                    crate::config::normalized_build_config(text, &entry.path(), exclude_packages)?;
+                content = crate::config::normalized_build_config(text, &entry.path())?;
             }
             digest.update((content.len() as u64).to_le_bytes());
             digest.update(content);
