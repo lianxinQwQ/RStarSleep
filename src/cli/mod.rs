@@ -5,6 +5,12 @@ mod build;
 mod init;
 mod init_system;
 mod packages;
+mod plugin_command;
+
+/// Names reserved by the command dispatcher.
+/// 命令分派保留的名称。
+pub(crate) const BUILTIN_COMMANDS: &[&str] =
+    &["init", "init-system", "packages", "build", "clean", "help"];
 
 use std::ffi::OsString;
 
@@ -63,7 +69,9 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "init-system" => init_system::run(rest)?,
         [command, rest @ ..] if command == "packages" => packages::run(rest)?,
         [command, rest @ ..] if command == "build" => build::run(rest)?,
-        _ => return Err(USAGE.into()),
+        [command, rest @ ..] => {
+            plugin_command::run(command.to_str().ok_or("子命令必须是 UTF-8")?, rest)?
+        }
     }
     Ok(())
 }

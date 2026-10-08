@@ -32,6 +32,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
     }
     let plugin = LoadedPlugin {
         metadata: Metadata {
+            commands: Vec::new(),
             schema_version: 1,
             api_version: 2,
             id: "test".into(),

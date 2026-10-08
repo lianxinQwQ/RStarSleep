@@ -107,3 +107,12 @@ state/packages、state/repository、state/sources，保留包、仓库和源码�
 
 流程已通过模拟存储、模拟工具和真实 Bash 测试；真实 Btrfs/nspawn 完整安装链路待集成验证。
 完整协议见 [构建设计](../../../docs/build-design.md)。
+
+
+插件可在 `plugin.toml` 顶层声明 `commands=["configure:tools/setup", "install-app"]`。
+省略入口时使用同名入口，支持 `.sh` 或无后缀可执行文件；不能覆盖内置子命令，
+多个插件也不能声明同一命令。宿主执行插件命令，stdin/stdout/stderr 直接连接终端，
+所有参数原样透传（包括 `--root`）。管理根由 `RSTAR_MANAGER_ROOT` 环境变量选择，默认 `/rstarsleep`；
+插件获得 `RSTAR_MANAGER_ROOT`、`RSTAR_PLUGIN_ROOT` 和 `RSTAR_PLUGIN_TMP`。
+插件子命令必须自行申请 root（例如适当使用 sudo），管理器不自动提权。
+这类入口可用于交互式安装软件并写入系统配置；应自行检查输入并传播失败。

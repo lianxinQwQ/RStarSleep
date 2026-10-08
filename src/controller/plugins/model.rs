@@ -171,6 +171,10 @@ pub struct Metadata {
     /// Globally named direct subvolumes, optionally followed by :relative/mountpoint.
     #[serde(default)]
     pub persistent_dirs: Vec<String>,
+    /// Host-side command:entry pairs, or same-named entries.
+    /// 宿主命令:入口对，或同名入口。
+    #[serde(default)]
+    pub commands: Vec<String>,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.

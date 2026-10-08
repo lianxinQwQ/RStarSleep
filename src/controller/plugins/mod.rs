@@ -1,6 +1,7 @@
 //! Archive and directory distribution plugins.
 //! 压缩包及目录形式的发行版插件。
 mod cache_inputs;
+mod commands;
 pub(crate) mod configuration;
 mod container;
 mod discovery;

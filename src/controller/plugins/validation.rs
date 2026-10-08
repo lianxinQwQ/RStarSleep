@@ -56,6 +56,9 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
+    for entry in super::commands::parse(&metadata.commands)?.values() {
+        super::commands::entry_path(root, entry)?;
+    }
     metadata.config.validate()?;
     metadata.cache.validate(&metadata.config)?;
     for operation in REQUIRED_OPERATIONS {
