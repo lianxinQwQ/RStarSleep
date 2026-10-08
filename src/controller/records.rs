@@ -61,6 +61,29 @@ pub(super) struct Status<'a> {
     pub plugin_sha256: Option<&'a str>,
 }
 
+/// Acquire the shared build/cleanup system lock without allocating a version.
+/// 取得构建和清理共用的系统锁，不分配版本。
+/// # Arguments
+/// - `layout`: Existing managed-system layout. 已有被管理系统布局。
+pub(super) fn lock_system(layout: &SystemLayout) -> Result<File> {
+    disk::checked(&layout.root)?;
+    if !layout.root.is_dir() {
+        return Err(Error::Invalid("系统未初始化".into()));
+    }
+    let lock_path = layout.root.join("build.lock");
+    disk::checked(&lock_path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| disk::io(&lock_path, e))?;
+    lock.try_lock()
+        .map_err(|e| Error::Invalid(format!("无法取得系统构建锁: {e}")))?;
+    Ok(lock)
+}
+
 impl Attempt {
     /// Lock the system and reserve the next version without overwriting any prior attempt.
     /// 锁定系统并预留下一版本，不覆盖任何过往尝试。
@@ -76,17 +99,7 @@ impl Attempt {
         if !layout.root.is_dir() {
             return Err(Error::Invalid(format!("系统未初始化: {id}")));
         }
-        let lock_path = layout.root.join("build.lock");
-        disk::checked(&lock_path)?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|e| disk::io(&lock_path, e))?;
-        lock.try_lock()
-            .map_err(|e| Error::Invalid(format!("无法取得系统 {id} 构建锁: {e}")))?;
+        let lock = lock_system(&layout)?;
         disk::directory(&layout.versions)?;
         let mut previous = None;
         let mut highest = 0u64;
@@ -115,9 +128,19 @@ impl Attempt {
                 }
             }
         }
+        let counter = layout.root.join("version-counter");
+        if disk::exists(&counter)? {
+            let saved = fs::read_to_string(&counter)
+                .map_err(|e| disk::io(&counter, e))?
+                .trim()
+                .parse::<u64>()
+                .map_err(|e| Error::Invalid(format!("版本计数无效: {e}")))?;
+            highest = highest.max(saved);
+        }
         let next = highest
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("版本序号耗尽".into()))?;
+        disk::write_text(&counter, &next.to_string())?;
         let version = format!("v{next:08}");
         let directory = layout.versions.join(&version);
         fs::create_dir(&directory).map_err(|e| disk::io(&directory, e))?;

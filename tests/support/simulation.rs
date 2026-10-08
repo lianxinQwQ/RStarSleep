@@ -45,6 +45,7 @@ pub struct SnapshotEvent {
 #[derive(Default)]
 pub struct SimulatedBackend {
     pub events: RefCell<Vec<Event>>,
+    pub running_root: RefCell<Option<PathBuf>>,
     pub snapshots: RefCell<Vec<SnapshotEvent>>,
     pub fail_operation: RefCell<Option<&'static str>>,
     pub fail_restore: Cell<bool>,
@@ -174,6 +175,9 @@ fn copy_simulated_snapshot(source: &Path, destination: &Path) {
 }
 
 impl BuildBackend for SimulatedBackend {
+    fn is_running_root(&self, path: &Path) -> Result<bool> {
+        Ok(self.running_root.borrow().as_deref() == Some(path))
+    }
     fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
         self.check_subvolume(
             path,

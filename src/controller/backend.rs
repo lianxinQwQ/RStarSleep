@@ -80,6 +80,43 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
+        fs::checked(source)?;
+        fs::checked(target)?;
+        let source = if source.is_dir() {
+            source.join(".")
+        } else {
+            source.to_path_buf()
+        };
+        let output = Command::new("cp")
+            .arg("--archive")
+            .arg(if force_cow {
+                "--reflink=always"
+            } else {
+                "--reflink=auto"
+            })
+            .arg("--")
+            .arg(&source)
+            .arg(target)
+            .output()
+            .map_err(|e| fs::io(target, e))?;
+        if !output.status.success() {
+            return Err(Error::Command {
+                command: format!("cp inheritance {}", source.display()),
+                status: output.status.to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+        Ok(())
+    }
+    fn is_running_root(&self, path: &Path) -> Result<bool> {
+        let current = super::mounts::covering(Path::new("/"))?;
+        let candidate = super::mounts::covering(path)?;
+        if current.fstype != "btrfs" || candidate.fstype != "btrfs" {
+            return Ok(false);
+        }
+        Ok(current.uuid == candidate.uuid && current.fsroot == candidate.subvolume_path(path)?)
+    }
     fn publish_boot(
         &self,
         outcome: &super::BuildOutcome,

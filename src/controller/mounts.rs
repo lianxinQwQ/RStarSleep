@@ -69,3 +69,31 @@ impl Mount {
         Ok(self.fsroot.join(relative))
     }
 }
+
+/// Reject mounted descendants which ordinary snapshots cannot faithfully inherit.
+/// 拒绝普通快照无法准确继承的后代挂载。
+/// # Arguments
+/// - `source`: File or directory in the current system. 当前系统中的文件或目录。
+pub(super) fn check_descendant_mounts(source: &Path) -> Result<()> {
+    let text = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|e| fs::io(Path::new("/proc/self/mountinfo"), e))?;
+    for line in text.lines() {
+        let target = line
+            .split_whitespace()
+            .nth(4)
+            .ok_or_else(|| Error::Invalid("mountinfo 响应无效".into()))?;
+        let target = target
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        let target = Path::new(&target);
+        if target != source && target.starts_with(source) {
+            return Err(Error::Invalid(format!(
+                "继承来源包含挂载点: {}",
+                target.display()
+            )));
+        }
+    }
+    Ok(())
+}

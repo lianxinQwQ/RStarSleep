@@ -8,6 +8,7 @@ pub mod plugins;
 mod backend;
 mod boot;
 mod cache;
+mod clean;
 mod container;
 mod frozen;
 mod fs;
@@ -24,5 +25,6 @@ mod stages;
 mod workflow;
 
 pub use backend::SystemBackend;
+pub use clean::{clean, clean_with_backend};
 pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount, Result};
 pub use workflow::{build, build_with_backend};

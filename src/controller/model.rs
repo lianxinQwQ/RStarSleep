@@ -199,6 +199,53 @@ pub trait BuildBackend {
         self.delete_subvolume(path)
     }
 
+    /// Copy a file or directory while optionally requiring reflink for all regular files.
+    /// 复制文件或目录，可要求所有普通文件强制 reflink。
+    /// # Arguments
+    /// - `self`: Native data-copy backend. 原生数据复制后端。
+    /// - `source`: Existing running-system source. 当前运行系统中的已有来源。
+    /// - `target`: Owned file or empty directory. 所属文件或空目录。
+    /// - `force_cow`: Reject any full-copy fallback. 拒绝全量复制回退。
+    fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
+        let _ = (source, target, force_cow);
+        Err(Error::Invalid("此后端不支持继承复制".into()))
+    }
+
+    /// Reject cross-filesystem CoW sources and sources containing subvolumes or mounts.
+    /// 拒绝跨文件系统 CoW 来源及内部子卷或挂载点。
+    /// # Arguments
+    /// - `self`: Storage backend. 存储后端。
+    /// - `source`: Current-system path. 当前系统路径。
+    /// - `destination_parent`: Existing destination filesystem directory. 目标文件系统上的已有目录。
+    fn check_cow_source(&self, source: &Path, destination_parent: &Path) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let source_info =
+            std::fs::symlink_metadata(source).map_err(|e| super::fs::io(source, e))?;
+        let target_info = std::fs::metadata(destination_parent)
+            .map_err(|e| super::fs::io(destination_parent, e))?;
+        if source_info.dev() != target_info.dev() {
+            return Err(Error::Invalid(format!(
+                "CoW 继承必须位于同一分区: {}",
+                source.display()
+            )));
+        }
+        super::mounts::check_descendant_mounts(source)?;
+        if source_info.is_dir() {
+            self.check_no_nested_subvolumes(source)?;
+        }
+        Ok(())
+    }
+
+    /// Determine whether a version root is the currently running system.
+    /// 判断版本根是否为当前运行系统。
+    /// # Arguments
+    /// - `self`: Runtime inspection backend. 运行检查后端。
+    /// - `path`: Candidate version root. 候选版本根。
+    fn is_running_root(&self, path: &Path) -> Result<bool> {
+        let _ = path;
+        Err(Error::Invalid("此后端不能检查当前运行版本".into()))
+    }
+
     /// Publish a completed main system to its configured boot filesystem.
     /// 将完成的主系统发布到配置的启动文件系统。
     /// # Arguments

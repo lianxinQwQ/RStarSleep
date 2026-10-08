@@ -226,3 +226,59 @@ mod scripts;
 
 #[path = "build_workflow/predownload.rs"]
 mod predownload;
+
+/// Refuse an active cutoff without partial deletion, retain newer versions and persistent data.
+/// 拒绝活动截止版本且不部分删除，保留更新版本和持久数据。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn bounded_clean_preserves_running_roots_data_and_monotonic_versions() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["kept"]);
+    let backend = SimulatedBackend::default();
+    let mut outcomes = Vec::new();
+    for _ in 0..3 {
+        outcomes.push(
+            build_with_backend(&fixture.store, Some("desktop"), &backend)
+                .unwrap()
+                .remove(0),
+        );
+    }
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(layout.persistent.join("user-data"), "keep").unwrap();
+    *backend.running_root.borrow_mut() = Some(outcomes[1].root.clone());
+    assert!(
+        rstarsleep::controller::clean_with_backend(
+            &fixture.store,
+            "desktop",
+            &outcomes[1].version,
+            &backend
+        )
+        .is_err()
+    );
+    assert!(outcomes[0].root.exists());
+    *backend.running_root.borrow_mut() = None;
+    assert_eq!(
+        rstarsleep::controller::clean_with_backend(
+            &fixture.store,
+            "desktop",
+            &outcomes[1].version,
+            &backend
+        )
+        .unwrap(),
+        [outcomes[0].version.clone(), outcomes[1].version.clone()]
+    );
+    assert!(outcomes[2].root.exists());
+    assert!(layout.persistent.join("user-data").exists());
+    rstarsleep::controller::clean_with_backend(
+        &fixture.store,
+        "desktop",
+        &outcomes[2].version,
+        &backend,
+    )
+    .unwrap();
+    let next = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(next.version, "v00000004");
+}
