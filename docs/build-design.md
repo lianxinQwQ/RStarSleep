@@ -505,7 +505,7 @@ systems/<系统>/versions/<版本>/root/
 
 - 没有 CopyOnWrite、Mount 和 FstabLines 时直接从 script 缓存发布版本根。
 - 否则从本次 script 缓存创建可写根，继承当前运行系统的数据，并在需要时调用挂载插件接口。
-- 完成后捕获实际包清单，保存 `inherit` 与 `inherit.toml`，随后显式快照父根和每个继承子卷
+- 构建时继承完成后捕获实际包清单，保存 `inherit` 与 `inherit.toml`，随后递归快照父根和全部内部子卷
   作为版本系统根。继承缓存与发布的父根、CoW 目录子卷均只读。
 - 继承失败阻止发布，已成功提交的基础、软件和 script 缓存仍保留；下次构建重新执行 script、inherit。
 
@@ -521,7 +521,7 @@ script 只消费本次软件输出，inherit 只消费本次 script 输出，两
 ## 当前运行系统的数据继承
 
 控制器以 `InheritanceConfig::read()` 从合并 INI 参数独立读取 `[Inheritance]`，
-不把继承作为 mkosi 构建选项或要求插件声明的配置。仅接受 CopyOnWrite、Mount：
+不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWrite、Mount、Timing 和 DirectorySubvolume：
 
 ```ini
 # Suggested systems/<system>/config/build/inherit.conf; its name has no parsing semantics.
@@ -536,15 +536,20 @@ Mount=/etc/myapp.conf
 ```
 
 重复赋值和多行值均支持，每行一个规范绝对路径。不接受 `/`、重复、相互包含、
-控制字符、父级跳转或编码名称冲突；来源不能与管理器目录重叠，顶层来源为普通文件或目录。
+控制字符、父级跳转或编码名称冲突；来源不能包含目标管理存储，顶层来源解析为普通文件或目录。
 Mount 还不能遮盖 `/rstarsleep`、`/run/rstarsleep`，路径不得包含 nspawn 绑定分隔字符 `:`、`\`。
 
-CopyOnWrite 从当前运行系统复制，不从上一版本复制。来源与目标必须具有相同 Btrfs UUID，
-不以 `st_dev` 判断跨子卷关系；来源内部挂载点和子卷均拒绝。普通文件使用
-`cp --archive --reflink=always`，失败时不退回普通复制。目录先填充独立临时子卷，
-再建立独立快照。其数据属于本次版本及继承缓存，不放入系统 persistent。
-Btrfs 父卷快照会遗漏后代子卷，因此控制器显式建立每个继承目录的快照；缓存和最终版本
-父根、子卷均只读。需要持续写入的数据使用 Mount。
+CopyOnWrite 默认在构建时从当前运行系统继承；`Timing=initramfs` 可延后到目标版本首次启动。
+来源与目标必须具有相同 Btrfs UUID。普通文件使用强制 reflink；目录默认创建独立目标子卷，
+来源已有子卷时直接递归快照。`DirectorySubvolume=no` 只关闭最外层目标子卷化，内部原有
+子卷仍保留。阶段缓存保存、恢复及最终发布均处理完整子卷树，全部封存为只读。
+构建时继承的来源不允许尚未解析的内部挂载；initramfs 模式将内部挂载固定为独立来源映射。
+
+initramfs 模式完成软件、脚本及 Mount 配置后，重新生成包含早期执行器的 mkinitcpio 镜像，
+保存独立准备根及待办清单，预先发布候选启动项并标记 `pending-inheritance`。首次启动在
+正式根挂载前提交最终根，成功后标记 `complete`；不运行插件或重新捕获包清单。
+路径不设黑名单，构建前提供 3 秒 Ctrl+C 取消时间；启动内核及 initramfs 保持构建时产物，
+兼容性由用户负责。详细协议见 [首次启动继承](initramfs-inheritance.md)。
 
 Mount 的路径把所有 `/` 替换为 `-`，包括开头斜杠，例如 `/home/alice` 对应
 `systems/<系统>/persistent/-home-alice`。不存在时从当前运行系统首次复制；存在时直接复用，

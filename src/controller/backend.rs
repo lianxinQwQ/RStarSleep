@@ -80,6 +80,42 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn sync_filesystem(&self, path: &Path) -> Result<()> {
+        btrfs(&["filesystem".into(), "sync".into(), path.into()])?;
+        Ok(())
+    }
+    fn nested_subvolumes(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        super::mounts::check_descendant_mounts(path)?;
+        nested_subvolumes(path)?
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(path)
+                    .map(Path::to_path_buf)
+                    .map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .collect()
+    }
+    fn is_subvolume(&self, path: &Path) -> Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        fs::checked(path)?;
+        let info = std::fs::symlink_metadata(path).map_err(|e| fs::io(path, e))?;
+        if !info.is_dir() || info.ino() != 256 {
+            return Ok(false);
+        }
+        btrfs(&["subvolume".into(), "show".into(), "--".into(), path.into()])?;
+        Ok(true)
+    }
+    fn source_subvolume_id(&self, path: &Path) -> Result<String> {
+        let out = btrfs(&["inspect-internal".into(), "rootid".into(), path.into()])?;
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::Invalid("来源子卷 ID 无效".into()));
+        }
+        Ok(id)
+    }
+    fn prepare_inheritance_initramfs(&self, root: &Path) -> Result<()> {
+        super::initramfs::prepare(root)
+    }
     fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
         fs::checked(path)?;
         btrfs(&[
@@ -96,12 +132,19 @@ impl BuildBackend for SystemBackend {
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
         fs::checked(source)?;
         fs::checked(target)?;
-        let source = if source.is_dir() {
+        let directory = source.is_dir();
+        let source = if directory {
             source.join(".")
         } else {
             source.to_path_buf()
         };
-        let output = Command::new("cp")
+        let mut command = Command::new("cp");
+        // Btrfs child subvolumes have separate device identities. Preserve them with
+        // explicit recursive snapshots instead of descending into them during cp.
+        if directory && force_cow {
+            command.arg("--one-file-system");
+        }
+        let output = command
             .arg("--archive")
             .arg(if force_cow {
                 "--reflink=always"

@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+build() {
+    local runtime=/usr/lib/rstarsleep/early-runtime file name
+    [[ -x "$runtime/bin/rstarsleep" && -x "$runtime/run-rstarsleep" ]] || {
+        error 'RStarSleep runtime is incomplete'; return 1;
+    }
+    [[ "$(/usr/bin/cp --version)" == *'GNU coreutils'* ]] || {
+        error 'GNU cp is required for reflink inheritance'; return 1;
+    }
+    add_module btrfs || return 1
+    for name in cp btrfs mount findmnt mkdir sleep; do
+        [[ -x "/usr/bin/$name" ]] || { error "Missing /usr/bin/$name"; return 1; }
+        add_binary "/usr/bin/$name" "/usr/lib/rstarsleep/tools/$name" || return 1
+    done
+    add_binary /usr/bin/bash /usr/lib/rstarsleep/tools/sh || return 1
+    while IFS= read -r -d '' file; do
+        add_file "$file" "$file" || return 1
+    done < <(find "$runtime" -type f -print0)
+    add_file /usr/lib/rstarsleep/initramfs-finalize || return 1
+    if [[ " ${HOOKS[*]} " == *' systemd '* ]]; then
+        add_file /usr/lib/systemd/system/rstarsleep-inheritance.service || return 1
+        add_file /usr/lib/systemd/system/sysroot.mount.d/50-rstarsleep.conf || return 1
+    else
+        add_binary /usr/lib/initcpio/busybox /usr/lib/rstarsleep/tools/busybox || return 1
+        add_runscript || return 1
+    fi
+}
+help() {
+    echo 'Finalize RStarSleep inheritance after block/decryption hooks and before root mounting.'
+}

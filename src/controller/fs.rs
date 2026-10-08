@@ -130,3 +130,87 @@ pub(super) fn write_text(path: &Path, text: &str) -> Result<()> {
     file.persist(path).map_err(|e| io(path, e.error))?;
     sync(parent)
 }
+
+/// Resolve guest ancestors inside a root, including absolute directory symlinks.
+/// The final entry is left unresolved so inheritance can replace a symlink itself.
+pub(super) fn guest_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf> {
+    use std::{collections::VecDeque, ffi::OsString, path::PathBuf};
+    checked(root)?;
+    if !guest.is_absolute() {
+        return Err(Error::Invalid("目标系统路径必须绝对".into()));
+    }
+    let mut pending: VecDeque<OsString> = guest
+        .components()
+        .filter_map(|p| match p {
+            Component::Normal(p) => Some(p.to_owned()),
+            _ => None,
+        })
+        .collect();
+    let mut relative = PathBuf::new();
+    let mut links = 0;
+    while let Some(part) = pending.pop_front() {
+        if part == "." {
+            continue;
+        }
+        if part == ".." {
+            relative.pop();
+            continue;
+        }
+        let path = root.join(&relative).join(&part);
+        match fs::symlink_metadata(&path) {
+            Ok(info) if info.file_type().is_symlink() && !pending.is_empty() => {
+                links += 1;
+                if links > 40 {
+                    return Err(Error::Invalid("目标路径符号链接循环".into()));
+                }
+                let link = fs::read_link(&path).map_err(|e| io(&path, e))?;
+                if link.is_absolute() {
+                    relative.clear();
+                }
+                let parts: Vec<_> = link
+                    .components()
+                    .filter_map(|p| match p {
+                        Component::Normal(p) => Some(p.to_owned()),
+                        Component::ParentDir => Some(OsString::from("..")),
+                        _ => None,
+                    })
+                    .collect();
+                for part in parts.into_iter().rev() {
+                    pending.push_front(part);
+                }
+            }
+            Ok(_) => relative.push(part),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => relative.push(part),
+            Err(error) => return Err(io(&path, error)),
+        }
+    }
+    Ok(root.join(relative))
+}
+
+#[cfg(test)]
+mod guest_path_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    #[test]
+    fn guest_symlinks_stay_inside_root_and_final_links_can_be_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("usr/lib")).unwrap();
+        symlink("/usr/lib", root.join("lib")).unwrap();
+        assert_eq!(
+            guest_path(root, Path::new("/lib/data")).unwrap(),
+            root.join("usr/lib/data")
+        );
+        symlink("../../../../usr/lib", root.join("alias")).unwrap();
+        assert_eq!(
+            guest_path(root, Path::new("/alias/data")).unwrap(),
+            root.join("usr/lib/data")
+        );
+        assert_eq!(
+            guest_path(root, Path::new("/lib")).unwrap(),
+            root.join("lib")
+        );
+        symlink("/loop", root.join("loop")).unwrap();
+        assert!(guest_path(root, Path::new("/loop/data")).is_err());
+    }
+}

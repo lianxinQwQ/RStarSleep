@@ -52,6 +52,7 @@ pub fn clean_with_backend(
     let cutoff = number(version)?;
     let layout = store.system_layout(system)?;
     let _lock = records::lock_system(&layout)?;
+    let _pins_lock = records::lock_inheritance(store.root())?;
     let selected = layout.versions.join(version);
     disk::checked(&selected)?;
     if !selected.is_dir() {
@@ -80,6 +81,38 @@ pub fn clean_with_backend(
         }
     }
     targets.sort_by_key(|(value, _, _)| *value);
+    // Any retained pending version pins the source versions it will consume at boot.
+    let mut pins = Vec::new();
+    for id in store.list_systems()? {
+        let other = store.system_layout(&id)?;
+        for entry in fs::read_dir(&other.versions).map_err(|e| disk::io(&other.versions, e))? {
+            let directory = entry.map_err(|e| disk::io(&other.versions, e))?.path();
+            if targets.iter().any(|(_, _, target)| target == &directory) {
+                continue;
+            }
+            let manifest = directory.join("inheritance-pending.toml");
+            if disk::exists(&manifest)? {
+                pins.extend(super::deferred::pinned_sources_one(&directory)?);
+            }
+        }
+    }
+    for (_, _, directory) in &targets {
+        let (_, location) = backend.filesystem_location(directory)?;
+        if pins.iter().any(|source| source.starts_with(&location)) {
+            return Err(Error::Invalid(
+                "版本被尚未完成的 initramfs 继承引用，不能清理".into(),
+            ));
+        }
+        for name in ["prepared-root", "inheritance-staging"] {
+            let root = directory.join(name);
+            if disk::exists(&root)? {
+                super::mounts::check_unmounted_tree(&root)?;
+                if backend.is_running_root(&root)? {
+                    return Err(Error::Invalid("不能清理运行中的准备根".into()));
+                }
+            }
+        }
+    }
     let mut boots = Vec::new();
     for (_, name, directory) in &targets {
         super::mounts::check_unmounted_tree(directory)?;
@@ -126,6 +159,9 @@ pub fn clean_with_backend(
         highest = highest.max(saved);
     }
     disk::write_text(&counter, &highest.to_string())?;
+    for (_, _, directory) in &targets {
+        super::deferred::cancel(directory)?;
+    }
     for boot in boots {
         if disk::exists(&boot.entry)? {
             fs::remove_file(&boot.entry).map_err(|e| disk::io(&boot.entry, e))?;
@@ -141,6 +177,12 @@ pub fn clean_with_backend(
         let root = directory.join("root");
         if disk::exists(&root)? {
             backend.delete_subvolume_recursive(&root)?;
+        }
+        for extra in ["prepared-root", "inheritance-staging"] {
+            let path = directory.join(extra);
+            if disk::exists(&path)? {
+                backend.delete_subvolume_recursive(&path)?;
+            }
         }
         let cache = layout.cache.join(&name);
         if disk::exists(&cache)? {

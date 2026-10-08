@@ -1,0 +1,55 @@
+#!/usr/lib/rstarsleep/tools/sh
+set -eu
+PATH=/usr/lib/rstarsleep/tools:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+fatal() { printf 'RStarSleep: %s\n' "$*" >&2; exit 1; }
+pending=
+storage=
+seen_pending=0
+seen_storage=0
+IFS= read -r cmdline < /proc/cmdline
+set -f
+for arg in $cmdline; do
+    case "$arg" in
+        rstarsleep.pending=*)
+            [ "$seen_pending" -eq 0 ] || fatal 'duplicate pending parameter'
+            seen_pending=1
+            pending=${arg#rstarsleep.pending=}
+            ;;
+        rstarsleep.storage=*)
+            [ "$seen_storage" -eq 0 ] || fatal 'duplicate storage parameter'
+            seen_storage=1
+            storage=${arg#rstarsleep.storage=}
+            ;;
+    esac
+done
+set +f
+[ "$seen_pending" -eq 1 ] || exit 0
+case "$pending" in /*) ;; *) fatal 'manifest path must be absolute' ;; esac
+case "$pending" in /|*[[:space:]]*|*'/../'*|*/..|*'/./'*|*/.) fatal 'invalid manifest path' ;; esac
+case "$storage" in UUID=*) uuid=${storage#UUID=} ;; *) fatal 'storage UUID is required' ;; esac
+case "$uuid" in ''|*[!0123456789abcdefABCDEF-]*) fatal 'invalid storage UUID' ;; esac
+device="/dev/disk/by-uuid/$uuid"
+attempt=0
+while [ ! -b "$device" ]; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 120 ] || fatal "storage device did not appear: $device"
+    sleep 1
+done
+top=/run/rstarsleep-top
+mkdir -p "$top"
+if findmnt -rn --mountpoint "$top" >/dev/null 2>&1; then
+    [ "$(findmnt -rn --mountpoint "$top" --output FSTYPE)" = btrfs ] || fatal 'wrong storage filesystem'
+    [ "$(findmnt -rn --mountpoint "$top" --output UUID)" = "$uuid" ] || fatal 'wrong storage UUID'
+    options=$(findmnt -rn --mountpoint "$top" --output OPTIONS)
+    case ",$options," in *,rw,*) ;; *) fatal 'storage is not writable' ;; esac
+    case ",$options," in *,subvolid=5,*) ;; *) fatal 'storage is not the top-level subvolume' ;; esac
+else
+    mount -t btrfs -o rw,subvolid=5 "$device" "$top" || fatal 'cannot mount management storage'
+fi
+manifest="$top$pending"
+[ -f "$manifest" ] || fatal 'pending manifest is missing'
+printf 'RStarSleep: completing inheritance: %s\n' "$pending"
+/usr/lib/rstarsleep/early-runtime/run-rstarsleep finalize-inheritance \
+    --manifest "$manifest" --filesystem-root "$top" || fatal 'inheritance failed; refusing incomplete root'
+printf '%s\n' 'RStarSleep: inheritance committed.'

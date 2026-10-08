@@ -19,7 +19,7 @@ pub(crate) use build::normalized_build_config;
 pub use build::{
     BuildConfig, read_build_config_at, read_distribution_options_at, read_plugin_parameters_at,
 };
-pub use inheritance::{InheritanceConfig, inheritance_name};
+pub use inheritance::{InheritanceConfig, InheritanceTiming, inheritance_name};
 pub use init::initialize;
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use parameters::PluginParameters;
@@ -117,7 +117,7 @@ fn io_error(path: impl Into<PathBuf>, source: std::io::Error) -> Error {
 ///
 /// - `id`: System, version, or stage identifier to validate as a single path component.
 ///   待校验的系统、版本或流程标识，必须符合单个路径分量的规则。
-fn validate_identifier(id: &str) -> Result<()> {
+pub(crate) fn validate_identifier(id: &str) -> Result<()> {
     let mut bytes = id.bytes();
     if !bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
         || !bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))

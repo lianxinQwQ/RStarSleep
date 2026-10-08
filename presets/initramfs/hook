@@ -1,0 +1,11 @@
+#!/usr/bin/ash
+run_hook() {
+    if /usr/lib/rstarsleep/initramfs-finalize; then return 0; fi
+    echo 'ERROR: RStarSleep inheritance failed; the incomplete root will not be booted.' >&2
+    echo 'Recovery shell: inspect the error, retry, or use reboot -f to select an older version.' >&2
+    exec /usr/lib/rstarsleep/tools/sh -c '
+        /usr/lib/rstarsleep/tools/sh -i </dev/console >/dev/console 2>&1 || :
+        /usr/lib/rstarsleep/tools/busybox poweroff -f || :
+        while :; do /usr/lib/rstarsleep/tools/sleep 3600 || :; done
+    '
+}

@@ -1,0 +1,17 @@
+# Preserve the configured hooks; add RStarSleep before filesystems.
+rstarsleep_hooks=()
+rstarsleep_inserted=no
+for rstarsleep_hook in "${HOOKS[@]}"; do
+    [[ "$rstarsleep_hook" == rstarsleep ]] && continue
+    if [[ "$rstarsleep_hook" == filesystems ]]; then
+        rstarsleep_hooks+=(rstarsleep)
+        rstarsleep_inserted=yes
+    fi
+    rstarsleep_hooks+=("$rstarsleep_hook")
+done
+if [[ "$rstarsleep_inserted" != yes ]]; then
+    echo 'RStarSleep: mkinitcpio HOOKS must contain filesystems' >&2
+    return 1
+fi
+HOOKS=("${rstarsleep_hooks[@]}")
+unset rstarsleep_hook rstarsleep_hooks rstarsleep_inserted

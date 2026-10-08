@@ -3,6 +3,7 @@
 
 mod build;
 mod clean;
+mod finalize_inheritance;
 mod init;
 mod init_system;
 mod packages;
@@ -10,8 +11,15 @@ mod plugin_command;
 
 /// Names reserved by the command dispatcher.
 /// 命令分派保留的名称。
-pub(crate) const BUILTIN_COMMANDS: &[&str] =
-    &["init", "init-system", "packages", "build", "clean", "help"];
+pub(crate) const BUILTIN_COMMANDS: &[&str] = &[
+    "init",
+    "init-system",
+    "packages",
+    "build",
+    "clean",
+    "finalize-inheritance",
+    "help",
+];
 
 use std::ffi::OsString;
 
@@ -72,6 +80,9 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "packages" => packages::run(rest)?,
         [command, rest @ ..] if command == "build" => build::run(rest)?,
         [command, rest @ ..] if command == "clean" => clean::run(rest)?,
+        [command, rest @ ..] if command == "finalize-inheritance" => {
+            finalize_inheritance::run(rest)?
+        }
         [command, rest @ ..] => {
             plugin_command::run(command.to_str().ok_or("子命令必须是 UTF-8")?, rest)?
         }

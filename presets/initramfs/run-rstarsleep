@@ -1,0 +1,9 @@
+#!/usr/lib/rstarsleep/tools/sh
+set -eu
+runtime=/usr/lib/rstarsleep/early-runtime
+if [ ! -f "$runtime/loader-name" ]; then
+    exec "$runtime/bin/rstarsleep" "$@"
+fi
+IFS= read -r loader < "$runtime/loader-name"
+case "$loader" in ''|*/*|*[[:space:]]*) exit 1 ;; esac
+exec "$runtime/lib/$loader" --library-path "$runtime/lib" "$runtime/bin/rstarsleep" "$@"

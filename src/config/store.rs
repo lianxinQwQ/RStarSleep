@@ -226,7 +226,7 @@ impl ConfigStore {
             write_default(&layout.config.join(BUILD_CONFIG_PATH), BUILD_DEFAULT)?;
             write_default(
                 &layout.config.join("build/inherit.conf"),
-                "# Inherit data from the running system after scripts.\n# 脚本后从运行系统继承数据。\n[Inheritance]\n# CopyOnWrite=/absolute/path\n# Mount=/absolute/path\n",
+                "# Inherit data from the running system after scripts.\n# 脚本后从运行系统继承数据。\n[Inheritance]\n# Timing=build\n# DirectorySubvolume=yes\n# CopyOnWrite=/absolute/path\n# Mount=/absolute/path\n",
             )?;
         }
         write_default(

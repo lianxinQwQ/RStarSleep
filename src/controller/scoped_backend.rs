@@ -12,6 +12,21 @@ pub(super) struct ScopedBackend<'a, B> {
 }
 
 impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
+    fn sync_filesystem(&self, path: &Path) -> Result<()> {
+        self.backend.sync_filesystem(path)
+    }
+    fn nested_subvolumes(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.backend.nested_subvolumes(path)
+    }
+    fn is_subvolume(&self, path: &Path) -> Result<bool> {
+        self.backend.is_subvolume(path)
+    }
+    fn source_subvolume_id(&self, path: &Path) -> Result<String> {
+        self.backend.source_subvolume_id(path)
+    }
+    fn prepare_inheritance_initramfs(&self, root: &Path) -> Result<()> {
+        self.backend.prepare_inheritance_initramfs(root)
+    }
     fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
         self.backend.filesystem_location(path)
     }

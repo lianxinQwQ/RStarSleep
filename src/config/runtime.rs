@@ -59,6 +59,8 @@ impl ConfigStore {
                 || option.chars().any(char::is_control)
                 || option.starts_with("root=")
                 || option.starts_with("rootflags=")
+                || option.starts_with("rstarsleep.pending=")
+                || option.starts_with("rstarsleep.storage=")
                 || matches!(option.as_str(), "rw" | "ro")
             {
                 return Err(Error::Invalid(format!("无效额外内核参数: {option:?}")));

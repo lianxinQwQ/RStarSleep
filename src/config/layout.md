@@ -36,10 +36,13 @@ Btrfs 顶层/
             ├── version-counter         # 最高已分配版本号，清理历史后仍保留
             ├── versions/
             │   └── <版本标识>/
-            │       ├── state.toml      # building / failed / complete 状态
+            │       ├── state.toml      # building / pending-inheritance / failed / complete / cancelled
             │       ├── boot.toml       # 主系统启动文件的所有权记录
             │       ├── config/         # 构建时配置留档，结构同当前 config/
-            │       └── root/           # 只读系统父根及 CoW 继承目录子卷
+            │       ├── prepared-root/  # 可选，首次启动继承前的独立只读根
+            │       ├── inheritance-pending.toml # 可选，固定来源及目标身份
+            │       ├── inheritance-commit.toml  # 可选，最终根及全部子卷提交记录
+            │       └── root/           # 只读系统父根及全部内部子卷
             ├── cache/
             │   └── <版本标识>/
             │       ├── base-system/    # 只读基础系统子卷快照
@@ -342,17 +345,17 @@ Mount=/srv/data
 Mount=/etc/myapp.conf
 ```
 
-控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，仅接受 CopyOnWrite、Mount，
+控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWrite、Mount、Timing、DirectorySubvolume，
 不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，不接受 `/`、
-重复、相互包含或持久名称冲突；来源还不能与管理器目录重叠。
+重复、相互包含或持久名称冲突；来源还不能包含目标管理存储。
 Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn 绑定分隔字符 `:`、`\`。
 
-CopyOnWrite 在软件及 script 之后读取当前运行系统，按 Btrfs UUID 检查来源与构建目录
-属于同一文件系统，并拒绝来源内部的挂载点及子卷。文件使用 `cp --reflink=always`，
-目录填入独立临时子卷，再建立独立子卷快照。`cache/<版本>/inherit` 与 `inherit.toml`
-保存本次继承输出；下次构建从 script 起清理，不复用旧继承缓存。
-Btrfs 父卷快照不会自动包含子卷，发布时显式快照继承目录。缓存和版本的父根、
-继承子卷都只读；需要持续写入或跨版本复用的数据应使用 Mount。
+CopyOnWrite 默认在软件及 script 之后继承当前运行系统，按 Btrfs UUID 检查同一文件系统。
+目录默认子卷化，已有来源子卷直接递归快照；`DirectorySubvolume=no` 可关闭最外层子卷化。
+保存阶段缓存、恢复及发布根均显式处理全部内部子卷，并分别封存为只读。
+设置 `Timing=initramfs` 后，首次选择启动目标版本时才完成 CoW 继承；准备根与清单随版本
+保存，不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
+[首次启动继承](../../docs/initramfs-inheritance.md)。
 
 Mount 将绝对路径中的所有 `/` 替换为 `-`，包括开头斜杠：`/home/alice` 保存为
 本系统 `persistent/-home-alice`。不存在时首次复制当前运行系统的数据；已存在时复用，

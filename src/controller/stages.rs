@@ -89,7 +89,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         let root = self.scratch.join("base-root");
         owned.push(root.clone());
         if let Some(cached) = cached {
-            self.backend.snapshot(&cached.root, &root, false)?;
+            self.backend
+                .snapshot_recursive(&cached.root, &root, false)?;
         } else {
             if self.plugin.metadata.api_version != 3 {
                 return Err(super::Error::Invalid(
@@ -148,7 +149,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         let root = self.scratch.join("root");
         owned.push(root.clone());
         let input = cached.unwrap_or(previous_step);
-        self.backend.snapshot(&input.root, &root, false)?;
+        self.backend.snapshot_recursive(&input.root, &root, false)?;
         let session = PackageSession {
             backend: self.backend,
             plugin: self.plugin,
@@ -175,7 +176,8 @@ impl<B: BuildBackend> Stages<'_, B> {
     fn script_step(&self, packages: &Cache, owned: &mut Vec<PathBuf>) -> Result<Cache> {
         let root = self.scratch.join("script-root");
         owned.push(root.clone());
-        self.backend.snapshot(&packages.root, &root, false)?;
+        self.backend
+            .snapshot_recursive(&packages.root, &root, false)?;
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
         let software = if applied {
             let session = PackageSession {
@@ -211,7 +213,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         }
         let root = self.scratch.join("inherit-root");
         owned.push(root.clone());
-        self.backend.snapshot(&scripts.root, &root, false)?;
+        self.backend
+            .snapshot_recursive(&scripts.root, &root, false)?;
         let inherited = super::inheritance::apply(
             self.backend,
             self.plugin,
@@ -221,6 +224,19 @@ impl<B: BuildBackend> Stages<'_, B> {
             &self.attempt.layout.root,
             owned,
         )?;
+        if config.timing == crate::config::InheritanceTiming::Initramfs
+            && !config.copy_on_write.is_empty()
+        {
+            self.backend.prepare_inheritance_initramfs(&root)?;
+            let prepared = self.attempt.directory.join("prepared-root");
+            self.backend.snapshot_recursive(&root, &prepared, true)?;
+            super::deferred::prepare(self.backend, self.context, &config, &prepared)?;
+            return Ok(BuildOutcome {
+                system_id: self.context.system_id.clone(),
+                version: self.attempt.version.clone(),
+                root: prepared,
+            });
+        }
         let mut inherited_context = self.context.clone();
         inherited_context.inherited_mounts = inherited.mounts;
         let session = PackageSession {
@@ -236,22 +252,10 @@ impl<B: BuildBackend> Stages<'_, B> {
         if super::fs::exists(&cache)? {
             return Err(super::Error::Invalid("不覆盖已有继承缓存".into()));
         }
-        super::inheritance::snapshot_tree(
-            self.backend,
-            &root,
-            &cache,
-            &inherited.directories,
-            true,
-        )?;
+        super::inheritance::snapshot_tree(self.backend, &root, &cache, true)?;
         super::fs::write(&directory.join("inherit.toml"), &record)?;
         let published = self.attempt.directory.join("root");
-        super::inheritance::snapshot_tree(
-            self.backend,
-            &cache,
-            &published,
-            &inherited.directories,
-            true,
-        )?;
+        super::inheritance::snapshot_tree(self.backend, &cache, &published, true)?;
         Ok(BuildOutcome {
             system_id: self.context.system_id.clone(),
             version: self.attempt.version.clone(),
@@ -297,7 +301,8 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   最后成功提交的步骤。
     fn publish(&self, completed: &Cache) -> Result<BuildOutcome> {
         let root = self.attempt.directory.join("root");
-        self.backend.snapshot(&completed.root, &root, true)?;
+        self.backend
+            .snapshot_recursive(&completed.root, &root, true)?;
         self.backend.check_subvolume(&root, true)?;
         Ok(BuildOutcome {
             system_id: self.context.system_id.clone(),

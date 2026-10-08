@@ -64,7 +64,11 @@ impl Mount {
         let relative = path
             .strip_prefix(&self.target)
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        Ok(self.fsroot.join(relative))
+        Ok(if relative.as_os_str().is_empty() {
+            self.fsroot.clone()
+        } else {
+            self.fsroot.join(relative)
+        })
     }
 }
 
@@ -111,4 +115,47 @@ fn check_mount_tree(source: &Path, include_self: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Preserve mount overlays as separately pinned offline sources.
+pub(super) fn descendant_mounts(source: &Path) -> Result<Vec<PathBuf>> {
+    let text = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|e| fs::io(Path::new("/proc/self/mountinfo"), e))?;
+    let mut result = Vec::new();
+    for line in text.lines() {
+        let target = line
+            .split_whitespace()
+            .nth(4)
+            .ok_or_else(|| Error::Invalid("mountinfo 响应无效".into()))?
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        let target = PathBuf::from(target);
+        if target != source && target.starts_with(source) {
+            result.push(target);
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bound_file_locations_do_not_gain_a_trailing_directory_separator() {
+        let mount = Mount {
+            target: "/etc/settings".into(),
+            fstype: "btrfs".into(),
+            uuid: Some("uuid".into()),
+            fsroot: "/persistent/settings".into(),
+        };
+        assert_eq!(
+            mount
+                .subvolume_path(Path::new("/etc/settings"))
+                .unwrap()
+                .as_os_str(),
+            std::ffi::OsStr::new("/persistent/settings")
+        );
+    }
 }

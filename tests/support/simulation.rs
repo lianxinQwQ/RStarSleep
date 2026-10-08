@@ -171,6 +171,49 @@ fn copy_simulated_snapshot(source: &Path, destination: &Path) {
         let target = destination.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
             copy_simulated_snapshot(&entry.path(), &target);
+        } else if entry.file_type().unwrap().is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), target).unwrap();
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn copy_inherited_stubs(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() == MARKER {
+            continue;
+        }
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            if entry.path().join(MARKER).exists() {
+                fs::create_dir_all(target).unwrap();
+            } else {
+                copy_inherited_stubs(&entry.path(), &target);
+            }
+        } else if entry.file_type().unwrap().is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), target).unwrap();
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn copy_snapshot_stubs(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            if entry.path().join(MARKER).exists() {
+                fs::create_dir(&target).unwrap();
+            } else {
+                copy_snapshot_stubs(&entry.path(), &target);
+            }
+        } else if entry.file_type().unwrap().is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), target).unwrap();
         } else {
             fs::copy(entry.path(), target).unwrap();
         }
@@ -203,17 +246,40 @@ impl BuildBackend for SimulatedBackend {
             return Err(Error::Invalid("injected inheritance copy failure".into()));
         }
         if source.is_dir() {
-            copy_simulated_snapshot(source, target);
+            if _force_cow {
+                copy_inherited_stubs(source, target);
+            } else {
+                copy_simulated_snapshot(source, target);
+            }
         } else {
             fs::copy(source, target).unwrap();
         }
         Ok(())
     }
-    fn check_cow_source(&self, source: &Path, _parent: &Path) -> Result<()> {
-        if source.is_dir() {
-            self.check_no_nested_subvolumes(source)?;
-        }
+    fn check_cow_source(&self, _source: &Path, _parent: &Path) -> Result<()> {
         Ok(())
+    }
+    fn source_subvolume_id(&self, _path: &Path) -> Result<String> {
+        Ok("simulated-id".into())
+    }
+    fn prepare_inheritance_initramfs(&self, _root: &Path) -> Result<()> {
+        Ok(())
+    }
+    fn nested_subvolumes(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        let mut pending = vec![path.to_path_buf()];
+        let mut found = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    if entry.path().join(MARKER).exists() {
+                        found.push(entry.path().strip_prefix(path).unwrap().to_path_buf());
+                    }
+                    pending.push(entry.path());
+                }
+            }
+        }
+        Ok(found)
     }
 
     fn is_running_root(&self, path: &Path) -> Result<bool> {
@@ -304,7 +370,7 @@ impl BuildBackend for SimulatedBackend {
             self.fail_restore_to.borrow_mut().take();
             return Err(Error::Invalid("injected CoW restore failure".into()));
         }
-        copy_simulated_snapshot(source, destination);
+        copy_snapshot_stubs(source, destination);
         fs::write(
             destination.join(MARKER),
             if readonly { "readonly" } else { "writable" },

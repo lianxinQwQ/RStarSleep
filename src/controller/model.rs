@@ -98,8 +98,8 @@ pub struct PersistentMount {
     pub target: PathBuf,
 }
 
-/// A completely built version, ready for later boot or runtime integration.
-/// 完整构建的版本，供后续启动或运行集成使用。
+/// A completed version or a prepared version awaiting first-boot inheritance.
+/// 已完成版本或等待首次启动继承的准备版本。
 #[derive(Debug, Clone)]
 pub struct BuildOutcome {
     /// System owning the version.
@@ -108,8 +108,8 @@ pub struct BuildOutcome {
     /// Monotonically allocated version identifier.
     /// 单调递增分配的版本标识。
     pub version: String,
-    /// Read-only completed system-root subvolume.
-    /// 已完成的只读系统根子卷。
+    /// Read-only root or independent prepared-root for a pending version.
+    /// 只读系统根，或待继承版本独立保存的 prepared-root。
     pub root: PathBuf,
 }
 
@@ -195,6 +195,68 @@ pub trait BuildBackend {
         )))
     }
 
+    /// Enumerate every descendant subvolume, relative to this tree's root.
+    fn nested_subvolumes(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.check_no_nested_subvolumes(path)?;
+        Ok(Vec::new())
+    }
+
+    /// Identify a subvolume without treating ordinary directories as snapshots.
+    fn is_subvolume(&self, path: &Path) -> Result<bool> {
+        Ok(self.check_subvolume(path, false).is_ok() || self.check_subvolume(path, true).is_ok())
+    }
+
+    /// Snapshot the complete hierarchy; Btrfs parent snapshots omit child contents.
+    fn snapshot_recursive(&self, source: &Path, destination: &Path, readonly: bool) -> Result<()> {
+        let mut children = self.nested_subvolumes(source)?;
+        for child in &children {
+            if child.as_os_str().is_empty()
+                || child
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(Error::Invalid("子卷相对路径无效".into()));
+            }
+        }
+        children.sort_by_key(|p| (p.components().count(), p.clone()));
+        children.dedup();
+        if children.is_empty() {
+            return self.snapshot(source, destination, readonly);
+        }
+        self.snapshot(source, destination, false)?;
+        for relative in &children {
+            let target = destination.join(relative);
+            if super::fs::exists(&target)? {
+                std::fs::remove_dir(&target).map_err(|e| super::fs::io(&target, e))?;
+            }
+            self.snapshot(&source.join(relative), &target, false)?;
+        }
+        if readonly {
+            for relative in children.iter().rev() {
+                self.set_readonly(&destination.join(relative), true)?;
+            }
+            self.set_readonly(destination, true)?;
+        }
+        Ok(())
+    }
+
+    /// Flush all subvolume data before publishing a completion record.
+    fn sync_filesystem(&self, path: &Path) -> Result<()> {
+        super::fs::sync(path)
+    }
+
+    /// Pin the containing source subvolume across an offline inheritance operation.
+    fn source_subvolume_id(&self, path: &Path) -> Result<String> {
+        let _ = path;
+        Err(Error::Invalid("此后端不能识别来源子卷".into()))
+    }
+
+    /// Prepare a distribution's initramfs before exposing a pending boot entry.
+    fn prepare_inheritance_initramfs(&self, root: &Path) -> Result<()> {
+        let _ = root;
+        Err(Error::Invalid("此后端不支持 initramfs 继承".into()))
+    }
+
     /// Delete an owned work root including subvolumes created during plugin execution.
     /// 删除所属工作根及插件运行时创建的子卷。
     fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
@@ -240,8 +302,8 @@ pub trait BuildBackend {
         Err(Error::Invalid("此后端不支持继承复制".into()))
     }
 
-    /// Reject cross-filesystem CoW sources and sources containing subvolumes or mounts.
-    /// 拒绝跨文件系统 CoW 来源及内部子卷或挂载点。
+    /// Reject cross-filesystem CoW sources and unresolved mounted descendants.
+    /// 拒绝跨文件系统 CoW 来源及未解析的内部挂载，允许嵌套子卷。
     /// # Arguments
     /// - `self`: Storage backend. 存储后端。
     /// - `source`: Current-system path. 当前系统路径。
@@ -258,9 +320,7 @@ pub trait BuildBackend {
             )));
         }
         super::mounts::check_descendant_mounts(source)?;
-        if source_info.is_dir() {
-            self.check_no_nested_subvolumes(source)?;
-        }
+        let _ = source_info;
         Ok(())
     }
 

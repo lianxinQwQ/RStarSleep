@@ -283,6 +283,8 @@ fn bounded_clean_preserves_running_roots_data_and_monotonic_versions() {
     assert_eq!(next.version, "v00000004");
 }
 
+#[path = "build_workflow/deferred.rs"]
+mod deferred;
 #[path = "build_workflow/inheritance.rs"]
 mod inheritance;
 

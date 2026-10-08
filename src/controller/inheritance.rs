@@ -7,10 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Relative directory subvolumes requiring recursive publication.
-/// 需要递归发布的相对目录子卷。
+/// Persistent bindings used during the final build-time package query.
+/// 构建阶段最终包查询所用的持久绑定。
 pub(super) struct Inherited {
-    pub directories: Vec<PathBuf>,
     pub mounts: Vec<super::PersistentMount>,
 }
 
@@ -31,34 +30,21 @@ pub(super) fn apply(
     root: &Path,
     scratch: &Path,
     system: &Path,
-    owned: &mut Vec<PathBuf>,
+    _owned: &mut Vec<PathBuf>,
 ) -> Result<Inherited> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
-    let mut directories = Vec::new();
-    for source in &config.copy_on_write {
-        check_source(source, system)?;
-        backend.check_cow_source(source, scratch)?;
-        let relative = source
-            .strip_prefix("/")
-            .map_err(|e| Error::Invalid(e.to_string()))?;
-        let target = root.join(relative);
-        let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
-        replace_target(backend, &target)?;
-        if info.is_dir() {
-            let prepared = scratch.join(format!("inherit-{}", inheritance_name(source)?));
-            owned.push(prepared.clone());
-            backend.create_subvolume(&prepared)?;
-            backend.copy_inherited(source, &prepared, true)?;
-            backend.snapshot(&prepared, &target, false)?;
-            directories.push(relative.to_path_buf());
-        } else if info.is_file() {
-            backend.copy_inherited(source, &target, true)?;
-        } else {
-            return Err(Error::Invalid(format!(
-                "继承来源必须为普通文件或目录: {}",
-                source.display()
-            )));
+    if config.timing == crate::config::InheritanceTiming::Build {
+        for source in &config.copy_on_write {
+            let resolved = fs::canonicalize(source).map_err(|e| disk::io(source, e))?;
+            check_source(&resolved, system)?;
+            backend.check_cow_source(&resolved, scratch)?;
+            inherit_path(
+                backend,
+                &resolved,
+                &disk::guest_path(root, source)?,
+                config.directory_subvolume,
+            )?;
         }
     }
     let mut arguments = Vec::new();
@@ -211,7 +197,6 @@ pub(super) fn apply(
         }
     }
     Ok(Inherited {
-        directories,
         mounts: inherited_mounts,
     })
 }
@@ -245,7 +230,7 @@ fn check_source(source: &Path, system: &Path) -> Result<()> {
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| Error::Invalid("系统缺少管理根".into()))?;
-    if source.starts_with(manager) || manager.starts_with(source) {
+    if manager.starts_with(source) {
         return Err(Error::Invalid("继承来源不能与管理器目录重叠".into()));
     }
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
@@ -261,14 +246,29 @@ fn check_source(source: &Path, system: &Path) -> Result<()> {
 /// - `backend`: Checked storage backend. 经检查的存储后端。
 /// - `target`: Owned destination inside the writable build root. 可写构建根内的所属目标。
 fn replace_target(backend: &impl BuildBackend, target: &Path) -> Result<()> {
-    disk::checked(target)?;
+    disk::checked(
+        target
+            .parent()
+            .ok_or_else(|| Error::Invalid("继承目标没有父目录".into()))?,
+    )?;
     super::mounts::check_unmounted_tree(target)?;
-    if disk::exists(target)? {
+    if fs::symlink_metadata(target).is_ok() {
         let info = fs::symlink_metadata(target).map_err(|e| disk::io(target, e))?;
         if info.is_dir() {
-            backend.check_no_nested_subvolumes(target)?;
-            fs::remove_dir_all(target).map_err(|e| disk::io(target, e))?;
-        } else if info.is_file() {
+            if backend.is_subvolume(target)? {
+                backend.delete_subvolume_recursive(target)?;
+            } else {
+                let mut children = backend.nested_subvolumes(target)?;
+                children.sort_by_key(|p| p.components().count());
+                for relative in &children {
+                    backend.set_readonly(&target.join(relative), false)?;
+                }
+                for relative in children.iter().rev() {
+                    backend.delete_subvolume(&target.join(relative))?;
+                }
+                fs::remove_dir_all(target).map_err(|e| disk::io(target, e))?;
+            }
+        } else if info.is_file() || info.file_type().is_symlink() {
             fs::remove_file(target).map_err(|e| disk::io(target, e))?;
         } else {
             return Err(Error::Invalid("继承目标必须为普通文件或目录".into()));
@@ -332,25 +332,54 @@ fn seed_persistent(
 /// - `backend`: Snapshot backend. 快照后端。
 /// - `source`: Complete source root. 完整来源根。
 /// - `target`: New cache or version root. 新缓存或版本根。
-/// - `directories`: Relative inherited directory subvolumes. 相对继承目录子卷。
 /// - `children_readonly`: Whether child snapshots are immutable cache data. 子快照是否为不可变缓存数据。
 pub(super) fn snapshot_tree(
     backend: &impl BuildBackend,
     source: &Path,
     target: &Path,
-    directories: &[PathBuf],
     children_readonly: bool,
 ) -> Result<()> {
-    backend.snapshot(source, target, false)?;
-    for relative in directories {
-        let child = target.join(relative);
-        // A Btrfs snapshot retains an empty stub; the simulation may retain copied contents.
-        // Btrfs 快照保留空占位目录；模拟后端可能保留已复制内容。
-        if disk::exists(&child)? {
-            fs::remove_dir_all(&child).map_err(|e| disk::io(&child, e))?;
-        }
-        backend.snapshot(&source.join(relative), &child, children_readonly)?;
+    backend.snapshot_recursive(source, target, children_readonly)
+}
+
+/// Reuse existing source subvolumes; ordinary directories are seeded only once.
+pub(super) fn inherit_path(
+    backend: &impl BuildBackend,
+    source: &Path,
+    target: &Path,
+    directory_subvolume: bool,
+) -> Result<()> {
+    let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
+    if !info.is_dir() && !info.is_file() {
+        return Err(Error::Invalid("继承来源必须为普通文件或目录".into()));
     }
-    backend.set_readonly(target, true)?;
-    backend.check_subvolume(target, true)
+    replace_target(backend, target)?;
+    if !info.is_dir() {
+        return backend.copy_inherited(source, target, true);
+    }
+    if directory_subvolume && backend.is_subvolume(source)? {
+        return backend.snapshot_recursive(source, target, false);
+    }
+    if directory_subvolume {
+        backend.create_subvolume(target)?;
+    } else {
+        disk::directory(target)?;
+    }
+    backend.copy_inherited(source, target, true)?;
+    {
+        // Preserve existing child subvolumes independently of the outer-directory option.
+        let mut children = backend.nested_subvolumes(source)?;
+        children.sort_by_key(|p| p.components().count());
+        let mut restored: Vec<PathBuf> = Vec::new();
+        for relative in children {
+            if restored.iter().any(|p| relative.starts_with(p)) {
+                continue;
+            }
+            let child = target.join(&relative);
+            replace_target(backend, &child)?;
+            backend.snapshot_recursive(&source.join(&relative), &child, false)?;
+            restored.push(relative);
+        }
+    }
+    Ok(())
 }

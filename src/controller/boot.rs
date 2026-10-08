@@ -57,6 +57,31 @@ fn publish_at(
                 .any(|c| c.is_whitespace() || c.is_control() || c == ',')
         })
         .ok_or_else(|| Error::Invalid("启动子卷路径不能包含空白、逗号或非 UTF-8".into()))?;
+    let pending = outcome
+        .root
+        .file_name()
+        .is_some_and(|s| s == "prepared-root");
+    let mut options = config.kernel_options.clone();
+    let root_subvolume = if pending {
+        let parent_path = Path::new(subvolume)
+            .parent()
+            .ok_or_else(|| Error::Invalid("待继承启动根缺少版本目录".into()))?;
+        let manifest = parent_path.join("inheritance-pending.toml");
+        if !fs::exists(
+            &outcome
+                .root
+                .parent()
+                .unwrap()
+                .join("inheritance-pending.toml"),
+        )? {
+            return Err(Error::Invalid("候选启动根缺少继承清单".into()));
+        }
+        options.push(format!("rstarsleep.storage=UUID={uuid}"));
+        options.push(format!("rstarsleep.pending={}", manifest.display()));
+        parent_path.join("root")
+    } else {
+        PathBuf::from(subvolume)
+    };
     let parent = config.boot_dir.join("RStarSleep");
     let directory = parent.join(&outcome.version);
     let entries = config.boot_dir.join("loader/entries");
@@ -117,8 +142,8 @@ fn publish_at(
         outcome.version,
         outcome.version,
         outcome.version,
-        subvolume.trim_start_matches('/'),
-        config.kernel_options.join(" ")
+        root_subvolume.to_str().unwrap().trim_start_matches('/'),
+        options.join(" ")
     );
     if let Err(error) = fs::write_text(&entry, &text) {
         disk::remove_dir_all(&directory).map_err(|e| fs::io(&directory, e))?;
@@ -179,6 +204,52 @@ pub(super) fn sync_executable(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_entry_loads_prepared_artifacts_but_mounts_only_the_final_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let prepared = directory.path().join("versions/v00000001/prepared-root");
+        disk::create_dir_all(prepared.join("boot")).unwrap();
+        disk::write(prepared.join("boot/vmlinuz-linux"), "kernel").unwrap();
+        disk::write(prepared.join("boot/initramfs-linux.img"), "early-runtime").unwrap();
+        disk::write(
+            prepared.parent().unwrap().join("inheritance-pending.toml"),
+            "pending",
+        )
+        .unwrap();
+        let config = RuntimeConfig {
+            schema_version: 1,
+            main_system: Some("desktop".into()),
+            boot_dir: directory.path().join("esp"),
+            kernel_options: vec![],
+        };
+        let outcome = BuildOutcome {
+            system_id: "desktop".into(),
+            version: "v00000001".into(),
+            root: prepared,
+        };
+        publish_at(
+            &outcome,
+            &config,
+            "abc-123",
+            Path::new("/@RStarSleep/systems/desktop/versions/v00000001/prepared-root"),
+        )
+        .unwrap();
+        let text = disk::read_to_string(
+            config
+                .boot_dir
+                .join("loader/entries/RStarSleep-desktop-v00000001.conf"),
+        )
+        .unwrap();
+        assert!(
+            text.contains(
+                "rootflags=subvol=@RStarSleep/systems/desktop/versions/v00000001/root ro"
+            )
+        );
+        assert!(text.contains("rstarsleep.storage=UUID=abc-123"));
+        assert!(text.contains("rstarsleep.pending=/@RStarSleep/systems/desktop/versions/v00000001/inheritance-pending.toml"));
+        assert!(!text.contains("prepared-root"));
+    }
 
     /// Publish exact kernel paths and reject collisions or missing artifacts without a boot entry.
     /// 发布准确内核路径，拒绝冲突或缺失产物且不生成启动项。

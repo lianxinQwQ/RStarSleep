@@ -1,0 +1,15 @@
+[Unit]
+Description=Finalize RStarSleep pending file inheritance
+DefaultDependencies=no
+After=systemd-udev-trigger.service initrd-root-device.target
+Before=sysroot.mount
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/rstarsleep/initramfs-finalize
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+StandardOutput=journal+console
+StandardError=journal+console

@@ -66,11 +66,15 @@ pub(super) struct Status<'a> {
 /// # Arguments
 /// - `layout`: Existing managed-system layout. 已有被管理系统布局。
 pub(super) fn lock_system(layout: &SystemLayout) -> Result<File> {
-    disk::checked(&layout.root)?;
-    if !layout.root.is_dir() {
+    lock_directory(&layout.root)
+}
+
+pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
+    disk::checked(root)?;
+    if !root.is_dir() {
         return Err(Error::Invalid("系统未初始化".into()));
     }
-    let lock_path = layout.root.join("build.lock");
+    let lock_path = root.join("build.lock");
     disk::checked(&lock_path)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -192,4 +196,20 @@ impl Drop for Attempt {
     fn drop(&mut self) {
         let _ = self._lock.unlock();
     }
+}
+
+/// Serialize source pin publication, first-boot finalization and version cleanup.
+pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<File> {
+    let path = manager.join("inheritance.lock");
+    disk::checked(&path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| disk::io(&path, e))?;
+    lock.try_lock()
+        .map_err(|e| Error::Invalid(format!("无法取得继承事务锁: {e}")))?;
+    Ok(lock)
 }

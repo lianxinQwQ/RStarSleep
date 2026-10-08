@@ -421,7 +421,16 @@ fn build_system(
     });
     match result {
         Ok(outcome) => {
-            status(attempt, id, "complete", None, Some(loaded))?;
+            let state = if outcome
+                .root
+                .file_name()
+                .is_some_and(|s| s == "prepared-root")
+            {
+                "pending-inheritance"
+            } else {
+                "complete"
+            };
+            status(attempt, id, state, None, Some(loaded))?;
             Ok(outcome)
         }
         Err(error) => {

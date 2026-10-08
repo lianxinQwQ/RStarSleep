@@ -26,13 +26,47 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
         return Ok(());
     }
     let (root, system) = parse(arguments)?;
-    for outcome in crate::controller::build(&ConfigStore::new(root)?, system.as_deref())? {
+    let store = ConfigStore::new(root)?;
+    warn_inheritance(&store, system.as_deref())?;
+    for outcome in crate::controller::build(&store, system.as_deref())? {
         println!(
             "{}: {} -> {}",
             outcome.system_id,
             outcome.version,
             outcome.root.display()
         );
+    }
+    Ok(())
+}
+
+/// Warn before the controller allocates versions or invalidates caches.
+fn warn_inheritance(store: &ConfigStore, system: Option<&str>) -> super::Result<()> {
+    use std::io::Write;
+    let systems = match system {
+        Some(id) => vec![id.to_owned()],
+        None => store.list_systems()?,
+    };
+    let mut warnings = Vec::new();
+    for id in systems {
+        let layout = store.system_layout(&id)?;
+        let parameters = crate::config::read_plugin_parameters_at(&layout.config)?;
+        let config = crate::config::InheritanceConfig::read(&parameters)?;
+        if !config.copy_on_write.is_empty() {
+            warnings.push(format!(
+                "警告：系统 {id} 将继承 {:?}；Timing={}，DirectorySubvolume={}。\n继承路径不设黑名单，内容及兼容性由用户负责；initramfs 模式的内核与启动镜像固定为构建时产物。\n",
+                config.copy_on_write, config.timing.as_str(),
+                if config.directory_subvolume { "yes" } else { "no" }));
+        }
+    }
+    if !warnings.is_empty() {
+        let mut stderr = std::io::stderr().lock();
+        for warning in warnings {
+            write!(stderr, "{warning}")?;
+        }
+        writeln!(stderr, "将在 3 秒后开始构建；按 Ctrl+C 取消。")?;
+        stderr.flush()?;
+        drop(stderr);
+        std::thread::sleep(std::time::Duration::from_secs(3));
     }
     Ok(())
 }

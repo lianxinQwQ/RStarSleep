@@ -129,10 +129,14 @@ script 每次从本次软件缓存创建可写 CoW 副本，执行成功后提�
 ## 从当前运行系统继承数据
 
 新系统生成空的 `systems/<系统>/config/build/inherit.conf` 模板，由控制器独立读取，
-只接受 `[Inheritance] CopyOnWrite` 和 `Mount`。文件与其他 INI 一同叠加，名称没有特殊含义：
+接受 `[Inheritance] CopyOnWrite`、`Mount`、`Timing` 和 `DirectorySubvolume`。文件与其他 INI 一同叠加，名称没有特殊含义：
 
 ```ini
 [Inheritance]
+# build (default) or initramfs (first selected boot).
+Timing=build
+# Create an independent subvolume for each inherited directory (default yes).
+DirectorySubvolume=yes
 # Copy from the currently running system into each new version.
 # 每次从当前运行系统复制到新版本。
 CopyOnWrite=/etc/hostname
@@ -148,11 +152,17 @@ Mount=/etc/myapp.conf
 每行登记一个规范绝对路径，支持重复赋值和多行值；路径不能为 `/`、重复、相互包含，
 或在 `/` 全部替换成 `-` 后发生名称冲突。
 
-`CopyOnWrite` 在软件和 script 之后从当前运行系统复制，要求来源与构建目录的 Btrfs UUID
-相同，并拒绝来源内部的挂载点和子卷。普通文件强制 reflink；目录先填充独立临时子卷，
-再建立独立快照，不写入 persistent。继承缓存为 `cache/<版本>/inherit` 和 `inherit.toml`，
-不复用旧缓存，下次构建与 script 缓存一同清理。缓存和最终版本的父根、继承子卷均只读，
-发布时显式快照子卷，保留继承内容；需要持续写入的数据使用 Mount。
+`CopyOnWrite` 默认在软件和 script 之后从当前运行系统继承，要求来源与构建目录的
+Btrfs UUID 相同。文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时
+直接递归快照。`DirectorySubvolume=no` 可让最外层目标保持普通目录，原有内部子卷仍保留。
+缓存保存、恢复和版本发布都会递归快照整个系统根中的子卷，包括脚本创建的子卷。
+缓存和最终版本根及其内部子卷均只读；需要持续写入的数据使用 Mount。
+
+设置 `Timing=initramfs` 后，构建保存独立 `prepared-root` 和来源清单；首次选择启动该版本时，
+在正式根挂载前完成继承并发布最终根，失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
+的传统和 systemd initramfs。继承路径不设黑名单，CLI 在任何构建修改前提示并等待 3 秒，
+可按 Ctrl+C 取消。内核和 initramfs 固定使用构建时产物，继承后的兼容性由用户负责。
+配置、依赖、提交恢复及验证范围见 [首次启动继承说明](docs/initramfs-inheritance.md)。
 
 `Mount` 使用本系统 `persistent/<编码路径>`，例如 `/home/alice` 对应 `-home-alice`。
 项目不存在时从当前系统完整复制，存在时直接复用，即使当前来源已不存在也不重新复制。

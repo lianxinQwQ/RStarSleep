@@ -219,6 +219,9 @@ pub(super) fn load(
     let root_exists = disk::exists(&root)?;
     if root_exists {
         backend.check_subvolume(&root, true)?;
+        for child in backend.nested_subvolumes(&root)? {
+            backend.check_subvolume(&root.join(child), true)?;
+        }
     }
     if !disk::exists(&sidecar)? {
         return Ok(None);
@@ -285,7 +288,7 @@ pub(super) fn commit(
         .keep();
     let pending = staging.join("root");
     let result = (|| {
-        backend.snapshot(source, &pending, true)?;
+        backend.snapshot_recursive(source, &pending, true)?;
         backend.check_subvolume(&pending, true)?;
         fs::rename(&pending, &root).map_err(|e| disk::io(&root, e))?;
         disk::sync(cache_directory)?;
@@ -294,7 +297,7 @@ pub(super) fn commit(
     })();
     let cleanup = (|| {
         if disk::exists(&pending)? {
-            backend.delete_subvolume(&pending)?;
+            backend.delete_subvolume_recursive(&pending)?;
         }
         fs::remove_dir(&staging).map_err(|e| disk::io(&staging, e))
     })();
