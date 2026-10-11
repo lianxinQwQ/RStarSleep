@@ -39,22 +39,22 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         self.backend
             .invoke(self.plugin, operation, args, self.root, self.context)
     }
-    /// Resolve every unique target individually, refusing incomplete query results.
-    /// 分别解析每个唯一目标，拒绝不完整查询结果。
+    /// Resolve every unique target to a nonempty package set and merge overlapping targets.
+    /// 将每个唯一目标解析为非空包集合，合并重叠目标。
     /// # Arguments
     ///
     /// - `self`: Shared execution environment.
     ///   共享执行环境。
-    /// - `targets`: Configured concrete target names.
-    ///   已配置具体目标名称。
+    /// - `targets`: Configured package or group targets understood by the plugin.
+    ///   插件支持的已配置包或组目标。
     pub(super) fn resolve(&self, targets: &[String]) -> Result<BTreeSet<String>> {
         let mut resolved = BTreeSet::new();
         for target in targets.iter().collect::<BTreeSet<_>>() {
             valid_name(target)?;
             let output = names(&self.call("resolve_packages", std::slice::from_ref(target))?)?;
-            if output.len() != 1 {
+            if output.is_empty() {
                 return Err(Error::Invalid(format!(
-                    "目标 {target} 必须解析为一个具体包"
+                    "目标 {target} 必须解析为至少一个具体包"
                 )));
             }
             resolved.extend(output);

@@ -27,6 +27,7 @@ pub(super) struct PackageBackend {
     pub(super) inventory_override: Option<String>,
     pub(super) orphan_override: Option<String>,
     pub(super) resolution_override: Option<String>,
+    pub(super) target_resolutions: BTreeMap<String, String>,
 }
 
 impl PackageBackend {
@@ -261,8 +262,10 @@ impl BuildBackend for PackageBackend {
             "resolve_packages" => {
                 assert_eq!(args.len(), 1);
                 return Ok(self
-                    .resolution_override
-                    .clone()
+                    .target_resolutions
+                    .get(&args[0])
+                    .cloned()
+                    .or_else(|| self.resolution_override.clone())
                     .unwrap_or_else(|| format!("{}\n", args[0])));
             }
             "query_packages" => {

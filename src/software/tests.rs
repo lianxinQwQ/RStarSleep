@@ -326,16 +326,16 @@ fn invalid_orphan_results_are_rejected_before_any_removal() {
     }
 }
 
-/// Reject incomplete or ambiguous target resolution before mutating the actual package database.
-/// 变更实际包数据库前拒绝不完整或不明确的目标解析结果。
+/// Reject empty, duplicate, or malformed target resolution before mutating the package database.
+/// 变更包数据库前拒绝空、重复或格式错误的目标解析结果。
 ///
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn target_resolution_requires_one_concrete_result_per_target() {
-    for output in ["", "editor\nlibrary\n", "editor\neditor\n", "bad name\n"] {
+fn target_resolution_requires_nonempty_valid_results_per_target() {
+    for output in ["", "editor\neditor\n", "bad name\n", "editor\n\n"] {
         let mut backend = PackageBackend::new(&[("base", true)], &[]);
         backend.resolution_override = Some(output.into());
         let fixture = Fixture::new(backend);
@@ -343,6 +343,118 @@ fn target_resolution_requires_one_concrete_result_per_target() {
         assert_eq!(fixture.backend.count("query_packages"), 0);
         assert_eq!(fixture.backend.count("install"), 0);
     }
+}
+
+/// Merge overlapping groups and explicit package targets, recording only concrete package roots.
+/// 合并重叠组和显式包目标，仅记录具体包根。
+#[test]
+fn installation_expands_groups_and_deduplicates_overlapping_targets() {
+    let mut backend = PackageBackend::new(&[("base", true)], &[("editor", &["library"])]);
+    backend
+        .target_resolutions
+        .insert("desktop".into(), "editor\nviewer\n".into());
+    backend
+        .target_resolutions
+        .insert("tools".into(), "editor\nterminal\n".into());
+    let fixture = Fixture::new(backend);
+    let state = fixture
+        .session()
+        .install(&[
+            "desktop".into(),
+            "desktop".into(),
+            "tools".into(),
+            "editor".into(),
+        ])
+        .unwrap();
+    assert_eq!(state.requested, ["editor", "terminal", "viewer"]);
+    for name in &state.requested {
+        assert_eq!(fixture.backend.packages.borrow().get(name), Some(&true));
+    }
+    assert_eq!(
+        fixture.backend.packages.borrow().get("library"),
+        Some(&false)
+    );
+    let calls = fixture.backend.calls.borrow();
+    assert!(calls.iter().any(
+        |(operation, args)| operation == "install" && args == &["editor", "terminal", "viewer"]
+    ));
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(operation, args)| operation == "resolve_packages" && args == &["desktop"])
+            .count(),
+        1
+    );
+}
+
+/// Follow changed group membership while retaining removed members still required as dependencies.
+/// 跟随组成员变化，同时保留仍被依赖的旧成员。
+#[test]
+fn maintenance_reconciles_changed_group_membership() {
+    let installed = [
+        ("base", true),
+        ("editor", true),
+        ("old-app", true),
+        ("library", true),
+    ];
+    let mut backend = PackageBackend::new(&installed, &[("editor", &["library"])]);
+    backend
+        .target_resolutions
+        .insert("desktop".into(), "editor\nviewer\n".into());
+    let fixture = Fixture::new(backend);
+    let state = fixture
+        .session()
+        .maintain(
+            &["desktop".into()],
+            &previous(&["editor", "old-app", "library"], &installed),
+        )
+        .unwrap();
+    assert_eq!(state.requested, ["editor", "viewer"]);
+    let packages = fixture.backend.packages.borrow();
+    assert_eq!(packages.get("viewer"), Some(&true));
+    assert_eq!(packages.get("library"), Some(&false));
+    assert!(!packages.contains_key("old-app"));
+    assert_eq!(fixture.backend.count("update"), 1);
+}
+
+/// Dropping a group must keep members still requested individually and remove unneeded members.
+/// 删除组目标后仍保留单独请求的成员，并清理不再需要的成员。
+#[test]
+fn maintenance_removes_group_but_keeps_individually_requested_member() {
+    let installed = [("base", true), ("editor", true), ("viewer", true)];
+    let fixture = Fixture::new(PackageBackend::new(&installed, &[]));
+    let state = fixture
+        .session()
+        .maintain(
+            &["editor".into()],
+            &previous(&["editor", "viewer"], &installed),
+        )
+        .unwrap();
+    assert_eq!(state.requested, ["editor"]);
+    assert_eq!(fixture.backend.packages.borrow().get("editor"), Some(&true));
+    assert!(!fixture.backend.packages.borrow().contains_key("viewer"));
+}
+
+/// One valid group must not hide an empty result for another configured target.
+/// 一个有效组不能掩盖其他配置目标的空解析结果。
+#[test]
+fn empty_target_after_valid_group_is_rejected_before_installation() {
+    let mut backend = PackageBackend::new(&[("base", true)], &[]);
+    backend
+        .target_resolutions
+        .insert("desktop".into(), "editor\nviewer\n".into());
+    backend
+        .target_resolutions
+        .insert("missing".into(), String::new());
+    let fixture = Fixture::new(backend);
+    let error = fixture
+        .session()
+        .install(&["desktop".into(), "missing".into()])
+        .unwrap_err();
+    assert!(error.to_string().contains("missing"));
+    assert_eq!(fixture.backend.count("query_packages"), 0);
+    assert_eq!(fixture.backend.count("install"), 0);
+    assert_eq!(fixture.backend.count("mark_reason"), 0);
 }
 
 /// Refuse invalid previous cache state before even performing its maintenance update.

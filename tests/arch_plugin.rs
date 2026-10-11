@@ -53,7 +53,37 @@ case "$1" in
         fi
         exit 1
         ;;
-    -Si) printf 'Name : %s\n' "${@: -1}" ;;
+    -Si)
+        target=${@: -1}
+        if [[ ${PACMAN_MOCK_CASE:-} == database-failure ]]; then
+            printf 'error: database is corrupted\n' >&2
+            exit 1
+        fi
+        if [[ ${PACMAN_MOCK_CASE:-} == empty-package && $target == gnome ]]; then exit 0; fi
+        case "$target" in
+            gnome|gnome-extra|unknown)
+                printf "error: package '%s' was not found\n" "$target" >&2
+                if [[ ${PACMAN_MOCK_CASE:-} == mixed-error ]]; then
+                    printf 'error: database is corrupted\n' >&2
+                fi
+                exit 1
+                ;;
+        esac
+        printf 'Name : %s\n' "$target"
+        ;;
+    -Sgq)
+        case ${PACMAN_MOCK_CASE:-} in
+            group-failure) printf 'error: group query failed\n' >&2; exit 2 ;;
+            group-empty) exit 0 ;;
+            group-invalid) printf 'gnome-shell\nbad name\n'; exit 0 ;;
+        esac
+        case "${@: -1}" in
+            gnome) printf 'gnome-shell\nnautilus\ngnome-shell\n' ;;
+            gnome-extra) printf 'gnome-shell\nevince\n' ;;
+            group-shadow) printf 'other-package\n' ;;
+            *) exit 1 ;;
+        esac
+        ;;
     -S)
         if [[ ${PACMAN_MOCK_CASE:-} == conflict && " $* " != *" --ask=4 "* ]]; then
             printf 'conflicting package removal refused\n' >&2
@@ -448,6 +478,77 @@ fn installs_requested_targets_and_resolves_concrete_names() {
     let resolved = fixture.run("resolve_packages", &["vim", "emacs"], "");
     assert!(resolved.status.success());
     assert_eq!(String::from_utf8(resolved.stdout).unwrap(), "vim\nemacs\n");
+}
+
+/// Expand groups and deduplicate overlapping targets without leaking missing-package diagnostics.
+/// 展开组并合并重叠目标，不泄露查询组时预期的缺包诊断。
+#[test]
+fn resolves_groups_and_overlapping_package_targets() {
+    let fixture = Fixture::new();
+    let output = fixture.run(
+        "resolve_packages",
+        &["gnome", "gnome-extra", "gnome-shell", "gnome"],
+        "",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"gnome-shell\nnautilus\nevince\n");
+    assert!(output.stderr.is_empty());
+    let trace = fixture.trace();
+    assert!(trace.contains("-Sgq -- gnome\n"));
+    assert!(trace.contains("-Sgq -- gnome-extra\n"));
+    assert!(!trace.contains("-Sgq -- gnome-shell\n"));
+    assert!(!trace.contains("-S --"));
+}
+
+/// An exact package wins when a group has the same name.
+/// 包和组同名时优先使用具体包。
+#[test]
+fn concrete_packages_take_precedence_over_groups() {
+    let fixture = Fixture::new();
+    let output = fixture.run("resolve_packages", &["group-shadow"], "");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"group-shadow\n");
+    assert_eq!(fixture.trace(), "-Si -- group-shadow\n");
+}
+
+/// Unknown, empty, malformed, or failed groups cannot return partial successful resolutions.
+/// 未知、空、格式错误或失败的组不能返回部分成功解析结果。
+#[test]
+fn rejects_unresolved_groups_without_partial_output() {
+    for (target, case) in [
+        ("unknown", ""),
+        ("gnome", "group-empty"),
+        ("gnome", "group-invalid"),
+        ("gnome", "group-failure"),
+        ("gnome", "empty-package"),
+    ] {
+        let fixture = Fixture::new();
+        let output = fixture.run("resolve_packages", &["vim", target], case);
+        assert!(
+            !output.status.success(),
+            "accepted {target:?} with {case:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+    }
+}
+
+/// A database error must not be hidden by a successful group query.
+/// 数据库错误不能被成功的软件组查询掩盖。
+#[test]
+fn package_query_errors_do_not_fall_back_to_group_lookup() {
+    for case in ["database-failure", "mixed-error"] {
+        let fixture = Fixture::new();
+        let output = fixture.run("resolve_packages", &["gnome"], case);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("database is corrupted"));
+        assert_eq!(fixture.trace(), "-Si -- gnome\n");
+    }
 }
 
 /// Verify a conflicting package switch is delegated to libalpm with dependency checks intact.

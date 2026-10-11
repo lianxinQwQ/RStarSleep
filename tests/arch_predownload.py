@@ -51,6 +51,29 @@ class Protocol(unittest.TestCase):
         self.assertEqual(p.official("pkg"), ["pkg.pkg.tar.zst", "dep.pkg.tar.zst"])
         self.assertTrue(p.pacman.call_args.kwargs["isolated"])
 
+    def test_official_group_downloads_all_members_without_aur_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            p = arch.Preparer.__new__(arch.Preparer)
+            p.cache = Path(temporary)
+            p.fetched, p.files = set(), set()
+            filenames = ["gnome-shell.pkg.tar.zst", "nautilus.pkg.tar.zst"]
+            for name in filenames:
+                (p.cache / name).write_text("package")
+            p.pacman = Mock(side_effect=[
+                subprocess.CompletedProcess([], 0, "\n".join(filenames) + "\n", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ])
+            p.aur = Mock(side_effect=AssertionError("official group treated as AUR"))
+            p.ensure("gnome")
+            self.assertEqual(p.files, set(filenames))
+            self.assertEqual(p.fetched, {"gnome"})
+            self.assertEqual(p.pacman.call_args_list[0].args[0],
+                             ["-Sp", "--noconfirm", "--print-format", "%f", "--", "gnome"])
+            self.assertEqual(p.pacman.call_args_list[1].args[0],
+                             ["-Sw", "--noconfirm", "--", "gnome"])
+            self.assertTrue(all(call.kwargs["isolated"] for call in p.pacman.call_args_list))
+            p.aur.assert_not_called()
+
     def test_database_errors_do_not_become_aur_requests(self):
         p = arch.Preparer.__new__(arch.Preparer)
         p.pacman = Mock(return_value=subprocess.CompletedProcess([], 1, "", "database is corrupted"))

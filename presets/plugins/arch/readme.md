@@ -109,6 +109,12 @@ FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 包列表和脚本变化保留基础缓存。已发布版本根不受缓存清理影响。
 
 基础目标为 `base`；内核及用途相关软件由 `[Content] Packages` 指定。
+`Packages` 可混合具体包名和软件组，例如 `linux gnome gnome-shell`。
+`resolve_packages` 优先通过 `pacman -Si` 查询具体包，仅在包不存在时使用 `pacman -Sgq`
+展开软件组；包与组同名时优先选择包。组成员去重后都作为显式目标安装，
+不同组及单包之间的重叠成员只保留一次；未知目标、空结果或查询错误均使构建失败。
+每次维护重新解析组成员，新增成员会安装，移出组或被删除组的旧成员按原有规则降为依赖，
+仅在不再被其他目标需要时作为孤儿清理。阶段记录保存展开后的具体包名。
 `base_install` 安装基础入口，整理 bootstrap 自带工具的安装原因并清理孤儿包。
 软件安装允许 libalpm 在依赖事务中替换冲突包（`--ask=4`），控制器提交前验证最终目标。
 查询输出：`query_packages` 每行 `包名<TAB>explicit|dependency`，
