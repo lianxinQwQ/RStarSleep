@@ -31,13 +31,14 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// 帮助输出与无效命令错误共用的用法说明。
 const USAGE: &str = "\
 用法：
-  RStarSleep init <Btrfs 顶层绝对路径>
-  RStarSleep init-system <工作目录绝对路径> <系统标识>
+  RStarSleep init [<Btrfs 顶层绝对路径>]
+  RStarSleep init-system [<工作目录绝对路径>] <系统标识>
   RStarSleep packages <工作目录绝对路径> <系统标识>
   RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]
   RStarSleep clean <系统标识> <版本> [--root <管理根绝对路径>]
 
-init 创建 @RStarSleep 子卷；工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
+init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @RStarSleep 子卷；
+工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
 
 /// Read process arguments and delegate command handling to the dispatcher.
 /// 读取进程参数，并将命令处理委托给分派函数。

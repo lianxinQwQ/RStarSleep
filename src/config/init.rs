@@ -76,6 +76,44 @@ pub fn initialize(btrfs_top_level: impl AsRef<Path>) -> Result<ConfigStore> {
     initialize_with(btrfs_top_level.as_ref(), &BtrfsCommand)
 }
 
+/// Initialize the workspace at the automatically located current-system Btrfs top level.
+/// 在自动识别的当前系统 Btrfs 顶层初始化管理器工作目录。
+/// # Errors
+/// Propagates discovery, mount, and workspace initialization failures.
+/// 传递识别、挂载及工作目录初始化错误。
+pub fn initialize_current_system() -> Result<ConfigStore> {
+    super::with_current_system_top_level(|top_level| initialize(top_level))
+}
+
+/// Locate an existing workspace on the current system's filesystem, including legacy names.
+/// 在当前系统所在文件系统中定位已有工作目录，兼容旧子卷名称。
+/// # Errors
+/// Returns an error for discovery failures or a workspace not yet initialized.
+/// 识别失败或工作目录尚未初始化时返回错误。
+pub fn current_system_workspace() -> Result<ConfigStore> {
+    super::with_current_system_top_level(|top_level| {
+        let store = ConfigStore::new(workspace_path(top_level))?;
+        if !store.global_config_path().is_file() {
+            return Err(Error::Invalid(
+                "请先运行 RStarSleep init 初始化工作目录".into(),
+            ));
+        }
+        Ok(store)
+    })
+}
+
+/// Prefer the current name while preserving an existing legacy workspace.
+/// 优先使用现名称，同时保留已有旧名称工作目录。
+fn workspace_path(parent: &Path) -> std::path::PathBuf {
+    let new_root = parent.join(SUBVOLUME_NAME);
+    let legacy_root = parent.join("@rstarsleep");
+    if !new_root.exists() && legacy_root.exists() {
+        legacy_root
+    } else {
+        new_root
+    }
+}
+
 /// Isolate Btrfs operations so tests can verify initialization without creating real subvolumes.
 /// 隔离 Btrfs 操作，使测试能够在不创建真实子卷的情况下验证初始化行为。
 trait Subvolumes {
@@ -208,13 +246,7 @@ fn initialize_with(parent: &Path, btrfs: &impl Subvolumes) -> Result<ConfigStore
         return Err(Error::Invalid("请提供已挂载的 Btrfs 顶层绝对目录".into()));
     }
     btrfs.check_top_level(parent)?;
-    let new_root = parent.join(SUBVOLUME_NAME);
-    let legacy_root = parent.join("@rstarsleep");
-    let root = if !new_root.exists() && legacy_root.exists() {
-        legacy_root
-    } else {
-        new_root
-    };
+    let root = workspace_path(parent);
     // Inspect the entry itself so a symlink cannot stand in for the dedicated subvolume.
     // 检查目录项本身，避免符号链接替代专用子卷。
     match fs::symlink_metadata(&root) {

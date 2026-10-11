@@ -6,18 +6,35 @@ RStarSleep 的系统构建配置采用 mkosi 风格的 INI 分节格式，仅保
 
 ## 初始化工作目录
 
-将 Btrfs 顶层（`subvolid=5`）挂载到一个现有绝对目录后，使用 `init` 子命令：
+使用 `init` 自动识别当前系统 `/` 所在的 Btrfs 文件系统及其顶层（`subvolid=5`）：
 
 ```sh
 cargo run -- init --help
+cargo run -- init
+# 也可显式指定已经挂载的顶层目录：
 cargo run -- init /mnt/btrfs
 ```
 
-该命令调用配置模块的初始化代码，在 `/mnt/btrfs/@RStarSleep` 创建或复用专用子卷，
+省略路径时，即使系统运行于快照中，也会通过文件系统 UUID 定位实际 Btrfs 顶层，
+优先复用已有可写顶层挂载；若没有，则在 `/run/rstarsleep/init-top-*` 自动挂载顶层。
+自动创建的挂载成功后保留，工作目录可通过输出路径访问；重启后需重新挂载，命令不修改 `/etc/fstab`。
+自动识别需要 `findmnt`，自动挂载还需要 `mount` 及挂载权限。
+
+该命令调用配置模块的初始化代码，在顶层下创建或复用专用子卷 `@RStarSleep`（显式示例中为 `/mnt/btrfs/@RStarSleep`），
 生成管理器目录和默认全局配置，并将内嵌 Arch 插件写入 `plugins/arch.tar.gz`，
 保留已有配置和插件文件。已有小写 `@rstarsleep` 子卷会继续复用。
 执行时需要 `btrfs` 工具及相应的
 子卷创建和文件写入权限。成功后输出工作目录路径；失败时输出原因并返回非零退出码。
+
+`init-system` 也可省略工作目录，复用同一套顶层识别逻辑，定位当前系统所在文件系统上的
+`@RStarSleep`（或已有 `@rstarsleep`）工作目录。需要先执行 `init`：
+
+```sh
+RStarSleep init
+RStarSleep init-system desktop
+# 显式工作目录仍然可用：
+RStarSleep init-system /rstarsleep desktop
+```
 
 `src/main.rs` 只负责进程入口、错误输出和退出码。命令分派位于 `src/cli/mod.rs`，
 各子命令分别实现在 `src/cli/init.rs`、`src/cli/init_system.rs` 和

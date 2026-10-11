@@ -2,7 +2,11 @@
 
 RStarSleep 的工作目录属于整个管理体系，不依附任何被管理系统的 `/etc`。
 在 Btrfs 顶层（subvolid=5）创建专用子卷 `@RStarSleep`，建议运行时挂载到
-`/rstarsleep`。存储路径与挂载路径指向同一份数据；初始化接口不执行挂载。
+`/rstarsleep`。存储路径与挂载路径指向同一份数据；显式路径初始化接口不执行挂载。
+无参数 `init` 自动识别当前系统所在的 Btrfs 文件系统，即使 `/` 位于快照内，
+也会定位文件系统顶层，而不是在快照内创建管理器子卷。
+优先复用同一文件系统已有可写顶层挂载；否则在 `/run/rstarsleep/init-top-*` 挂载 `subvolid=5`。
+自动创建的挂载成功后保留供后续访问，失败时尝试解除；重启后需重新挂载。
 新初始化使用 `@RStarSleep`，已有小写 `@rstarsleep` 子卷会继续复用。
 
 ## 目录树
@@ -271,11 +275,19 @@ cargo run -- init-system /mnt/btrfs/@RStarSleep desktop
 cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 ```
 
-初始化和配置读取不自动编辑 `/etc/fstab`、执行挂载或导出应用入口。
+初始化和配置读取不自动编辑 `/etc/fstab` 或导出应用入口。
+显式路径初始化不执行挂载；省略路径时，自动识别需要 `findmnt`，自动挂载还需要 `mount` 及挂载权限。
 构建中的 Mount 继承通过发行版插件生成挂载配置。
 
-`init` 子命令直接调用 `config::initialize()`。目录参数缺失或过多时显示具体错误和
-子命令用法；初始化失败时输出错误原因并返回非零退出码。
+`init` 子命令显式传入路径时调用 `config::initialize()`，省略路径时调用
+`config::initialize_current_system()` 自动定位当前系统所在文件系统的顶层。
+目录参数过多时显示具体错误和子命令用法；初始化失败时输出错误原因并返回非零退出码。
+
+`init-system [<工作目录绝对路径>] <系统标识>` 同样支持省略工作目录，使用
+`config::current_system_workspace()` 查找当前系统所在文件系统上的已初始化工作目录，
+兼容已有小写子卷；工作目录不存在时提示先运行 `init`。
+两个命令通过独立的 `config::with_current_system_top_level()` 接口复用识别及挂载逻辑，
+实现位于 `src/config/filesystem.rs`。
 
 命令分派位于 `src/cli/mod.rs`，初始化命令的参数处理和执行位于 `src/cli/init.rs`。
 其他子命令也使用独立模块；`src/main.rs` 仅保留进程入口、错误输出和退出码处理。
