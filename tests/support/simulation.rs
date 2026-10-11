@@ -24,6 +24,7 @@ pub struct Event {
     pub system_id: String,
     pub parameters: BTreeMap<String, String>,
     pub distribution_options: BTreeMap<String, String>,
+    pub environment: rstarsleep::config::Environment,
     pub persistent_mounts: Vec<rstarsleep::controller::PersistentMount>,
 }
 
@@ -55,6 +56,7 @@ pub struct SimulatedBackend {
     pub fail_restore_to: RefCell<Option<&'static str>>,
     pub remove_kept_on_update: Cell<bool>,
     pub mutate_editable: RefCell<Option<PathBuf>>,
+    pub mutate_environment: RefCell<Option<(PathBuf, String)>>,
     generation: Cell<u32>,
 }
 
@@ -443,6 +445,7 @@ impl BuildBackend for SimulatedBackend {
             packages: frozen_packages,
             system_id: context.system_id.clone(),
             distribution_options: context.distribution_options.clone(),
+            environment: context.environment.clone(),
             parameters: context.parameters.clone(),
             persistent_mounts: context.persistent_mounts.clone(),
         });
@@ -460,6 +463,9 @@ impl BuildBackend for SimulatedBackend {
         let mut output = String::new();
         match operation {
             "bootstrap" => {
+                if let Some((path, text)) = self.mutate_environment.borrow_mut().take() {
+                    fs::write(path, text).unwrap();
+                }
                 let generation = self.generation.get() + 1;
                 self.generation.set(generation);
                 fs::write(root.join(".base-generation"), generation.to_string()).unwrap();
@@ -563,6 +569,7 @@ impl BuildBackend for SimulatedBackend {
             packages: read_build_config_at(&context.config)?.packages,
             system_id: context.system_id.clone(),
             distribution_options: context.distribution_options.clone(),
+            environment: context.environment.clone(),
             parameters: context.parameters.clone(),
             persistent_mounts: context.persistent_mounts.clone(),
         });

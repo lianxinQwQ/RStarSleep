@@ -31,6 +31,7 @@ Btrfs 顶层/
             ├── config/                 # 当前可编辑配置
             │   ├── build/
             │   │   ├── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
+            │   │   ├── environment.conf # [Environment] 执行环境，默认只有注释示例
             │   │   └── inherit.conf    # 空继承模板，与其他 INI 一同叠加
             │   ├── script/            # 软件步骤后的构建脚本输入
             │   └── subsystem/
@@ -166,11 +167,20 @@ Architecture 若声明为必选则必须显式提供；若声明为可选并省�
 `enum-single`、`enum-list`、`number`；枚举还需 `values`。单项和数字要求恰好一个赋值，
 数字必须有限，未约束字段为自由列表。缓存摘要包含原始列表成员及边界。
 
-已有系统或历史版本没有实际 INI 赋值时，继续读取旧 `build/config.toml`，空继承模板不阻止回退。
+已有系统或历史版本没有实际 INI 赋值时，继续读取旧 `build/config.toml`，空继承及环境模板不阻止回退。
 有实际赋值时 INI 与 TOML 不混合，INI 无效不会回退；初始化不以空模板覆盖旧 TOML 的设置。
 迁移时把旧 `schema_version`、`system_type`（或 `distribution`）、`architecture` 和 `packages`
 分别改写为 `[Config] SchemaVersion`、`[Distribution] Distribution`、`Architecture`
 及 `[Content] Packages`，另存为 `build/config.conf`。其他自定义设置也应迁入相应分节。
+
+初始化系统生成 `build/environment.conf`，其 `[Environment]` 组与其他 INI 文件一起合并，
+可移入任意构建配置文件。`http_proxy=http://127.0.0.1:10808` 直接赋值，
+`https_proxy=%https_proxy` 继承 RStarSleep 进程的对应变量；来源未设置时不显式传入。
+`NAME=` 设置空值，`NAME=%%value` 设置字面值 `%value`。变量名保留大小写，同名变量
+只允许赋值一次；值沿用 `#` 注释和缩进续行规则，不经过 shell 展开。
+该组由控制器解析，现有插件不必新增字段声明。宿主 bootstrap、容器任务、预下载和
+构建脚本共用准备阶段解析的环境。配置文件随版本留档，运行中编辑不影响当前构建。
+旧 TOML 支持对应 `[Environment]` 字符串表。默认环境模板不启用任何代理，初始化保留已有文件。
 
 系统运行配置 `systems/<系统标识>/config/subsystem/config.toml` 目前仅包含
 `schema_version = 1` 和说明注释。其字段随子系统运行功能确定。

@@ -108,6 +108,7 @@ pub(super) fn run(
         config: plugin.root().join("predownload"),
         persistent_mounts: Vec::new(),
         parameter_lists: target.parameter_lists.clone(),
+        environment: target.environment.clone(),
         inherited_mounts: Vec::new(),
     };
     let result = (|| {

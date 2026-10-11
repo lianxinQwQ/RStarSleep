@@ -30,8 +30,24 @@ fn system_initialization_preserves_files_and_leaves_roles_unassigned() {
     let layout = store.initialize_system("desktop").unwrap();
     let global_before = fs::read_to_string(store.global_config_path()).unwrap();
     let custom = "[Content]\nPackages=vim\n";
+    let environment = layout.config.join("build/environment.conf");
+    assert!(
+        fs::read_to_string(&environment)
+            .unwrap()
+            .contains("[Environment]")
+    );
+    assert!(
+        crate::config::read_environment_at(&layout.config)
+            .unwrap()
+            .is_empty()
+    );
+    fs::write(&environment, "[Environment]\nhttp_proxy=%http_proxy\n").unwrap();
     fs::write(layout.config.join("build/config.conf"), custom).unwrap();
     store.initialize_system("desktop").unwrap();
+    assert_eq!(
+        fs::read_to_string(environment).unwrap(),
+        "[Environment]\nhttp_proxy=%http_proxy\n"
+    );
     assert_eq!(
         fs::read_to_string(store.global_config_path()).unwrap(),
         global_before

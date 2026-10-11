@@ -3,6 +3,136 @@
 
 use super::*;
 
+/// Freeze environment assignments from merged INI files before execution.
+/// 在执行前冻结合并 INI 文件中的环境赋值。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn environment_group_uses_merged_ini_and_frozen_execution_inputs() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let path = layout.config.join("build/environment.conf");
+    let original = "# Same INI parser, including comments and continuation lines.\n[Environment]\nhttp_proxy=http://127.0.0.1:10808 # comment\nHTTP_PROXY=%PATH\nRAW=a=b ; $(touch unexpected)\n    continued\nEMPTY=\nPERCENT=%%literal\n";
+    fs::write(&path, original).unwrap();
+    fs::write(
+        layout.config.join("build/extra.conf"),
+        "[Environment]\nno_proxy=localhost,127.0.0.1\n",
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    backend.mutate_environment.borrow_mut().replace((
+        path.clone(),
+        "[Environment]\nhttp_proxy=http://changed:8080\n".into(),
+    ));
+    let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        fs::read_to_string(
+            layout
+                .versions
+                .join(&first.version)
+                .join("config/build/environment.conf")
+        )
+        .unwrap(),
+        original
+    );
+    let events = backend.events.borrow();
+    assert!(!events.is_empty());
+    for event in events.iter() {
+        assert_eq!(
+            event.environment["http_proxy"],
+            Some("http://127.0.0.1:10808".into())
+        );
+        assert_eq!(event.environment["HTTP_PROXY"], std::env::var_os("PATH"));
+        assert_eq!(
+            event.environment["no_proxy"],
+            Some("localhost,127.0.0.1".into())
+        );
+        assert_eq!(
+            event.environment["RAW"],
+            Some("a=b ; $(touch unexpected)\ncontinued".into())
+        );
+        assert_eq!(event.environment["EMPTY"], Some("".into()));
+        assert_eq!(event.environment["PERCENT"], Some("%literal".into()));
+        assert!(
+            !event
+                .parameters
+                .keys()
+                .any(|name| name.starts_with("RSTAR_ENVIRONMENT_"))
+        );
+    }
+    drop(events);
+    backend.events.borrow_mut().clear();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert!(
+        backend
+            .events
+            .borrow()
+            .iter()
+            .all(|event| event.environment["http_proxy"] == Some("http://changed:8080".into()))
+    );
+}
+
+/// Reject invalid environment settings before any plugin operation.
+/// 在任何插件操作前拒绝无效环境设置。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn invalid_environment_group_blocks_plugin_execution() {
+    for settings in [
+        "bad-name=value",
+        "A=%bad-name",
+        "A=x\nA=y",
+        "RSTAR_ROOT=/",
+        "RSTAT_ROOT=/",
+        "A=bad\0value",
+    ] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/environment.conf"),
+            format!("[Environment]\n{settings}\n"),
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        assert!(
+            build_with_backend(&fixture.store, Some("desktop"), &backend).is_err(),
+            "{settings}"
+        );
+        assert!(backend.events.borrow().is_empty(), "{settings}");
+    }
+}
+
+/// Preserve legacy fallback while accepting the same environment group in TOML.
+/// 保留旧格式回退，同时接受 TOML 中的同一环境组。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn legacy_toml_accepts_environment_group_and_default_ini_template() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::remove_file(layout.config.join("build/config.conf")).unwrap();
+    fs::write(layout.config.join("build/config.toml"), "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=[]\n[Environment]\nhttp_proxy='http://localhost:10808'\nHTTP_PROXY='%PATH'\n").unwrap();
+    fixture.store.initialize_system("desktop").unwrap();
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    assert!(
+        backend
+            .events
+            .borrow()
+            .iter()
+            .all(
+                |event| event.environment["http_proxy"] == Some("http://localhost:10808".into())
+                    && event.environment["HTTP_PROXY"] == std::env::var_os("PATH")
+            )
+    );
+}
+
 /// Freeze multiline INI verbatim and reuse caches on package changes while retaining unknown options.
 /// 原样留档多行 INI，包变化复用缓存，未知选项仍参与兼容性判断。
 /// # Arguments

@@ -1,6 +1,47 @@
 //! Verify optional batch preparation and disposable environment/persistent roots.
 use super::*;
 
+/// Prevent one system's proxy from being used for a different download batch.
+/// 避免一个系统的代理被用于另一下载批次。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn different_environments_keep_download_batches_separate() {
+    let fixture = Fixture::with_predownload(true);
+    for (id, proxy) in [
+        ("desktop", "http://one:10808"),
+        ("server", "http://two:10808"),
+    ] {
+        fixture.system(id, &[id]);
+        let layout = fixture.store.system_layout(id).unwrap();
+        fs::write(
+            layout.config.join("build/environment.conf"),
+            format!("[Environment]\nhttp_proxy={proxy}\n"),
+        )
+        .unwrap();
+    }
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, None, &backend).unwrap();
+    assert_eq!(backend.count("predownload"), 2);
+    let events = backend.events.borrow();
+    for (id, proxy) in [
+        ("desktop", "http://one:10808"),
+        ("server", "http://two:10808"),
+    ] {
+        let download = events
+            .iter()
+            .find(|event| event.operation == "predownload" && event.arguments == [id])
+            .unwrap();
+        assert_eq!(download.environment["http_proxy"], Some(proxy.into()));
+        assert!(
+            events
+                .iter()
+                .filter(|event| event.system_id == id)
+                .all(|event| event.environment["http_proxy"] == Some(proxy.into()))
+        );
+    }
+}
+
 /// Keep groups with different distribution settings separate and pass their exact frozen options.
 /// 分离发行版设置不同的组，并传入各组准确的冻结选项。
 /// # Arguments

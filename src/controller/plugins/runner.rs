@@ -350,6 +350,11 @@ impl LoadedPlugin {
         }
         command.env_remove("RSTAR_ARCH");
         command.envs(configuration);
+        if operation == "bootstrap"
+            && let Some(context) = context
+        {
+            crate::controller::container::host_environment(&mut command, &context.environment);
+        }
         command.args(arguments);
         let output = if context.is_some() {
             crate::controller::output::stream(&mut command, super::is_query(operation))

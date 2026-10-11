@@ -6,6 +6,7 @@
 #![doc = include_str!("layout.md")]
 
 mod build;
+mod environment;
 mod filesystem;
 mod inheritance;
 mod ini;
@@ -18,8 +19,10 @@ mod store;
 
 pub(crate) use build::normalized_build_config;
 pub use build::{
-    BuildConfig, read_build_config_at, read_distribution_options_at, read_plugin_parameters_at,
+    BuildConfig, read_build_config_at, read_distribution_options_at, read_environment_at,
+    read_plugin_parameters_at,
 };
+pub use environment::Environment;
 pub use filesystem::with_current_system_top_level;
 pub use inheritance::{InheritanceConfig, InheritanceTiming, inheritance_name};
 pub use init::{current_system_workspace, initialize, initialize_current_system};

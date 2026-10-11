@@ -74,7 +74,12 @@ pub fn build_with_backend(
         }
     }
     let mut groups: std::collections::BTreeMap<
-        (String, String, std::collections::BTreeMap<String, String>),
+        (
+            String,
+            String,
+            std::collections::BTreeMap<String, String>,
+            crate::config::Environment,
+        ),
         Vec<usize>,
     > = std::collections::BTreeMap::new();
     for (index, value) in prepared.iter().enumerate() {
@@ -84,13 +89,14 @@ pub fn build_with_backend(
                     value.plugin.archive_sha256.clone(),
                     value.context.architecture.clone(),
                     value.context.distribution_options.clone(),
+                    value.context.environment.clone(),
                 ))
                 .or_default()
                 .push(index);
         }
     }
     let mut failed = std::collections::BTreeSet::new();
-    for ((_, _, _), indices) in groups {
+    for ((_, _, _, _), indices) in groups {
         let mut requirements = std::collections::BTreeSet::new();
         for &index in &indices {
             requirements.extend(prepared[index].config.packages.iter().cloned());
@@ -254,6 +260,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
         let loaded = plugin.as_ref().unwrap();
         let distribution_options = read_distribution_options_at(&attempt.config)?;
         let input = read_plugin_parameters_at(&attempt.config)?;
+        let environment = crate::config::read_environment_at(&attempt.config)?;
         loaded.validate_parameter_lists(&input)?;
         crate::config::InheritanceConfig::read(&input)?;
         let parameters = input
@@ -273,6 +280,7 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
             config: attempt.config.clone(),
             persistent_mounts: Vec::new(),
             parameter_lists: input.lists,
+            environment,
             inherited_mounts: Vec::new(),
         };
         let mut upgrade_packages = Vec::new();

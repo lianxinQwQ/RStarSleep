@@ -50,6 +50,7 @@ fn command(
         serde_json::to_string(&context.parameter_lists)
             .map_err(|e| Error::Invalid(e.to_string()))?
     ));
+    container::environment(&mut command, &context.environment);
     command.arg("--").arg("bash").arg("--").arg(entrypoint);
     Ok(command)
 }
@@ -109,6 +110,13 @@ mod tests {
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            environment: std::collections::BTreeMap::from([
+                (
+                    "https_proxy".into(),
+                    Some("http://localhost:10808/a=b with spaces".into()),
+                ),
+                ("UNSET".into(), None),
+            ]),
             inherited_mounts: Vec::new(),
         };
         let root = Path::new("/work/script-root");
@@ -129,6 +137,20 @@ mod tests {
         assert!(args.contains(&"--chdir=/.rstarsleep-script-123".into()));
         assert!(args.contains(&"--bind-ro=/manager/config:/run/rstarsleep/config".into()));
         let delimiter = args.iter().position(|argument| argument == "--").unwrap();
+        assert!(
+            args[..delimiter]
+                .contains(&"--setenv=https_proxy=http://localhost:10808/a=b with spaces".into())
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_string_lossy().starts_with("--setenv=UNSET"))
+        );
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "UNSET" && value.is_none())
+        );
         assert!(args[..delimiter].contains(
             &"--setenv=RSTAR_DISTRIBUTION_MIRROR=https://example.invalid/$repo/$arch".into()
         ));
@@ -161,6 +183,7 @@ mod tests {
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            environment: Default::default(),
             inherited_mounts: Vec::new(),
         };
         let name = OsString::from_vec(b"shell-\xff.sh".to_vec());

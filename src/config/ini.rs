@@ -242,6 +242,9 @@ impl Document {
     pub(super) fn plugin_parameters(&self) -> Result<super::PluginParameters> {
         let mut parameters = super::PluginParameters::default();
         for section in &self.sections {
+            if section == "Environment" {
+                continue;
+            }
             if !parameters
                 .sections
                 .insert(super::parameters::component(section)?)
@@ -251,6 +254,9 @@ impl Document {
         }
         let mut values: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
         for entry in &self.assignments {
+            if entry.section == "Environment" {
+                continue;
+            }
             values
                 .entry((&entry.section, &entry.key))
                 .or_default()
@@ -266,6 +272,25 @@ impl Document {
             );
         }
         Ok(parameters)
+    }
+
+    /// Resolve the controller-owned environment group, retaining variable name case.
+    /// 解析控制器所属环境组，保留变量名大小写。
+    /// # Arguments
+    /// - `self`: Merged build assignments. 合并后的构建赋值。
+    pub(super) fn environment(&self) -> Result<super::Environment> {
+        let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for entry in self
+            .assignments
+            .iter()
+            .filter(|entry| entry.section == "Environment")
+        {
+            values
+                .entry(entry.key.clone())
+                .or_default()
+                .push(entry.value.clone());
+        }
+        super::environment::resolve(&values)
     }
 
     /// Append package assignments, retaining earlier values, and split on commas or whitespace.

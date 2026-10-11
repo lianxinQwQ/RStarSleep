@@ -76,6 +76,9 @@ pub struct BuildContext {
     /// Original frozen assignment lists delivered as RSTAR_PARAMETERS_JSON.
     /// 通过 RSTAR_PARAMETERS_JSON 传递的原始冻结赋值列表。
     pub parameter_lists: std::collections::BTreeMap<String, Vec<String>>,
+    /// Controller-owned [Environment] resolved once before any plugin execution.
+    /// 任何插件执行前一次性解析的控制器所属 [Environment]。
+    pub environment: crate::config::Environment,
     /// Distribution-only settings retained for the unified download operation.
     /// 为统一下载操作保留的仅 Distribution 设置。
     pub distribution_options: std::collections::BTreeMap<String, String>,

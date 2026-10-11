@@ -191,6 +191,9 @@ pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParame
                     "packages" => {
                         parameters.insert("Content", "Packages", legacy_parameter(value)?)?
                     }
+                    // Controller-owned environment is resolved separately, like inheritance.
+                    // 控制器所属环境独立解析，与继承设置类似。
+                    "Environment" => (),
                     "distribution_options" => {
                         let table = value.as_table().ok_or_else(|| {
                             Error::Invalid("distribution_options 必须是字符串表".into())
@@ -221,6 +224,34 @@ pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParame
                 }
             }
             Ok(parameters)
+        }
+    }
+}
+
+/// Resolve [Environment] from the same merged INI or legacy TOML build inputs.
+/// 从相同的合并 INI 或旧 TOML 构建输入解析 [Environment]。
+/// # Arguments
+/// - `directory`: Current or archived system configuration root containing build inputs.
+///   包含构建输入的当前或留档系统配置根。
+/// # Errors
+/// Returns normal configuration read errors or invalid environment assignments.
+/// 返回常规配置读取错误或无效环境赋值。
+pub fn read_environment_at(directory: &Path) -> Result<super::Environment> {
+    match Input::read(directory)? {
+        Input::Ini(document) => document.environment(),
+        Input::Toml { path, text } => {
+            let value: toml::Value =
+                toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+            let mut assignments = BTreeMap::new();
+            if let Some(environment) = value.get("Environment") {
+                let table = environment
+                    .as_table()
+                    .ok_or_else(|| Error::Invalid("[Environment] 必须是表".into()))?;
+                for (name, value) in table {
+                    assignments.insert(name.clone(), legacy_list(value)?);
+                }
+            }
+            super::environment::resolve(&assignments)
         }
     }
 }

@@ -118,6 +118,26 @@ Arch 配置与迁移说明见 [插件说明](presets/plugins/arch/readme.md)。
 核心单项 SchemaVersion、Distribution、Architecture 重复时报错。
 插件和脚本通过 `RSTAR_PARAMETERS_JSON` 获得原始列表边界；传统环境变量以换行连接值。
 
+初始化系统还会生成 `build/environment.conf`，使用同一 INI 机制新增 `[Environment]` 组：
+
+```ini
+[Environment]
+# Assign a literal value, or inherit a variable from the RStarSleep process.
+# 直接赋值，或继承启动 RStarSleep 的进程环境变量。
+http_proxy=http://127.0.0.1:10808
+https_proxy=%https_proxy
+no_proxy=%no_proxy
+```
+
+该组可写在任意构建 INI 文件中，沿用文件排序合并、`#` 注释和缩进续行规则。
+变量名保留大小写，每个变量只能赋值一次；`NAME=` 设置空值，`NAME=%SOURCE` 的来源
+未设置时不传入该变量，`NAME=%%value` 设置字面值 `%value`，不执行 shell 展开。
+变量名允许 ASCII 字母、数字及下划线，不能以数字开头；`RSTAR_`、`RSTAT_` 为保留前缀。
+该组由控制器处理，无需插件声明，作用于宿主 bootstrap、容器插件任务、预下载和构建脚本。
+准备构建时解析一次并随配置文件留档，后续编辑只影响下次构建。通过 `sudo` 启动时，
+继承来源是 `sudo` 保留后的进程环境。默认模板只提供注释示例，不启用代理。
+旧 TOML 可在 `build/config.toml` 中使用 `[Environment]` 字符串表；空模板不影响旧格式回退。
+
 插件可在 `[config.constraints.RSTAR_字段名]` 设置 `kind`：`free-single`、`free-list`、
 `enum-single`、`enum-list`、`number`；枚举还需声明 `values=["候选值"]`。
 单项和数字要求恰好一个赋值，数字必须有限；无约束字段默认为自由列表。

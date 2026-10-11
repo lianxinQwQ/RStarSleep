@@ -10,7 +10,7 @@ use std::{
 use super::{
     Error, PackageConfig, Result, SystemTypeConfig,
     build::{BUILD_CONFIG_PATH, LEGACY_BUILD_CONFIG_PATH, read_packages_at, read_system_type_at},
-    init::{BUILD_DEFAULT, GLOBAL_DEFAULT, SUBSYSTEM_DEFAULT},
+    init::{BUILD_DEFAULT, ENVIRONMENT_DEFAULT, GLOBAL_DEFAULT, SUBSYSTEM_DEFAULT},
     io_error, validate_identifier,
 };
 
@@ -247,6 +247,10 @@ impl ConfigStore {
                 "# Inherit data from the running system after scripts.\n# 脚本后从运行系统继承数据。\n[Inheritance]\n# Timing=build\n# DirectorySubvolume=yes\n# CopyOnWrite=/absolute/path\n# Mount=/absolute/path\n",
             )?;
         }
+        write_default(
+            &layout.config.join("build/environment.conf"),
+            ENVIRONMENT_DEFAULT,
+        )?;
         write_default(
             &layout.config.join("subsystem/config.toml"),
             SUBSYSTEM_DEFAULT,

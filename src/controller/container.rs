@@ -26,6 +26,37 @@ pub(super) fn command(launcher: &Path, root: &Path) -> Command {
     command
 }
 
+/// Apply resolved host variables without interpreting their native values.
+/// 应用已解析的宿主变量，不解释原生值。
+/// # Arguments
+/// - `command`: Host process being configured. 正在配置的宿主进程。
+/// - `environment`: Frozen variable assignments or removals. 冻结的变量赋值或移除请求。
+pub(super) fn host_environment(command: &mut Command, environment: &crate::config::Environment) {
+    for (name, value) in environment {
+        if let Some(value) = value {
+            command.env(name, value);
+        } else {
+            command.env_remove(name);
+        }
+    }
+}
+
+/// Forward explicit guest variables before nspawn's command delimiter.
+/// 在 nspawn 命令分隔符之前透传显式容器变量。
+/// # Arguments
+/// - `command`: nspawn invocation before its command delimiter. 尚未加入命令分隔符的 nspawn 调用。
+/// - `environment`: Frozen variable assignments or removals. 冻结的变量赋值或移除请求。
+pub(super) fn environment(command: &mut Command, environment: &crate::config::Environment) {
+    host_environment(command, environment);
+    for (name, value) in environment {
+        if let Some(value) = value {
+            let mut argument = OsString::from(format!("--setenv={name}="));
+            argument.push(value);
+            command.arg(argument);
+        }
+    }
+}
+
 /// Encode a bind option without interpreting native path bytes as field separators.
 /// 编码绑定选项，不将原生路径字节解释为字段分隔符。
 /// # Arguments

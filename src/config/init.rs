@@ -42,6 +42,10 @@ Distribution=arch\n\
 [Content]\n\
 Packages=\n";
 
+/// Optional execution environment using the same INI build configuration mechanism.
+/// 使用同一 INI 构建配置机制的可选执行环境。
+pub(super) const ENVIRONMENT_DEFAULT: &str = include_str!("../../presets/config/environment.conf");
+
 /// Reserved runtime template for systems explicitly enabled as subsystems.
 /// 为显式启用为子系统的系统预留的运行配置模板。
 pub(super) const SUBSYSTEM_DEFAULT: &str = "\

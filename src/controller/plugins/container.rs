@@ -104,6 +104,7 @@ pub(super) fn nspawn_from(
             .arg(bind("--bind-ro=", &context.config, SYSTEM_CONFIG)?)
             .arg("--setenv=RSTAR_CONFIG_DIR=/run/rstarsleep/config")
             .arg(format!("--setenv=RSTAR_SYSTEM_ID={}", context.system_id));
+        crate::controller::container::environment(&mut command, &context.environment);
     }
     Ok(command)
 }

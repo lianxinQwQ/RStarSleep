@@ -6,6 +6,100 @@ use super::*;
 use crate::controller::plugins::container::nspawn;
 use std::fs;
 
+/// Pass native values literally to bootstrap, the guest probe and the guest task.
+/// 将原生值以字面量传入 bootstrap、容器检查及容器任务。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn forwards_environment_to_host_and_both_container_invocations() {
+    use std::collections::BTreeMap;
+    use std::os::unix::ffi::OsStringExt;
+    let plugin = fixture(&[], &[]);
+    let config = plugin.temporary.path().join("config");
+    fs::create_dir(&config).unwrap();
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let value =
+        OsString::from_vec(b"socks5h://localhost:1080/a=b $(touch unexpected) \xff".to_vec());
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        parameters: Default::default(),
+        parameter_lists: Default::default(),
+        environment: BTreeMap::from([
+            ("http_proxy".into(), Some(value.clone())),
+            ("HOME".into(), None),
+        ]),
+        distribution_options: Default::default(),
+        config,
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    fs::write(plugin.operation_path("bootstrap").unwrap(),
+        "test -z \"${HOME+x}\" || exit 1\nprintf '%s' \"$http_proxy\" > \"$RSTAR_ROOT/environment\"\n").unwrap();
+    plugin
+        .invoke_environment(
+            "bootstrap",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(root.join("environment")).unwrap(),
+        value.as_encoded_bytes()
+    );
+    assert!(!plugin.root().join("unexpected").exists());
+
+    let command = nspawn(
+        &plugin,
+        Path::new("/usr/bin/systemd-nspawn"),
+        &root,
+        path.as_os_str(),
+        "x86_64",
+        Some(&context),
+    )
+    .unwrap();
+    assert!(
+        command
+            .get_envs()
+            .any(|(name, value)| name == "HOME" && value.is_none())
+    );
+    assert!(
+        !command
+            .get_args()
+            .any(|arg| arg.as_encoded_bytes().starts_with(b"--setenv=HOME="))
+    );
+
+    launcher(&plugin, "", false);
+    plugin
+        .invoke_environment(
+            "update",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+    let mut expected = b"--setenv=http_proxy=".to_vec();
+    expected.extend(value.as_encoded_bytes());
+    let calls: Vec<_> = trace.split(|byte| *byte == 0).collect();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|field| **field == expected.as_slice())
+            .count(),
+        2
+    );
+    for call in calls.split(|field| *field == b"CALL") {
+        if let Some(delimiter) = call.iter().position(|field| *field == b"--") {
+            assert!(call[..delimiter].contains(&expected.as_slice()));
+        }
+    }
+}
+
 /// Verify bootstrap receives the archived directory and stable system identity unchanged.
 /// 验证 bootstrap 原样接收留档目录和稳定系统标识。
 ///
@@ -29,6 +123,7 @@ fn passes_frozen_configuration_to_host_operations() {
         config: config.clone(),
         persistent_mounts: Vec::new(),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
     };
     let path = plugin.temporary.path().join("host-bin");
@@ -79,6 +174,7 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
         config,
         persistent_mounts: Vec::new(),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
     };
     fs::write(plugin.operation_path("bootstrap").unwrap(),
@@ -157,6 +253,7 @@ fn validates_configuration_before_host_and_container_execution() {
             config: config.clone(),
             persistent_mounts: Vec::new(),
             parameter_lists: Default::default(),
+            environment: Default::default(),
             inherited_mounts: Vec::new(),
         };
         for operation in ["bootstrap", "update"] {
@@ -199,6 +296,7 @@ fn passes_build_context_to_guest_probe_and_task_before_delimiter() {
         config: config.clone(),
         persistent_mounts: Vec::new(),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
     };
     plugin
@@ -255,6 +353,7 @@ fn mount_arguments_preserve_native_bytes_and_reject_ambiguous_paths() {
             .join(OsString::from_vec(b"frozen-\xff".to_vec())),
         persistent_mounts: Vec::new(),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
     };
     let command = nspawn(
@@ -307,6 +406,7 @@ fn host_operation_gets_transactional_directory_without_mutating_frozen_resources
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
         persistent_mounts: vec![crate::controller::PersistentMount {
             source: source.clone(),
@@ -351,6 +451,7 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         distribution_options: Default::default(),
         config: plugin.temporary.path().join("target"),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
         persistent_mounts: vec![crate::controller::PersistentMount {
             source: source.clone(),
@@ -404,6 +505,7 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
         config: root.clone(),
         persistent_mounts: Vec::new(),
         parameter_lists: Default::default(),
+        environment: Default::default(),
         inherited_mounts: Vec::new(),
     };
     plugin
