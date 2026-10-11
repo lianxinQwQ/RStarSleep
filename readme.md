@@ -153,7 +153,8 @@ RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 省略系统标识默认构建全部系统，逐个执行，个别失败不阻断其他系统。
 临时工作目录默认是管理根下的 `work/`，可通过全局 `work_dir` 覆盖。
 需要 Btrfs 工具、nspawn、插件声明的工具，以及安装系统所需权限。
-插件任务和构建脚本的诊断即时输出到终端，下载进度不必等待任务结束；查询结果仍由管理器解析。
+插件任务和构建脚本的诊断即时输出到终端；连接终端时通过伪终端保留下载进度条，并传入窗口尺寸。
+查询结果仍通过管道由管理器解析，诊断重定向到文件或管道时使用普通日志输出。
 每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
 Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
 `/usr/share/pacman/keyrings/archlinux.gpg`，可在 `[Distribution]` 设置 `Keyring`。
