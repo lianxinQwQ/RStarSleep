@@ -130,6 +130,106 @@ fn preserves_user_archives_on_reinitialization() {
     assert_eq!(fs::read(archive).unwrap(), b"user archive");
 }
 
+/// Verify explicit updates replace the preset archive without changing other workspace resources.
+/// 验证显式更新替换预设压缩包，且保留工作目录内的其他资源。
+#[test]
+fn updates_presets_and_preserves_configuration_and_other_plugins() {
+    let (_temp, store) = fixture();
+    let archive = store.plugins_path().join("arch.tar.gz");
+    let embedded = fs::read(&archive).unwrap();
+    let layout = store.initialize_system("desktop").unwrap();
+    let configuration = [
+        store.global_config_path(),
+        layout.config.join("build/config.conf"),
+        layout.config.join("subsystem/config.toml"),
+    ];
+    for path in &configuration {
+        fs::write(path, b"user configuration").unwrap();
+    }
+    let custom_plugin = store.plugins_path().join("custom.tar.gz");
+    fs::write(&custom_plugin, b"custom plugin").unwrap();
+    let custom_directory = store.plugins_path().join("custom");
+    fs::create_dir(&custom_directory).unwrap();
+    fs::write(custom_directory.join("plugin.toml"), b"custom metadata").unwrap();
+    fs::write(&archive, b"old preset").unwrap();
+
+    store.update_presets().unwrap();
+    assert_eq!(fs::read(&archive).unwrap(), embedded);
+    for path in configuration {
+        assert_eq!(fs::read(path).unwrap(), b"user configuration");
+    }
+    assert_eq!(fs::read(custom_plugin).unwrap(), b"custom plugin");
+    assert_eq!(
+        fs::read(custom_directory.join("plugin.toml")).unwrap(),
+        b"custom metadata"
+    );
+
+    fs::remove_file(&archive).unwrap();
+    store.update_presets().unwrap();
+    assert_eq!(fs::read(&archive).unwrap(), embedded);
+    store.update_presets().unwrap();
+    assert_eq!(fs::read(&archive).unwrap(), embedded);
+}
+
+/// Verify an update publishes a new file instead of truncating the previously installed archive.
+/// 验证更新发布新文件，而非截断原有压缩包。
+#[cfg(unix)]
+#[test]
+fn preset_update_atomically_replaces_the_existing_file() {
+    use std::io::Read;
+
+    let (_temp, store) = fixture();
+    let archive = store.plugins_path().join("arch.tar.gz");
+    let embedded = fs::read(&archive).unwrap();
+    fs::write(&archive, b"old preset").unwrap();
+    let mut previous = fs::File::open(&archive).unwrap();
+    store.update_presets().unwrap();
+    let mut old_contents = Vec::new();
+    previous.read_to_end(&mut old_contents).unwrap();
+    assert_eq!(old_contents, b"old preset");
+    assert_eq!(fs::read(&archive).unwrap(), embedded);
+    assert_eq!(fs::read_dir(store.plugins_path()).unwrap().count(), 1);
+}
+
+/// Verify preset installation and updates reject directory and symlink destinations.
+/// 验证预设安装及更新拒绝目录和符号链接目标。
+#[cfg(unix)]
+#[test]
+fn preset_operations_reject_non_file_destinations() {
+    use std::os::unix::fs::symlink;
+
+    let (temp, store) = fixture();
+    let archive = store.plugins_path().join("arch.tar.gz");
+    fs::remove_file(&archive).unwrap();
+    fs::create_dir(&archive).unwrap();
+    fs::write(archive.join("keep"), b"directory contents").unwrap();
+    assert!(store.initialize_directories().is_err());
+    assert!(store.update_presets().is_err());
+    assert_eq!(
+        fs::read(archive.join("keep")).unwrap(),
+        b"directory contents"
+    );
+    fs::remove_dir_all(&archive).unwrap();
+
+    let outside = temp.path().join("outside");
+    fs::write(&outside, b"outside contents").unwrap();
+    symlink(&outside, &archive).unwrap();
+    assert!(store.initialize_directories().is_err());
+    assert!(store.update_presets().is_err());
+    assert!(
+        fs::symlink_metadata(&archive)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"outside contents");
+
+    fs::remove_file(&outside).unwrap();
+    assert!(store.initialize_directories().is_err());
+    assert!(store.update_presets().is_err());
+    assert!(!outside.exists());
+}
+
 /// Reject missing or unsafe distribution settings independently of other build fields.
 /// 独立于其他构建字段拒绝缺失或不安全的发行版设置。
 ///

@@ -31,7 +31,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// 帮助输出与无效命令错误共用的用法说明。
 const USAGE: &str = "\
 用法：
-  RStarSleep init [<Btrfs 顶层绝对路径>]
+  RStarSleep init [<Btrfs 顶层绝对路径>] [--update-presets]
   RStarSleep init-system [<工作目录绝对路径>] <系统标识>
   RStarSleep packages <工作目录绝对路径> <系统标识>
   RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]

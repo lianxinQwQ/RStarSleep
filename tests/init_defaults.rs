@@ -132,6 +132,57 @@ fn both_commands_default_to_workspace_outside_booted_snapshot() {
 }
 
 #[test]
+fn default_init_updates_presets_only_when_requested() {
+    let fixture = Fixture::new();
+    fixture.success(&["init"]);
+    let root = fixture.top().join("@RStarSleep");
+    let archive = root.join("plugins/arch.tar.gz");
+    let embedded = fs::read(&archive).unwrap();
+    fs::write(&archive, b"old preset").unwrap();
+    fs::write(root.join("config/rstarsleep.toml"), b"custom settings").unwrap();
+    fs::write(root.join("plugins/custom.tar.gz"), b"custom plugin").unwrap();
+    fixture.success(&["init"]);
+    assert_eq!(fs::read(&archive).unwrap(), b"old preset");
+
+    let output = fixture.run(&["init", "--update-presets"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("预制插件已更新"));
+    assert_eq!(fs::read(&archive).unwrap(), embedded);
+    assert_eq!(
+        fs::read(root.join("config/rstarsleep.toml")).unwrap(),
+        b"custom settings"
+    );
+    assert_eq!(
+        fs::read(root.join("plugins/custom.tar.gz")).unwrap(),
+        b"custom plugin"
+    );
+}
+
+#[test]
+fn explicit_init_accepts_update_flag_before_or_after_path() {
+    let fixture = Fixture::new();
+    fixture.executable("findmnt", "#!/bin/bash\nexit 99\n");
+    let top = fixture.top();
+    let top_argument = top.to_str().unwrap();
+    // Also exercise update mode on a workspace that has not been initialized yet.
+    fixture.success(&["init", "--update-presets", top_argument]);
+    let archive = top.join("@RStarSleep/plugins/arch.tar.gz");
+    let embedded = fs::read(&archive).unwrap();
+    for args in [
+        ["init", "--update-presets", top_argument],
+        ["init", top_argument, "--update-presets"],
+    ] {
+        fs::write(&archive, b"old preset").unwrap();
+        fixture.success(&args);
+        assert_eq!(fs::read(&archive).unwrap(), embedded);
+    }
+}
+
+#[test]
 fn default_system_initialization_reuses_legacy_workspace() {
     let fixture = Fixture::new();
     let root = fixture.top().join("@rstarsleep");
@@ -142,6 +193,16 @@ fn default_system_initialization_reuses_legacy_workspace() {
     assert!(
         root.join("systems/desktop/config/build/config.conf")
             .is_file()
+    );
+    assert!(!fixture.top().join("@RStarSleep").exists());
+    let archive = root.join("plugins/arch.tar.gz");
+    let embedded = fs::read(&archive).unwrap();
+    fs::write(&archive, b"old preset").unwrap();
+    fixture.success(&["init", "--update-presets"]);
+    assert_eq!(fs::read(archive).unwrap(), embedded);
+    assert_eq!(
+        fs::read(root.join("config/rstarsleep.toml")).unwrap(),
+        b"# legacy\n"
     );
     assert!(!fixture.top().join("@RStarSleep").exists());
 }
@@ -194,8 +255,13 @@ fn help_and_invalid_arguments_do_not_query_mounts() {
     for args in [&["init", "--help"][..], &["init-system", "--help"][..]] {
         fixture.success(args);
     }
+    let help = fixture.run(&["init", "--help"]);
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--update-presets"));
     for args in [
         &["init", "/one", "/two"][..],
+        &["init", "--unknown"][..],
+        &["init", "--update-presets", "--update-presets"][..],
+        &["init", "--update-presets", "/one", "/two"][..],
         &["init-system"][..],
         &["init-system", "../invalid"][..],
     ] {

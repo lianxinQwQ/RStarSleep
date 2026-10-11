@@ -175,6 +175,24 @@ impl ConfigStore {
         super::presets::install(&self.plugins_path())
     }
 
+    /// Atomically install or replace embedded preset archives in the workspace.
+    /// 在工作目录中原子安装或替换内嵌的预设压缩包。
+    ///
+    /// Existing files at preset paths are replaced, including user-modified archives.
+    /// 覆盖预设路径的已有文件，包括用户修改过的压缩包。
+    /// Configuration files and plugins at other paths are preserved.
+    /// 保留配置文件及其他路径的插件。
+    ///
+    /// # Arguments
+    /// - `self`: Store with an existing plugin directory. 已有插件目录的配置存储对象。
+    ///
+    /// # Errors
+    /// Returns an error for a non-file preset path or an archive write failure.
+    /// 预设路径不是普通文件或压缩包写入失败时返回错误。
+    pub fn update_presets(&self) -> Result<()> {
+        super::presets::update(&self.plugins_path())
+    }
+
     /// Create a managed system's ordinary directories and missing configuration templates.
     /// 创建被管理系统的普通目录，并补充缺失的配置模板。
     ///

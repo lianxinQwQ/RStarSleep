@@ -22,9 +22,21 @@ cargo run -- init /mnt/btrfs
 
 该命令调用配置模块的初始化代码，在顶层下创建或复用专用子卷 `@RStarSleep`（显式示例中为 `/mnt/btrfs/@RStarSleep`），
 生成管理器目录和默认全局配置，并将内嵌 Arch 插件写入 `plugins/arch.tar.gz`，
-保留已有配置和插件文件。已有小写 `@rstarsleep` 子卷会继续复用。
+默认保留已有配置和插件文件。已有小写 `@rstarsleep` 子卷会继续复用。
 执行时需要 `btrfs` 工具及相应的
 子卷创建和文件写入权限。成功后输出工作目录路径；失败时输出原因并返回非零退出码。
+
+升级程序后，可显式更新目标工作目录中的预制插件：
+
+```sh
+RStarSleep init --update-presets
+# 也可显式指定 Btrfs 顶层目录：
+RStarSleep init /mnt/btrfs --update-presets
+```
+
+该选项用当前程序内嵌的插件原子替换 `plugins/arch.tar.gz`，包括用户修改过的同名包；
+保留已有配置及其他路径的插件。缺失的预制插件会自动补齐。
+预制插件在编译时嵌入；修改 `presets/plugins/arch/` 后需重新编译，再运行更新命令。
 
 `init-system` 也可省略工作目录，复用同一套顶层识别逻辑，定位当前系统所在文件系统上的
 `@RStarSleep`（或已有 `@rstarsleep`）工作目录。需要先执行 `init`：
@@ -59,7 +71,7 @@ Cargo 构建时将该目录打包并嵌入二进制，`init` 时写出压缩包�
 缺失时返回错误，不执行操作文件；包内二进制可以使用相对路径声明。
 
 API 1 插件需拆分操作文件并重新打包。API 3 要求 `system_init.sh`，用于初始化独立安装系统的稳定身份。API 2 仍可维护已有缓存，
-无缓存创建需要 API 3。初始化会保留已有插件包，升级时需主动替换旧包。
+无缓存创建需要 API 3。默认初始化保留已有插件包，升级内嵌预制插件使用 `init --update-presets`。
 
 已实现预设嵌入、初始化分发、按系统类型查找/临时加载、调用前工具检查
 和 Bash/nspawn 调用，以及版本构建、阶段缓存和软件维护。

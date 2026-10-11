@@ -61,8 +61,10 @@ Btrfs 顶层/
 ```
 
 初始化管理器时创建 `@RStarSleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
-并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。已有同名普通文件不覆盖；
-缺失的预设包会在再次初始化时补充。
+并将内嵌的 Arch 预设压缩包写入 `plugins/arch.tar.gz`。默认不覆盖已有同名普通文件；
+缺失的预设包会在再次初始化时补充。显式运行 `init --update-presets` 时，用当前程序
+内嵌的预设包原子替换同名文件，包括用户修改过的包；配置和其他路径的插件均保留。
+预设目标若为符号链接、目录或其他非普通文件则报错。
 初始化一个被管理系统时创建其当前配置（包括空 `script/` 和 INI 系统的空 `inherit.conf`）、
 版本、缓存和持久化目录及默认配置。
 这些系统目录目前是普通目录；具体版本根、阶段缓存是否使用子卷由对应功能实现。
@@ -229,6 +231,8 @@ INI 错误包含文件路径及行号，缺失设置的行号为 0。完整构�
 项目根的 `presets/plugins/arch/` 包含 Arch 插件的元数据、各操作文件和资源。
 Cargo 的 `build.rs` 按稳定顺序打包为 gzip 压缩的 tar，并通过 `include_bytes!`
 嵌入程序；初始化不要求安装时还能访问项目源码或外部预设目录。
+修改预设源码后需重新编译，再使用 `init [<Btrfs 顶层绝对路径>] --update-presets`
+分发更新。库调用者可在初始化后调用 `ConfigStore::update_presets()` 执行同样的替换。
 
 用户将插件压缩包或目录放入工作根的 `plugins/`，无需在全局配置注册路径。
 `rstarsleep::controller::plugins::for_system(&store, "desktop")` 从系统构建配置

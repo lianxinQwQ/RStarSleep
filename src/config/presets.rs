@@ -1,5 +1,5 @@
-//! Install embedded preset archives without overwriting user resources.
-//! 安装内嵌的预设压缩包，不覆盖用户资源。
+//! Install embedded preset archives and replace them only on explicit updates.
+//! 安装内嵌的预设压缩包，仅在显式更新时替换已有文件。
 
 use std::{fs, io::Write, path::Path};
 
@@ -22,17 +22,28 @@ const ARCH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/arch.tar.gz"));
 /// Returns an error for a non-file destination or an archive write failure.
 /// 目标不是普通文件或压缩包写入失败时返回错误。
 pub(super) fn install(directory: &Path) -> Result<()> {
+    install_with(directory, false)
+}
+
+/// Atomically replace preset archives with the resources embedded in this executable.
+/// 使用当前程序内嵌的资源原子替换预设压缩包。
+///
+/// # Arguments
+/// - `directory`: Existing workspace plugin directory. 工作目录内的现有插件目录。
+///
+/// # Errors
+/// Returns an error for a non-file destination or an archive write failure.
+/// 目标不是普通文件或压缩包写入失败时返回错误。
+pub(super) fn update(directory: &Path) -> Result<()> {
+    install_with(directory, true)
+}
+
+/// Write a complete temporary archive before publishing it at the validated destination.
+/// 先写入完整临时压缩包，再将其发布到经过校验的目标路径。
+fn install_with(directory: &Path, replace: bool) -> Result<()> {
     let destination = directory.join("arch.tar.gz");
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => return Ok(()),
-        Ok(_) => {
-            return Err(Error::Invalid(format!(
-                "预设插件路径必须是普通文件: {}",
-                destination.display()
-            )));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(&destination, error)),
+    if destination_exists(&destination)? && !replace {
+        return Ok(());
     }
     let mut temporary =
         tempfile::NamedTempFile::new_in(directory).map_err(|error| io_error(directory, error))?;
@@ -43,20 +54,36 @@ pub(super) fn install(directory: &Path) -> Result<()> {
         .as_file()
         .sync_all()
         .map_err(|error| io_error(&destination, error))?;
+    if replace {
+        destination_exists(&destination)?;
+        return temporary
+            .persist(&destination)
+            .map(|_| ())
+            .map_err(|error| io_error(&destination, error.error));
+    }
     match temporary.persist_noclobber(&destination) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(&destination)
-                .map_err(|error| io_error(&destination, error))?;
-            if metadata.is_file() && !metadata.file_type().is_symlink() {
+            if destination_exists(&destination)? {
                 Ok(())
             } else {
-                Err(Error::Invalid(format!(
-                    "预设插件路径必须是普通文件: {}",
-                    destination.display()
-                )))
+                Err(io_error(&destination, error.error))
             }
         }
         Err(error) => Err(io_error(&destination, error.error)),
+    }
+}
+
+/// Accept an absent path or a regular file, rejecting symlinks and other entries.
+/// 接受缺失路径或普通文件，拒绝符号链接及其他目录项。
+fn destination_exists(destination: &Path) -> Result<bool> {
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(_) => Err(Error::Invalid(format!(
+            "预设插件路径必须是普通文件: {}",
+            destination.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(destination, error)),
     }
 }
