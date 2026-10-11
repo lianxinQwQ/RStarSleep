@@ -54,9 +54,9 @@ fn resolve_with(
                 "[Environment] {name} 必须只赋值一次"
             )));
         };
-        let resolved = if let Some(literal) = value.strip_prefix("%%") {
-            Some(OsString::from(format!("%{literal}")))
-        } else if let Some(source) = value.strip_prefix('%') {
+        let resolved = if let Some(literal) = value.strip_prefix("$$") {
+            Some(OsString::from(format!("${literal}")))
+        } else if let Some(source) = value.strip_prefix('$') {
             if !valid_name(source) {
                 return Err(Error::Invalid(format!(
                     "[Environment] {name} 无效继承环境变量名: {source:?}"
@@ -108,10 +108,11 @@ mod tests {
         let values = resolve_with(
             &assignments(&[
                 ("http_proxy", &["http://127.0.0.1:10808"]),
-                ("HTTP_PROXY", &["%proxy"]),
-                ("MISSING", &["%absent"]),
+                ("HTTP_PROXY", &["$proxy"]),
+                ("MISSING", &["$absent"]),
                 ("EMPTY", &[""]),
-                ("PERCENT", &["%%proxy"]),
+                ("DOLLAR", &["$$proxy"]),
+                ("PERCENT", &["%proxy"]),
                 ("RAW", &["a=b ; $(touch sentinel) 'quoted'\ncontinued"]),
             ]),
             |name| (name == "proxy").then(|| "socks5h://localhost:1080".into()),
@@ -124,6 +125,7 @@ mod tests {
         );
         assert_eq!(values["MISSING"], None);
         assert_eq!(values["EMPTY"], Some("".into()));
+        assert_eq!(values["DOLLAR"], Some("$proxy".into()));
         assert_eq!(values["PERCENT"], Some("%proxy".into()));
         assert_eq!(
             values["RAW"],
@@ -142,15 +144,15 @@ mod tests {
             assignments(&[("A-B", &["x"])]),
             assignments(&[("RSTAR_ROOT", &["/"])]),
             assignments(&[("RSTAT_ROOT", &["/"])]),
-            assignments(&[("A", &["%"])]),
-            assignments(&[("A", &["%bad-name"])]),
+            assignments(&[("A", &["$"])]),
+            assignments(&[("A", &["$bad-name"])]),
             assignments(&[("A", &["a\0b"])]),
             assignments(&[("A", &["1", "2"])]),
         ] {
             assert!(resolve_with(&input, |_| None).is_err());
         }
         assert!(
-            resolve_with(&assignments(&[("A", &["%SOURCE"])]), |_| Some(
+            resolve_with(&assignments(&[("A", &["$SOURCE"])]), |_| Some(
                 "bad\0value".into()
             ))
             .is_err()
@@ -166,7 +168,7 @@ mod tests {
     fn inherited_values_preserve_native_bytes() {
         use std::os::unix::ffi::OsStringExt;
         let native = OsString::from_vec(vec![b'x', 0xff]);
-        let values = resolve_with(&assignments(&[("A", &["%SOURCE"])]), |_| {
+        let values = resolve_with(&assignments(&[("A", &["$SOURCE"])]), |_| {
             Some(native.clone())
         })
         .unwrap();

@@ -249,8 +249,8 @@ bootstrap 通过进程环境接收，系统内任务通过 nspawn `--setenv` 接
 `build/environment.conf`，也可放入其他构建 INI 文件。该组保持原始环境变量名大小写，
 不导出为 `RSTAR_ENVIRONMENT_*` 参数，也不要求发行版插件声明。变量名须符合
 `[A-Za-z_][A-Za-z0-9_]*`，禁止 `RSTAR_`、`RSTAT_` 前缀；每个变量必须恰好一次赋值。
-`NAME=value` 为字面值（允许空值和续行），`NAME=%SOURCE` 从 RStarSleep 进程环境继承，
-来源未设置时移除宿主目标变量，并不向容器显式传入；`NAME=%%value` 为字面值 `%value`。
+`NAME=value` 为字面值（允许空值和续行），`NAME=$SOURCE` 从 RStarSleep 进程环境继承，
+来源未设置时移除宿主目标变量，并不向容器显式传入；`NAME=$$value` 为字面值 `$value`。
 解析结果在 prepare 阶段固定于 BuildContext，原始配置随版本留档，继承值不另行持久化。
 宿主使用原生进程环境，容器工具检查、插件及构建脚本使用独立的原生 `--setenv` 参数，
 不经过 shell 求值，继承值保留非 UTF-8 字节。不同有效环境分别执行预下载批次；

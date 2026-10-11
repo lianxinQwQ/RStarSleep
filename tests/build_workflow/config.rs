@@ -13,7 +13,7 @@ fn environment_group_uses_merged_ini_and_frozen_execution_inputs() {
     fixture.system("desktop", &["editor"]);
     let layout = fixture.store.system_layout("desktop").unwrap();
     let path = layout.config.join("build/environment.conf");
-    let original = "# Same INI parser, including comments and continuation lines.\n[Environment]\nhttp_proxy=http://127.0.0.1:10808 # comment\nHTTP_PROXY=%PATH\nRAW=a=b ; $(touch unexpected)\n    continued\nEMPTY=\nPERCENT=%%literal\n";
+    let original = "# Same INI parser, including comments and continuation lines.\n[Environment]\nhttp_proxy=http://127.0.0.1:10808 # comment\nHTTP_PROXY=$PATH\nRAW=a=b ; $(touch unexpected)\n    continued\nEMPTY=\nDOLLAR=$$literal\n";
     fs::write(&path, original).unwrap();
     fs::write(
         layout.config.join("build/extra.conf"),
@@ -55,7 +55,7 @@ fn environment_group_uses_merged_ini_and_frozen_execution_inputs() {
             Some("a=b ; $(touch unexpected)\ncontinued".into())
         );
         assert_eq!(event.environment["EMPTY"], Some("".into()));
-        assert_eq!(event.environment["PERCENT"], Some("%literal".into()));
+        assert_eq!(event.environment["DOLLAR"], Some("$literal".into()));
         assert!(
             !event
                 .parameters
@@ -84,7 +84,7 @@ fn environment_group_uses_merged_ini_and_frozen_execution_inputs() {
 fn invalid_environment_group_blocks_plugin_execution() {
     for settings in [
         "bad-name=value",
-        "A=%bad-name",
+        "A=$bad-name",
         "A=x\nA=y",
         "RSTAR_ROOT=/",
         "RSTAT_ROOT=/",
@@ -117,7 +117,7 @@ fn legacy_toml_accepts_environment_group_and_default_ini_template() {
     fixture.system("desktop", &[]);
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::remove_file(layout.config.join("build/config.conf")).unwrap();
-    fs::write(layout.config.join("build/config.toml"), "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=[]\n[Environment]\nhttp_proxy='http://localhost:10808'\nHTTP_PROXY='%PATH'\n").unwrap();
+    fs::write(layout.config.join("build/config.toml"), "schema_version=1\nsystem_type='arch'\narchitecture='x86_64'\npackages=[]\n[Environment]\nhttp_proxy='http://localhost:10808'\nHTTP_PROXY='$PATH'\n").unwrap();
     fixture.store.initialize_system("desktop").unwrap();
     let backend = SimulatedBackend::default();
     build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();

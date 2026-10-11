@@ -41,12 +41,12 @@ fn system_initialization_preserves_files_and_leaves_roles_unassigned() {
             .unwrap()
             .is_empty()
     );
-    fs::write(&environment, "[Environment]\nhttp_proxy=%http_proxy\n").unwrap();
+    fs::write(&environment, "[Environment]\nhttp_proxy=$http_proxy\n").unwrap();
     fs::write(layout.config.join("build/config.conf"), custom).unwrap();
     store.initialize_system("desktop").unwrap();
     assert_eq!(
         fs::read_to_string(environment).unwrap(),
-        "[Environment]\nhttp_proxy=%http_proxy\n"
+        "[Environment]\nhttp_proxy=$http_proxy\n"
     );
     assert_eq!(
         fs::read_to_string(store.global_config_path()).unwrap(),

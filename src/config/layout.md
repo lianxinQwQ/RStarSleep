@@ -193,8 +193,8 @@ Architecture 若声明为必选则必须显式提供；若声明为可选并省�
 
 初始化系统生成 `build/environment.conf`，其 `[Environment]` 组与其他 INI 文件一起合并，
 可移入任意构建配置文件。`http_proxy=http://127.0.0.1:10808` 直接赋值，
-`https_proxy=%https_proxy` 继承 RStarSleep 进程的对应变量；来源未设置时不显式传入。
-`NAME=` 设置空值，`NAME=%%value` 设置字面值 `%value`。变量名保留大小写，同名变量
+`https_proxy=$https_proxy` 继承 RStarSleep 进程的对应变量；来源未设置时不显式传入。
+`NAME=` 设置空值，`NAME=$$value` 设置字面值 `$value`。变量名保留大小写，同名变量
 只允许赋值一次；值沿用 `#` 注释和缩进续行规则，不经过 shell 展开。
 该组由控制器解析，现有插件不必新增字段声明。宿主 bootstrap、容器任务、预下载和
 构建脚本共用准备阶段解析的环境。配置文件随版本留档，运行中编辑不影响当前构建。
