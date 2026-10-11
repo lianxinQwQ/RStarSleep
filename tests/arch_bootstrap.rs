@@ -16,13 +16,14 @@ fn executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// Include the official top-level package list alongside the root filesystem.
-/// 在根文件系统旁包含官方归档顶层的软件包清单。
+/// Mirror mkarchiso's root filesystem, package list and version-file layout.
+/// 对应 mkarchiso 的根文件系统、软件包清单及版本文件布局。
 fn bootstrap_archive(extra_path: Option<&str>) -> Vec<u8> {
     let mut archive = tar::Builder::new(Vec::new());
     let mut entries = vec![
         ("root.x86_64/etc/pacman.d/mirrorlist", "original mirror\n"),
         ("pkglist.x86_64.txt", "base 1-1\n"),
+        ("version", "2026.10.01\n"),
     ];
     if let Some(path) = extra_path {
         entries.push((path, "unexpected\n"));
@@ -129,6 +130,7 @@ actual=$(sha256sum "${@: -1}")
             "Server = https://mirror.invalid/$repo/os/$arch\n"
         );
         assert!(!path.join(name).join("pkglist.x86_64.txt").exists());
+        assert!(!path.join(name).join("version").exists());
         assert_eq!(fs::read_dir(path.join(name)).unwrap().count(), 1);
     }
     assert_eq!(
@@ -181,6 +183,7 @@ actual=$(sha256sum "${@: -1}")
     for (name, extra_path) in [
         ("unexpected", "unexpected.txt"),
         ("nested-package-list", "pkglist.x86_64.txt/child"),
+        ("nested-version", "version/child"),
         ("traversal", "root.x86_64/../escape"),
     ] {
         let bytes = bootstrap_archive(Some(extra_path));

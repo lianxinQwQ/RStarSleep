@@ -56,7 +56,9 @@ bootstrap() {
         path=${path#./}
         case "$path" in
             root.x86_64|root.x86_64/|root.x86_64/*) ;;
-            pkglist.x86_64.txt) ;;
+            # mkarchiso packages both metadata files beside the system tree.
+            # mkarchiso 将这两个元数据文件与系统树一同打包。
+            pkglist.x86_64.txt|version) ;;
             *) log "Unexpected bootstrap archive path: $path"; return 1 ;;
         esac
         case "/$path/" in */../*) log "Invalid bootstrap archive path: $path"; return 1 ;; esac
