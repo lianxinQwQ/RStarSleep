@@ -13,6 +13,7 @@ protected_packages = ["base"]
 # bootstrap 前检查的宿主必需工具。
 predownload = true
 mount_inheritance = true
+query_package_files = true
 persistent_dirs = [
     "arch-bootstrap:state/bootstrap",
     "arch-packages:state/packages",

@@ -20,3 +20,7 @@ pub mod base_system;
 /// Configured package reconciliation and orphan cleanup.
 /// 配置包协调和孤儿清理。
 pub mod software;
+
+/// Persistent subsystem preparation, privileged lifecycle and application integration.
+/// 持久子系统准备、特权生命周期与应用集成。
+pub mod subsystem;

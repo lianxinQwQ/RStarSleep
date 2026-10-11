@@ -73,15 +73,14 @@ pub fn build_with_backend(
             Err(error) => failures.push(format!("{id}: {error}")),
         }
     }
-    let mut groups: std::collections::BTreeMap<
-        (
-            String,
-            String,
-            std::collections::BTreeMap<String, String>,
-            crate::config::Environment,
-        ),
-        Vec<usize>,
-    > = std::collections::BTreeMap::new();
+    type DownloadGroup = (
+        String,
+        String,
+        std::collections::BTreeMap<String, String>,
+        crate::config::Environment,
+    );
+    let mut groups: std::collections::BTreeMap<DownloadGroup, Vec<usize>> =
+        std::collections::BTreeMap::new();
     for (index, value) in prepared.iter().enumerate() {
         if value.plugin.metadata.predownload {
             groups
@@ -409,6 +408,7 @@ fn build_system(
             identity: &identity,
             software_identity: &software_identity,
             scratch: &scratch,
+            prepare_boot_inheritance: runtime.main_system.as_deref() == Some(id.as_str()),
         };
         stages.run(base, packages, &mut owned)
     })();
@@ -439,6 +439,7 @@ fn build_system(
                 "complete"
             };
             status(attempt, id, state, None, Some(loaded))?;
+            super::current::publish_current_build(&attempt.layout.root, id, &attempt.version)?;
             Ok(outcome)
         }
         Err(error) => {

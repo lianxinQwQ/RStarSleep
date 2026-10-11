@@ -27,14 +27,13 @@ fn drain(reader: impl Read, mut target: Option<impl Write>) -> io::Result<Vec<u8
             Err(error) => return Err(error),
         };
         captured.extend_from_slice(&buffer[..count]);
-        if let Some(writer) = &mut target {
-            if let Err(error) = writer
+        if let Some(writer) = &mut target
+            && let Err(error) = writer
                 .write_all(&buffer[..count])
                 .and_then(|()| writer.flush())
-            {
-                write_error = Some(error);
-                target = None;
-            }
+        {
+            write_error = Some(error);
+            target = None;
         }
     }
     match write_error {

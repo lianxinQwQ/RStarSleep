@@ -52,8 +52,12 @@ pub(super) const SUBSYSTEM_DEFAULT: &str = "\
 # The runtime module applies this file only when global settings enable this subsystem.\n\
 # 只有全局配置启用此子系统时，运行模块才应用本文件。\n\
 schema_version = 1\n\
-# Runtime options, including application exports, will be added with their features.\n\
-# 子系统运行选项（包括应用入口导出）随对应功能添加。\n";
+# Authorize host UIDs explicitly; see docs/subsystem-usage.md for session and exports.\n\
+# 显式授权宿主 UID；会话及导出配置见 docs/subsystem-usage.md。\n\
+# allowed_uids = [1000]\n\
+# autostart = false\n\
+# idle_timeout_seconds = 30\n\
+# session_mode = \"isolated\"\n";
 
 /// Create or reuse `@RStarSleep` within the mounted Btrfs top-level tree (ID 5).
 /// 在已挂载的 Btrfs 顶层树（标识为 5）中创建或复用 `@RStarSleep`。

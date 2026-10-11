@@ -44,6 +44,10 @@ impl Fixture {
 set -euo pipefail
 printf '%s\n' "$*" >> "$PACMAN_TRACE"
 case "$1" in
+    -Ql)
+        if [[ ${PACMAN_MOCK_CASE:-} == failure ]]; then exit 2; fi
+        printf 'vim /usr/share/\nvim /usr/bin/vim\nvim /usr/share/vim/a file\n'
+        ;;
     -Qq) printf 'base\nvim\nlibdependency\n' ;;
     -Qqe) printf 'base\nvim\n' ;;
     -Qdtq)
@@ -170,6 +174,28 @@ esac
     fn trace(&self) -> String {
         fs::read_to_string(&self.trace).unwrap()
     }
+}
+
+/// Query all package-owned files, preserve spaces, and propagate database failure.
+/// 查询全部包所属文件、保留空格，并传播数据库失败。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn queries_package_owned_files() {
+    let fixture = Fixture::new();
+    let output = fixture.run("query_package_files", &[], "");
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        b"vim\t/usr/bin/vim\nvim\t/usr/share/vim/a file\n"
+    );
+    assert_eq!(fixture.trace(), "-Ql --\n");
+    assert!(
+        !fixture
+            .run("query_package_files", &["vim"], "failure")
+            .status
+            .success()
+    );
 }
 
 /// Verify inherited mounts are safely encoded and appended alongside user-supplied rows.

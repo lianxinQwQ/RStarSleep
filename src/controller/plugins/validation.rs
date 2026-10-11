@@ -62,6 +62,9 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     if metadata.mount_inheritance {
         operation_path(root, "mount_inheritance")?;
     }
+    if metadata.query_package_files {
+        operation_path(root, "query_package_files")?;
+    }
     metadata.config.validate()?;
     metadata.cache.validate(&metadata.config)?;
     for operation in REQUIRED_OPERATIONS {

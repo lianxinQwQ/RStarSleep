@@ -39,6 +39,9 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Independent owned temporary build directory.
     /// 独立所属构建临时目录。
     pub(super) scratch: &'a Path,
+    /// Whether to prepare main-system initramfs integration.
+    /// 是否准备主系统 initramfs 集成。
+    pub(super) prepare_boot_inheritance: bool,
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
@@ -190,6 +193,23 @@ impl<B: BuildBackend> Stages<'_, B> {
         } else {
             packages.record.software.clone()
         };
+        if self.plugin.metadata.query_package_files {
+            let bytes = self
+                .backend
+                .query_package_files(self.plugin, &root, self.context)?;
+            let records = crate::subsystem::package_files::parse(&bytes)
+                .map_err(|e| super::Error::Invalid(e.to_string()))?;
+            let canonical = records
+                .into_iter()
+                .map(|(owner, path)| format!("{owner}\t{path}\n"))
+                .collect::<String>();
+            crate::subsystem::atomic_write(
+                &self.attempt.directory.join("application-files.tsv"),
+                canonical.as_bytes(),
+                0o600,
+            )
+            .map_err(|e| super::Error::Invalid(e.to_string()))?;
+        }
         self.commit("script", &root, software, None)
     }
 
@@ -227,7 +247,9 @@ impl<B: BuildBackend> Stages<'_, B> {
         if config.timing == crate::config::InheritanceTiming::Initramfs
             && !config.copy_on_write.is_empty()
         {
-            self.backend.prepare_inheritance_initramfs(&root)?;
+            if self.prepare_boot_inheritance {
+                self.backend.prepare_inheritance_initramfs(&root)?;
+            }
             let prepared = self.attempt.directory.join("prepared-root");
             self.backend.snapshot_recursive(&root, &prepared, true)?;
             super::deferred::prepare(self.backend, self.context, &config, &prepared)?;

@@ -112,6 +112,22 @@ impl Fixture {
             .join(entry)
     }
 
+    /// Explicitly retire the test artifact before deleting all its build history.
+    /// 删除全部测试构建历史前显式撤销当前产物。
+    /// # Arguments
+    /// - `self`: Isolated manager. 隔离管理器。
+    /// - `id`: System whose current artifact is retired. 撤销当前产物的系统。
+    pub fn retire_current(&self, id: &str) {
+        fs::remove_file(
+            self.store
+                .system_layout(id)
+                .unwrap()
+                .root
+                .join("build-current.toml"),
+        )
+        .unwrap();
+    }
+
     /// Assert all scratch subvolumes were deleted after the attempted build.
     /// 验证构建尝试之后所有临时子卷均已删除。
     /// # Arguments

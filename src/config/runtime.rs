@@ -4,12 +4,14 @@ use super::{ConfigStore, Error, Result, io_error, validate_identifier};
 use serde::Deserialize;
 use std::{fs, path::PathBuf};
 
-/// Global runtime settings; subsystem fields remain outside this implementation.
-/// 全局运行设置；子系统字段不属于本次实现。
+/// Global boot and explicitly enabled subsystem settings.
+/// 全局启动及显式启用子系统设置。
 #[derive(Debug, Deserialize)]
 pub struct RuntimeConfig {
     pub schema_version: u32,
     pub main_system: Option<String>,
+    #[serde(default)]
+    pub subsystems: Vec<String>,
     #[serde(default = "boot_directory")]
     pub boot_dir: PathBuf,
     #[serde(default)]
@@ -42,6 +44,15 @@ impl ConfigStore {
         }
         if let Some(id) = &config.main_system {
             validate_identifier(id)?;
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for id in &config.subsystems {
+            validate_identifier(id)?;
+            if !seen.insert(id) || config.main_system.as_deref() == Some(id.as_str()) {
+                return Err(Error::Invalid(format!(
+                    "子系统名单重复或与主系统重叠: {id}"
+                )));
+            }
         }
         if !config.boot_dir.is_absolute()
             || config

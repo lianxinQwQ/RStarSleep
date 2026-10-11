@@ -220,6 +220,7 @@ mod tests {
         let config = RuntimeConfig {
             schema_version: 1,
             main_system: Some("desktop".into()),
+            subsystems: vec![],
             boot_dir: directory.path().join("esp"),
             kernel_options: vec![],
         };
@@ -269,6 +270,7 @@ mod tests {
         let config = RuntimeConfig {
             schema_version: 1,
             main_system: Some("desktop".into()),
+            subsystems: vec![],
             boot_dir: temporary.path().join("esp"),
             kernel_options: vec!["quiet".into()],
         };

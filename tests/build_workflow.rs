@@ -270,6 +270,16 @@ fn bounded_clean_preserves_running_roots_data_and_monotonic_versions() {
     );
     assert!(outcomes[2].root.exists());
     assert!(layout.persistent.join("user-data").exists());
+    assert!(
+        rstarsleep::controller::clean_with_backend(
+            &fixture.store,
+            "desktop",
+            &outcomes[2].version,
+            &backend
+        )
+        .is_err()
+    );
+    fixture.retire_current("desktop");
     rstarsleep::controller::clean_with_backend(
         &fixture.store,
         "desktop",
@@ -358,6 +368,7 @@ fn clean_removes_only_owned_boot_files() {
         toml::to_string(&ownership).unwrap(),
     )
     .unwrap();
+    fixture.retire_current("desktop");
     rstarsleep::controller::clean_with_backend(
         &fixture.store,
         "desktop",

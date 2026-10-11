@@ -229,6 +229,7 @@ fn cleanup_preserves_sources_of_retained_pending_versions_and_can_cancel_the_tas
     assert!(error.to_string().contains("继承引用"));
     assert!(first.root.exists());
     assert!(second.root.exists());
+    fixture.retire_current("desktop");
     rstarsleep::controller::clean_with_backend(
         &fixture.store,
         "desktop",

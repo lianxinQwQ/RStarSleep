@@ -8,6 +8,7 @@ mod init;
 mod init_system;
 mod packages;
 mod plugin_command;
+mod subsystem;
 
 /// Names reserved by the command dispatcher.
 /// 命令分派保留的名称。
@@ -19,6 +20,10 @@ pub(crate) const BUILTIN_COMMANDS: &[&str] = &[
     "clean",
     "finalize-inheritance",
     "help",
+    "subsystem",
+    "daemon",
+    "guest",
+    "__export-user",
 ];
 
 use std::ffi::OsString;
@@ -36,6 +41,9 @@ const USAGE: &str = "\
   RStarSleep packages <工作目录绝对路径> <系统标识>
   RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]
   RStarSleep clean <系统标识> <版本> [--root <管理根绝对路径>]
+  RStarSleep daemon install|run [--root <管理根绝对路径>]
+  RStarSleep subsystem --help
+  RStarSleep guest --help
 
 init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @RStarSleep 子卷；
 工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
@@ -81,6 +89,10 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "packages" => packages::run(rest)?,
         [command, rest @ ..] if command == "build" => build::run(rest)?,
         [command, rest @ ..] if command == "clean" => clean::run(rest)?,
+        [command, rest @ ..] if command == "subsystem" => subsystem::run(rest)?,
+        [command, rest @ ..] if command == "daemon" => subsystem::daemon(rest)?,
+        [command, rest @ ..] if command == "guest" => subsystem::guest(rest)?,
+        [command] if command == "__export-user" => crate::subsystem::exports::user_entry()?,
         [command, rest @ ..] if command == "finalize-inheritance" => {
             finalize_inheritance::run(rest)?
         }

@@ -5,6 +5,28 @@ use super::validation::validate_metadata;
 use super::*;
 use std::{fs, io::Write, path::Path};
 
+/// Older plugins keep working while advertised file-query capabilities require a safe entry.
+/// 旧插件继续可用，声明文件查询能力时必须提供安全入口。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn optional_package_file_capability() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    assert!(!plugin.metadata.query_package_files);
+    let mut metadata = plugin.metadata.clone();
+    metadata.query_package_files = true;
+    assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    let entry = plugin.root().join("query_package_files.sh");
+    fs::write(&entry, "#!/bin/bash\nexit 0\n").unwrap();
+    assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+    fs::remove_file(&entry).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", &entry).unwrap();
+    assert!(validate_metadata(&metadata, plugin.root()).is_err());
+}
+
 /// Reject incomplete configuration contracts and keys colliding with each other or controller state.
 /// 拒绝不完整配置契约及相互冲突或占用控制器状态的键。
 /// # Arguments

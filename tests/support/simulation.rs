@@ -487,9 +487,9 @@ impl BuildBackend for SimulatedBackend {
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(
                     root.join("etc/fstab"),
-                    args.chunks(4)
+                    format!("# BEGIN RStarSleep inherited mounts\n{}# END RStarSleep inherited mounts\n",args.chunks(4)
                         .map(|parts| format!("{}\n", parts.join(" ")))
-                        .collect::<String>(),
+                        .collect::<String>()),
                 )
                 .unwrap();
             }
@@ -503,6 +503,12 @@ impl BuildBackend for SimulatedBackend {
             }
             "query_packages" => {
                 output = fs::read_to_string(root.join(DATABASE)).unwrap_or_default();
+            }
+            "query_package_files" => {
+                output = packages
+                    .keys()
+                    .map(|name| format!("{name}\t/usr/bin/{name}\n"))
+                    .collect();
             }
             "install" => {
                 for name in args {

@@ -34,6 +34,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
         metadata: Metadata {
             commands: Vec::new(),
             mount_inheritance: false,
+            query_package_files: false,
             schema_version: 1,
             api_version: 2,
             id: "test".into(),

@@ -12,6 +12,11 @@ fn main() -> std::process::ExitCode {
     match rstarsleep::cli::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
+            if let Some(rstarsleep::subsystem::Error::Exit(code)) =
+                error.downcast_ref::<rstarsleep::subsystem::Error>()
+            {
+                return std::process::ExitCode::from((*code).clamp(0, 255) as u8);
+            }
             eprintln!("{error}");
             std::process::ExitCode::FAILURE
         }

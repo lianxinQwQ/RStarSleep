@@ -119,6 +119,23 @@ pub struct BuildOutcome {
 /// Required CoW storage and checked plugin execution operations.
 /// 必需的 CoW 存储和已检查插件执行操作。
 pub trait BuildBackend {
+    /// Query optional owned-file candidates inside the frozen build environment.
+    /// 在冻结构建环境内查询可选所属文件候选项。
+    /// # Arguments
+    /// - `plugin`, `root`, `context`: Plugin and frozen writable target. 插件及冻结可写目标。
+    /// # Errors
+    /// Returns unsupported capability or plugin execution failures.
+    /// 返回不支持能力或插件执行失败。
+    fn query_package_files(
+        &self,
+        plugin: &LoadedPlugin,
+        root: &Path,
+        context: &BuildContext,
+    ) -> Result<Vec<u8>> {
+        Ok(self
+            .invoke(plugin, "query_package_files", &[], root, context)?
+            .into_bytes())
+    }
     /// Create a writable subvolume, failing rather than using an ordinary directory.
     /// 创建可写子卷；失败时不使用普通目录替代。
     ///

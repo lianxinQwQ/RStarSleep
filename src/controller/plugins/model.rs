@@ -179,6 +179,10 @@ pub struct Metadata {
     /// 可选发行版继承挂载配置操作。
     #[serde(default)]
     pub mount_inheritance: bool,
+    /// Optional installed-package file index; no arguments queries all owners.
+    /// 可选已安装包文件索引；无参数查询全部所属项。
+    #[serde(default)]
+    pub query_package_files: bool,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.

@@ -81,6 +81,14 @@ pub fn clean_with_backend(
         }
     }
     targets.sort_by_key(|(value, _, _)| *value);
+    super::current::check_retained(
+        store,
+        system,
+        &targets
+            .iter()
+            .map(|(_, name, _)| name.clone())
+            .collect::<Vec<_>>(),
+    )?;
     // Any retained pending version pins the source versions it will consume at boot.
     let mut pins = Vec::new();
     for id in store.list_systems()? {

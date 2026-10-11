@@ -149,6 +149,11 @@ impl LoadedPlugin {
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
     ) -> Result<Output> {
         let (host_path, context) = environment;
+        if operation == "query_package_files" && !self.metadata.query_package_files {
+            return Err(Error::Invalid(
+                "plugin does not advertise query_package_files".into(),
+            ));
+        }
         let standalone = std::collections::BTreeMap::from([(
             "RSTAR_DISTRIBUTION_ARCHITECTURE".into(),
             architecture.into(),

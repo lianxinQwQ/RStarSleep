@@ -32,11 +32,13 @@ Btrfs 顶层/
             │   ├── build/
             │   │   ├── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
             │   │   ├── environment.conf # [Environment] 执行环境，默认只有注释示例
-            │   │   └── inherit.conf    # 空继承模板，与其他 INI 一同叠加
+            │   │   ├── inherit.conf    # 空继承模板，与其他 INI 一同叠加
+            │   │   └── guest-packages.conf # 可选，guest install 的受控包请求
             │   ├── script/            # 软件步骤后的构建脚本输入
             │   └── subsystem/
-            │       └── config.toml     # 子系统运行配置，暂留模板
+            │       └── config.toml     # 当前子系统授权、启动、会话及导出配置
             ├── build.lock              # 每系统构建独占锁
+            ├── build-current.toml      # 当前成功交付产物，失败构建不替换
             ├── identity.toml           # 独立安装时保存的稳定 machine-id
             ├── version-counter         # 最高已分配版本号，清理历史后仍保留
             ├── versions/
@@ -44,6 +46,7 @@ Btrfs 顶层/
             │       ├── state.toml      # building / pending-inheritance / failed / complete / cancelled
             │       ├── boot.toml       # 主系统启动文件的所有权记录
             │       ├── config/         # 构建时配置留档，结构同当前 config/
+            │       ├── application-files.tsv # 可选，包所属文件候选索引
             │       ├── prepared-root/  # 可选，首次启动继承前的独立只读根
             │       ├── inheritance-pending.toml # 可选，固定来源及目标身份
             │       ├── inheritance-commit.toml  # 可选，最终根及全部子卷提交记录
@@ -58,7 +61,20 @@ Btrfs 顶层/
             │       ├── script.toml     # 脚本阶段完成与实际清单
             │       ├── inherit/        # 可选继承阶段，父根及子卷均只读，不复用
             │       └── inherit.toml    # 继承阶段完成与实际清单
+            ├── runtime/                # 子系统运行存储和恢复记录，按需创建
+            │   ├── activity.lock       # 应用/启停共享，捕获/迁移排他
+            │   ├── current.toml        # 已同步运行代、版本、机器名及启动配置摘要
+            │   ├── transaction.toml    # 未完成存储准备时存在
+            │   ├── fstab               # 单独注入容器的只读适配配置
+            │   ├── exports-users.toml  # 已主动登记用户入口集成的用户
+            │   ├── generations/<代>/root/ # 可写父根及全部内部子卷
+            │   └── guest/
+            │       ├── mount-<摘要>.toml # 待迁移/已发布持久卷收据
+            │       ├── build.lock      # guest 异步构建任务锁
+            │       ├── build-current.toml # 当前 guest 构建任务状态
+            │       └── build-*.log     # guest 构建输出
             └── persistent/             # Mount 跨版本共享数据，如 -home-alice
+                └── guest/<摘要>/data   # guest migrate 发布的持久对象
 ```
 
 初始化管理器时创建 `@RStarSleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
@@ -78,7 +94,8 @@ Btrfs 顶层/
 其余系统仅保留为被管理对象。子系统运行配置属于对应系统，只有它被显式指定为
 子系统时才应用，包括向当前主系统导出应用入口。
 
-角色变更不移动目录。移出子系统名单时，后续运行模块负责撤销已建立的集成。
+角色变更不移动目录。同一系统不能同时承担主/子系统角色；移出子系统名单后拒绝新请求，
+daemon 后台协调停止机器并撤销用户未修改的自有入口，保留版本与持久数据。
 持久化数据默认跨同一系统的版本共享，删除版本不应删除它；其快照与回滚策略
 由具体持久化功能管理。Mount 数据首次复制后持续复用，不随重建覆盖；CopyOnWrite
 数据属于各版本独立子卷，不放入 persistent。缓存独立于已完成版本，可以清理。
@@ -109,7 +126,8 @@ subsystems = []
 ```
 
 未指定主系统时，省略 `main_system`。构建和清理会读取全局配置；指定的主系统构建成功后
-发布启动文件，`boot_dir` 默认 `/boot`。子系统运行字段仍待实现。
+发布启动文件，`boot_dir` 默认 `/boot`。子系统名单不能重复，运行配置与命令见
+[子系统使用说明](../../docs/subsystem-usage.md)。
 
 系统构建配置 `systems/<系统标识>/config/build/config.conf`：
 
@@ -182,8 +200,11 @@ Architecture 若声明为必选则必须显式提供；若声明为可选并省�
 构建脚本共用准备阶段解析的环境。配置文件随版本留档，运行中编辑不影响当前构建。
 旧 TOML 支持对应 `[Environment]` 字符串表。默认环境模板不启用任何代理，初始化保留已有文件。
 
-系统运行配置 `systems/<系统标识>/config/subsystem/config.toml` 目前仅包含
-`schema_version = 1` 和说明注释。其字段随子系统运行功能确定。
+系统运行配置 `systems/<系统标识>/config/subsystem/config.toml` 保留
+`schema_version = 1` 的旧模板兼容性，其他字段有默认值。支持授权 UID、自启、闲置时长、
+会话模式、显式挂载、tmpfs 大小、GPU 及入口导出；完整示例见
+[子系统使用说明](../../docs/subsystem-usage.md)。运行请求使用当前有效配置，构建留档
+不锁定后续运行策略；配置无效时报错，不回退到旧配置。
 
 ## 当前接口
 
@@ -409,11 +430,34 @@ Arch 用专用标记块保存生成行，重复调用替换该块并保留其他
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
 各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
 
+## 子系统产物、运行代与用户入口
+
+构建最后原子发布 `systems/<系统>/build-current.toml`，指向完整 root 或有效的
+pending-inheritance 产物；失败构建保持上一引用。冷启动/重启只读取这个引用，
+不扫描历史版本，也没有版本选择入口。子系统在 nspawn 引导前完成延后继承，
+再递归生成可写运行代。同产物和启动配置复用现有根，换产物或挂载/tmpfs/GPU 配置时
+生成新代，不比较运行修改。授权和入口配置变化不触发根重建。
+
+`runtime/current.toml` 表示可写根已同步，机器就绪另存于
+`/run/rstarsleep/<规范管理根SHA-256>/<系统>.origin.toml`；同目录保存 daemon 锁、
+`manager.sock` 和按系统隔离的 guest socket。daemon 恢复时核对实际 leader/根身份，
+并修复 guest socket 绑定。新机器就绪后回收旧代，挂载或待办来源仍引用的根保留。
+
+声明可选 `query_package_files` 的插件在构建 script 阶段后提供包所属文件清单，
+保存为版本外层 `application-files.tsv`。该文件只是候选索引，继承可能改变实际文件；
+导出和执行仍校验客体根内实际对象。运行机器使用其运行版本索引，冷机器使用当前产物。
+
+`sync-exports` 将系统前缀命令写入用户 `~/.local/bin`，desktop/图标写入用户 XDG
+数据目录。`runtime/exports-users.toml` 登记主动集成用户，用户自己的
+`~/.local/state/rstarsleep/<管理根摘要>/<系统>.toml` 保存生成物内容所有权。
+只有未被用户修改的自有文件会更新/撤销；产物或运行态切换会刷新已登记用户。
+
 ## 版本清理
 
 `RStarSleep clean <系统> <版本> [--root <管理根>]` 删除该系统截止版本及之前的版本记录、
 系统根、对应阶段缓存、启动目录和启动项，保留当前配置、身份及 persistent。
-清理与构建共用独占锁，拒绝删除运行中的系统根或跨越挂载边界，检查失败不会开始删除。
+清理与构建共用独占锁，保护当前构建、运行及事务引用，并拒绝删除运行中的系统根、
+待办来源或跨越挂载边界；检查失败不会开始删除。
 `version-counter` 保留已分配的最高编号，清空历史后也不会复用旧版本号。
 删除过程遇到错误会停止，可重试；版本所有权记录随版本保留到对应外部启动文件删除完成。
 

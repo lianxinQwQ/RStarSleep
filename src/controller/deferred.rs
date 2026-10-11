@@ -157,6 +157,29 @@ pub fn finalize_inheritance_with_backend(
     filesystem_root: &Path,
     backend: &impl BuildBackend,
 ) -> Result<()> {
+    disk::checked(manifest_path)?;
+    let system = manifest_path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("待继承清单缺少系统目录".into()))?;
+    let _lock = super::records::lock_directory(system)?;
+    finalize_inheritance_locked(manifest_path, filesystem_root, backend)
+}
+
+/// Complete a version while the caller already owns its shared system lock.
+/// 调用者已持有共用系统锁时完成版本。
+/// # Arguments
+/// - `manifest_path`: Exact pending manifest. 精确待办清单。
+/// - `filesystem_root`: Btrfs subvolid=5 view. Btrfs 顶层视图。
+/// - `backend`: Validated storage backend. 经校验存储后端。
+/// # Errors
+/// Returns identity, source or publication failures. 返回身份、来源或发布错误。
+pub fn finalize_inheritance_locked(
+    manifest_path: &Path,
+    filesystem_root: &Path,
+    backend: &impl BuildBackend,
+) -> Result<()> {
     let manifest = read_manifest(manifest_path)?;
     disk::checked(filesystem_root)?;
     let (uuid, _) = backend.filesystem_location(filesystem_root)?;
@@ -185,7 +208,6 @@ pub fn finalize_inheritance_with_backend(
     if system.file_name().and_then(|s| s.to_str()) != Some(&manifest.system_id) {
         return Err(Error::Invalid("清单系统身份不匹配".into()));
     }
-    let _lock = super::records::lock_directory(system)?;
     let manager = system
         .parent()
         .and_then(Path::parent)

@@ -118,6 +118,7 @@ fn mount_data_is_seeded_once_and_reused_without_overwriting_changes() {
             .unwrap()
             .contains("bind,x-systemd.requires-mounts-for=/rstarsleep")
     );
+    fixture.retire_current("desktop");
     rstarsleep::controller::clean_with_backend(
         &fixture.store,
         "desktop",
