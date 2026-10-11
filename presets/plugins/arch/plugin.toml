@@ -70,7 +70,7 @@ base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
 software = []
 
 [tools]
-host = ["bash", "curl", "tar", "zstd", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
+host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
 system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv"]

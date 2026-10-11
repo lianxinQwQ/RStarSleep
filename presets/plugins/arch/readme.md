@@ -69,6 +69,8 @@ Distribution 环境变量和独立包需求参数。旧插件需改名并补充 
 bootstrap 在宿主运行，其他操作通过 nspawn 在目标系统中运行。
 `[tools]` 声明所需工具，运行前检查对应环境，缺失时不运行操作脚本。
 bootstrap 需要可信 Arch 签名密钥环和元数据中声明的下载、验签、解包及摘要工具。
+`Keyring` 支持二进制 OpenPGP 密钥环、GnuPG keybox 和 ASCII 装甲公钥；装甲公钥通过
+宿主 `gpg` 转换到临时二进制密钥环后交给 `gpgv` 验签，不修改原密钥文件。
 API 2 可维护已有兼容缓存，新安装需要 API 3。
 
 ## 挂载继承

@@ -136,6 +136,8 @@ RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
 Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
 `/usr/share/pacman/keyrings/archlinux.gpg`，可在 `[Distribution]` 设置 `Keyring`。
+同时支持二进制密钥环、GnuPG keybox 和 ASCII 装甲公钥；装甲格式由宿主 `gpg`
+转换到临时文件后使用 `gpgv` 验签，不修改系统密钥环。
 
 构建只从最新过往尝试读取已完成的只读阶段缓存。每个系统独立创建和维护自己的
 基础根，无基础缓存时直接执行 bootstrap、基础安装及身份初始化。插件必须把下载的

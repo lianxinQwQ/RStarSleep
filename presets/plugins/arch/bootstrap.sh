@@ -10,7 +10,7 @@ source "$plugin_root/lib/common.sh"
 # Arguments: none; declared [Distribution] settings are supplied through RSTAR_ variables.
 # 参数：无；已声明的 [Distribution] 设置通过 RSTAR_ 变量提供。
 bootstrap() {
-    local architecture url signature_url keyring path cache_key cache
+    local architecture url signature_url keyring keyring_header path cache_key cache
     architecture=${RSTAR_DISTRIBUTION_ARCHITECTURE:-x86_64}
     [[ $architecture == x86_64 ]] || { log "Unsupported architecture: $architecture"; return 64; }
     [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
@@ -30,6 +30,14 @@ bootstrap() {
     cache="$plugin_root/state/bootstrap/${cache_key%% *}"
     bootstrap_tmp=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-bootstrap.XXXXXXXX")
     trap 'rm -rf -- "$bootstrap_tmp"' EXIT
+    # gpgv requires a binary keyring; Arch may ship ASCII-armored public keys.
+    # gpgv 需要二进制密钥环；Arch 提供的公钥文件可能采用 ASCII 装甲格式。
+    IFS= read -r keyring_header <"$keyring" || :
+    if [[ $keyring_header == '-----BEGIN PGP PUBLIC KEY BLOCK-----'* ]]; then
+        gpg --batch --no-options --homedir "$bootstrap_tmp" --dearmor \
+            --output "$bootstrap_tmp/keyring.gpg" "$keyring"
+        keyring="$bootstrap_tmp/keyring.gpg"
+    fi
     if [[ -f $cache/rootfs.tar.zst && -f $cache/rootfs.sig ]]; then
         log "Using retained Arch bootstrap: $url"
     else

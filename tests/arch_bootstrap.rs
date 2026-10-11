@@ -166,3 +166,200 @@ actual=$(sha256sum "${@: -1}")
         4
     );
 }
+
+/// Stop the isolated signing agent before its temporary home is removed.
+/// 在删除临时签名目录前停止隔离的签名代理。
+struct SigningHome(tempfile::TempDir);
+
+impl Drop for SigningHome {
+    fn drop(&mut self) {
+        let _ = Command::new("gpgconf")
+            .arg("--homedir")
+            .arg(self.0.path())
+            .args(["--kill", "gpg-agent"])
+            .output();
+    }
+}
+
+/// Run real GnuPG without reading the user's configuration or keyring.
+/// 使用真实 GnuPG，且不读取用户配置或密钥环。
+fn gpg(home: &Path, arguments: &[&str]) -> Vec<u8> {
+    let output = Command::new("gpg")
+        .args(["--batch", "--no-options", "--homedir"])
+        .arg(home)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+/// Verify real signatures with all supported keyring formats and reject invalid inputs.
+/// 使用所有受支持密钥环格式验证真实签名，并拒绝无效输入。
+#[test]
+fn verifies_armored_binary_and_keybox_keyrings_with_real_gpg() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path();
+    let home = SigningHome(
+        tempfile::Builder::new()
+            .prefix("rstar-gpg-")
+            .tempdir()
+            .unwrap(),
+    );
+    let plugin = path.join("plugin with spaces");
+    for directory in ["lib", "data", "state/bootstrap", "tmp", "bin"] {
+        fs::create_dir_all(plugin.join(directory)).unwrap();
+    }
+    let preset = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+    for name in ["bootstrap.sh", "lib/common.sh", "data/mirrorlist"] {
+        fs::copy(preset.join(name), plugin.join(name)).unwrap();
+    }
+    let mut archive = tar::Builder::new(Vec::new());
+    let contents = b"original mirror\n";
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(0o644);
+    header.set_size(contents.len() as u64);
+    header.set_cksum();
+    archive
+        .append_data(
+            &mut header,
+            "root.x86_64/etc/pacman.d/mirrorlist",
+            contents.as_slice(),
+        )
+        .unwrap();
+    let source = path.join("source.tar");
+    fs::write(&source, archive.into_inner().unwrap()).unwrap();
+    gpg(
+        home.0.path(),
+        &[
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--quick-generate-key",
+            "Bootstrap fixture <bootstrap@example.invalid>",
+            "ed25519",
+            "sign",
+            "0",
+        ],
+    );
+    let armored = path.join("armored keyring.gpg");
+    let binary = path.join("binary keyring.gpg");
+    let keybox = path.join("keybox ring.kbx");
+    fs::write(&armored, gpg(home.0.path(), &["--armor", "--export"])).unwrap();
+    fs::write(&binary, gpg(home.0.path(), &["--export"])).unwrap();
+    fs::copy(home.0.path().join("pubring.kbx"), &keybox).unwrap();
+    let signature = path.join("source.sig");
+    gpg(
+        home.0.path(),
+        &[
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--output",
+            signature.to_str().unwrap(),
+            "--detach-sign",
+            source.to_str().unwrap(),
+        ],
+    );
+    executable(
+        &plugin.join("bin/curl"),
+        r#"#!/bin/bash
+set -euo pipefail
+while (( $# )); do
+    case "$1" in --output) output=$2; shift 2 ;; *) url=$1; shift ;; esac
+done
+if [[ $url == *.sig ]]; then cp "$BOOTSTRAP_SIGNATURE" "$output"; else cp "$BOOTSTRAP_SOURCE" "$output"; fi
+"#,
+    );
+    let url = "https://example.invalid/bootstrap.tar.zst";
+    let run = |name: &str, keyring: &Path| {
+        let root = path.join(name);
+        fs::create_dir(&root).unwrap();
+        let output = Command::new("bash")
+            .arg(plugin.join("bootstrap.sh"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    plugin.join("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env("GNUPGHOME", home.0.path())
+            .env("RSTAR_PLUGIN_ROOT", &plugin)
+            .env("RSTAR_PLUGIN_TMP", plugin.join("tmp"))
+            .env("RSTAR_ROOT", &root)
+            .env("RSTAR_DISTRIBUTION_ARCHITECTURE", "x86_64")
+            .env("RSTAR_DISTRIBUTION_KEYRING", keyring)
+            .env("RSTAR_DISTRIBUTION_BOOTSTRAPURL", url)
+            .env_remove("RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL")
+            .env("BOOTSTRAP_SOURCE", &source)
+            .env("BOOTSTRAP_SIGNATURE", &signature)
+            .output()
+            .unwrap();
+        assert_eq!(fs::read_dir(plugin.join("tmp")).unwrap().count(), 0);
+        if !output.status.success() {
+            assert_eq!(fs::read_dir(root).unwrap().count(), 0);
+        }
+        output
+    };
+    for (name, keyring) in [
+        ("armored", &armored),
+        ("binary", &binary),
+        ("keybox", &keybox),
+    ] {
+        let output = run(name, keyring);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(path.join(name).join("etc/pacman.d/mirrorlist").is_file());
+    }
+    let malformed = path.join("malformed.gpg");
+    fs::write(
+        &malformed,
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----\ninvalid\n",
+    )
+    .unwrap();
+    assert!(!run("malformed", &malformed).status.success());
+    gpg(
+        home.0.path(),
+        &[
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--quick-generate-key",
+            "Wrong fixture <wrong@example.invalid>",
+            "ed25519",
+            "sign",
+            "0",
+        ],
+    );
+    let wrong = path.join("wrong.gpg");
+    fs::write(
+        &wrong,
+        gpg(
+            home.0.path(),
+            &["--armor", "--export", "wrong@example.invalid"],
+        ),
+    )
+    .unwrap();
+    assert!(!run("wrong-key", &wrong).status.success());
+    let mut digest = Sha256::new();
+    digest.update(url.as_bytes());
+    digest.update([0]);
+    digest.update(format!("{url}.sig").as_bytes());
+    let retained = plugin
+        .join("state/bootstrap")
+        .join(format!("{:x}", digest.finalize()));
+    fs::write(retained.join("rootfs.tar.zst"), "tampered archive").unwrap();
+    assert!(!run("tampered", &armored).status.success());
+}
