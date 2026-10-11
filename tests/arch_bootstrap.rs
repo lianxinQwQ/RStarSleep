@@ -16,6 +16,30 @@ fn executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Include the official top-level package list alongside the root filesystem.
+/// 在根文件系统旁包含官方归档顶层的软件包清单。
+fn bootstrap_archive(extra_path: Option<&str>) -> Vec<u8> {
+    let mut archive = tar::Builder::new(Vec::new());
+    let mut entries = vec![
+        ("root.x86_64/etc/pacman.d/mirrorlist", "original mirror\n"),
+        ("pkglist.x86_64.txt", "base 1-1\n"),
+    ];
+    if let Some(path) = extra_path {
+        entries.push((path, "unexpected\n"));
+    }
+    for (path, contents) in entries {
+        let mut header = tar::Header::new_gnu();
+        // Raw names permit regression fixtures containing parent-directory traversal.
+        // 原始名称允许构造包含父级跳转的回归测试归档。
+        header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
+        header.set_mode(0o644);
+        header.set_size(contents.len() as u64);
+        header.set_cksum();
+        archive.append(&header, contents.as_bytes()).unwrap();
+    }
+    archive.into_inner().unwrap()
+}
+
 /// Verify downloads are retained, reused across independent roots, and verified on every reuse.
 /// 验证下载文件被保留、跨独立根复用，且每次复用均校验。
 /// # Arguments
@@ -33,20 +57,7 @@ fn retains_and_revalidates_installation_archive_without_sharing_system_roots() {
     for name in ["bootstrap.sh", "lib/common.sh", "data/mirrorlist"] {
         fs::copy(preset.join(name), plugin.join(name)).unwrap();
     }
-    let mut archive = tar::Builder::new(Vec::new());
-    let contents = b"original mirror\n";
-    let mut header = tar::Header::new_gnu();
-    header.set_mode(0o644);
-    header.set_size(contents.len() as u64);
-    header.set_cksum();
-    archive
-        .append_data(
-            &mut header,
-            "root.x86_64/etc/pacman.d/mirrorlist",
-            contents.as_slice(),
-        )
-        .unwrap();
-    let bytes = archive.into_inner().unwrap();
+    let bytes = bootstrap_archive(None);
     let source = path.join("source.tar");
     fs::write(&source, &bytes).unwrap();
     let signature = path.join("source.sig");
@@ -117,6 +128,8 @@ actual=$(sha256sum "${@: -1}")
             fs::read_to_string(path.join(name).join("etc/pacman.d/mirrorlist")).unwrap(),
             "Server = https://mirror.invalid/$repo/os/$arch\n"
         );
+        assert!(!path.join(name).join("pkglist.x86_64.txt").exists());
+        assert_eq!(fs::read_dir(path.join(name)).unwrap().count(), 1);
     }
     assert_eq!(
         fs::read_to_string(&trace)
@@ -165,6 +178,18 @@ actual=$(sha256sum "${@: -1}")
             .count(),
         4
     );
+    for (name, extra_path) in [
+        ("unexpected", "unexpected.txt"),
+        ("nested-package-list", "pkglist.x86_64.txt/child"),
+        ("traversal", "root.x86_64/../escape"),
+    ] {
+        let bytes = bootstrap_archive(Some(extra_path));
+        fs::write(&source, &bytes).unwrap();
+        fs::write(&signature, format!("{:x}\n", Sha256::digest(&bytes))).unwrap();
+        let output = run(name, &format!("https://example.invalid/{name}.tar.zst"));
+        assert!(!output.status.success(), "accepted {extra_path}");
+        assert_eq!(fs::read_dir(path.join(name)).unwrap().count(), 0);
+    }
 }
 
 /// Stop the isolated signing agent before its temporary home is removed.
@@ -218,21 +243,8 @@ fn verifies_armored_binary_and_keybox_keyrings_with_real_gpg() {
     for name in ["bootstrap.sh", "lib/common.sh", "data/mirrorlist"] {
         fs::copy(preset.join(name), plugin.join(name)).unwrap();
     }
-    let mut archive = tar::Builder::new(Vec::new());
-    let contents = b"original mirror\n";
-    let mut header = tar::Header::new_gnu();
-    header.set_mode(0o644);
-    header.set_size(contents.len() as u64);
-    header.set_cksum();
-    archive
-        .append_data(
-            &mut header,
-            "root.x86_64/etc/pacman.d/mirrorlist",
-            contents.as_slice(),
-        )
-        .unwrap();
     let source = path.join("source.tar");
-    fs::write(&source, archive.into_inner().unwrap()).unwrap();
+    fs::write(&source, bootstrap_archive(None)).unwrap();
     gpg(
         home.0.path(),
         &[

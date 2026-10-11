@@ -36,6 +36,12 @@ pub const REQUIRED_OPERATIONS: &[&str] = &[
 /// API 3 为全新安装系统初始化稳定身份的操作。
 pub const SYSTEM_OPERATIONS: &[&str] = &["system_init"];
 pub(crate) use validation::identifier as validate_identity;
+
+/// Operations whose stdout carries records rather than build diagnostics.
+/// stdout 用于传输记录而非构建诊断的操作。
+pub(crate) fn is_query(operation: &str) -> bool {
+    matches!(operation, "query_packages" | "resolve_packages" | "list_orphans" | "query_package_files")
+}
 use validation::{identifier, io_error};
 #[cfg(test)]
 mod tests;

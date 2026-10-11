@@ -53,8 +53,8 @@ impl LoadedPlugin {
         self.invoke_environment(operation, arguments, root, architecture, (&path, None))
     }
 
-    /// Invoke a task with frozen configuration and stable system identity.
-    /// 使用冻结配置和稳定系统标识调用任务。
+    /// Invoke a task with frozen inputs, streaming diagnostics and capturing query records.
+    /// 使用冻结输入调用任务，即时转发诊断并捕获查询记录。
     ///
     /// # Arguments
     ///
@@ -351,9 +351,12 @@ impl LoadedPlugin {
         command.env_remove("RSTAR_ARCH");
         command.envs(configuration);
         command.args(arguments);
-        let output = command
-            .output()
-            .map_err(|source| io_error(&self.archive, source))?;
+        let output = if context.is_some() {
+            crate::controller::output::stream(&mut command, super::is_query(operation))
+        } else {
+            command.output()
+        }
+        .map_err(|source| io_error(&self.archive, source))?;
         if !output.status.success() {
             return Err(execution_error(self, operation, &output));
         }

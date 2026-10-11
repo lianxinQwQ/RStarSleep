@@ -18,6 +18,7 @@ mod inheritance;
 mod initramfs;
 mod model;
 mod mounts;
+mod output;
 mod persistent;
 mod predownload;
 mod records;

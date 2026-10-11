@@ -103,6 +103,8 @@ FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 `arch-bootstrap` 映射为工作目录 `state/bootstrap`，以下载 URL 和签名 URL 的 SHA-256
 区分来源。相同来源复用已下载文件，每次使用都重新验签；更换 URL 使用独立文件。
 默认 latest URL 的已保存文件也会复用，需删除对应持久文件才重新下载该 URL。
+归档允许 `root.x86_64/` 系统树和顶层 `pkglist.x86_64.txt` 包清单；包清单不写入系统根，
+其他顶层条目及父级跳转路径仍会被拒绝。
 
 安装文件可能来自较早时期，即使版本名称不变也需要更新。新建或恢复基础根后，
 控制器始终调用一次基础维护，成功后才保存基础缓存。软件有缓存时仍独立维护软件根。

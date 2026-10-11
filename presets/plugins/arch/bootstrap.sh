@@ -56,6 +56,7 @@ bootstrap() {
         path=${path#./}
         case "$path" in
             root.x86_64|root.x86_64/|root.x86_64/*) ;;
+            pkglist.x86_64.txt) ;;
             *) log "Unexpected bootstrap archive path: $path"; return 1 ;;
         esac
         case "/$path/" in */../*) log "Invalid bootstrap archive path: $path"; return 1 ;; esac

@@ -71,11 +71,11 @@ pub(in crate::controller) fn run(
     entrypoint: &Path,
     context: &BuildContext,
 ) -> Result<()> {
-    let output = command(root, directory, entrypoint, context)?
-        .output()
-        .map_err(|e| disk::io(Path::new("systemd-nspawn"), e))?;
-    eprint!("{}", String::from_utf8_lossy(&output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let output = crate::controller::output::stream(
+        &mut command(root, directory, entrypoint, context)?,
+        false,
+    )
+    .map_err(|e| disk::io(Path::new("systemd-nspawn"), e))?;
     if !output.status.success() {
         return Err(Error::Command {
             command: format!("script {}", entrypoint.display()),
