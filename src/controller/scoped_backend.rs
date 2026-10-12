@@ -1,7 +1,9 @@
 //! Apply global persistent CoW transactions to every plugin operation.
 use super::{
-    BuildBackend, BuildContext, Error, Result, fs, persistent::PersistentTransaction,
-    plugins::LoadedPlugin,
+    BuildBackend, BuildContext, Error, Result, fs,
+    persistent::PersistentTransaction,
+    plugins::{self, LoadedPlugin},
+    progress,
 };
 use std::path::{Path, PathBuf};
 
@@ -72,26 +74,18 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
         root: &Path,
         context: &BuildContext,
     ) -> Result<String> {
-        let mappings = plugin.persistent_directories()?;
-        if mappings.is_empty() {
-            return self.backend.invoke(plugin, operation, args, root, context);
-        }
-        let mut transaction =
-            PersistentTransaction::begin(self.backend, &self.pool, &self.state, &mappings)?;
-        let mut context = context.clone();
-        context.persistent_mounts = transaction.mounts();
-        let result = self.backend.invoke(plugin, operation, args, root, &context);
-        match result {
-            Ok(output) => {
-                transaction.commit(self.backend)?;
-                Ok(output)
-            }
-            Err(error) => match transaction.rollback(self.backend) {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(Error::Invalid(format!(
-                    "{error}; 持久副本回滚失败: {cleanup}"
-                ))),
-            },
+        let query = plugins::is_query(operation);
+        let execute = || self.invoke_transaction(plugin, operation, args, root, context, !query);
+        if query {
+            execute()
+        } else {
+            let (chinese, english) = progress::operation(operation);
+            progress::run(
+                &context.system_id,
+                format!("{chinese}（{}:{operation}）", plugin.metadata.id),
+                format!("{english} ({}:{operation})", plugin.metadata.id),
+                execute,
+            )
         }
     }
     fn run_script(
@@ -105,5 +99,60 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
         fs::checked(root)?;
         self.backend
             .run_script(root, directory, entrypoint, context)
+    }
+}
+
+impl<B: BuildBackend> ScopedBackend<'_, B> {
+    /// Preserve plugin query data while reporting shared-cache preparation and publication.
+    /// 保留插件查询数据，同时报告共享缓存的准备及发布。
+    fn invoke_transaction(
+        &self,
+        plugin: &LoadedPlugin,
+        operation: &str,
+        args: &[String],
+        root: &Path,
+        context: &BuildContext,
+        report: bool,
+    ) -> Result<String> {
+        let mappings = plugin.persistent_directories()?;
+        if mappings.is_empty() {
+            return self.backend.invoke(plugin, operation, args, root, context);
+        }
+        if report {
+            progress::message(
+                &context.system_id,
+                "准备共享缓存的可写工作副本",
+                "Prepare writable working copies of shared caches",
+            );
+        }
+        let mut transaction =
+            PersistentTransaction::begin(self.backend, &self.pool, &self.state, &mappings)?;
+        let mut context = context.clone();
+        context.persistent_mounts = transaction.mounts();
+        let result = self.backend.invoke(plugin, operation, args, root, &context);
+        match result {
+            Ok(output) => {
+                if report {
+                    progress::message(
+                        &context.system_id,
+                        "提交共享缓存事务",
+                        "Commit shared cache transaction",
+                    );
+                }
+                transaction.commit(self.backend)?;
+                Ok(output)
+            }
+            Err(error) => match progress::run(
+                &context.system_id,
+                "回滚失败任务的共享缓存修改",
+                "Roll back shared cache changes from the failed operation",
+                || transaction.rollback(self.backend),
+            ) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::Invalid(format!(
+                    "{error}; 持久副本回滚失败: {cleanup}"
+                ))),
+            },
+        }
     }
 }

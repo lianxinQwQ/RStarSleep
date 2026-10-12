@@ -279,14 +279,16 @@ pub(super) fn commit(
     if disk::exists(&root)? || disk::exists(&sidecar)? {
         return Err(Error::Invalid("不覆盖现有阶段缓存".into()));
     }
-    // Keep the ordinary staging parent manually: TempDir must never recursively remove a subvolume.
-    // 手动保留普通暂存父目录：TempDir 绝不能递归删除子卷。
-    let staging = tempfile::Builder::new()
+    // Keep the snapshot beside its destination; moving a read-only Btrfs subvolume across parents fails.
+    // 快照与目标同级；跨父目录移动只读 Btrfs 子卷会失败。
+    // Remove the ordinary placeholder before snapshotting; no TempDir may own a subvolume.
+    // 快照前移除普通占位目录；不能让 TempDir 持有子卷。
+    let pending = tempfile::Builder::new()
         .prefix("stage-pending-")
         .tempdir_in(cache_directory)
         .map_err(|e| disk::io(cache_directory, e))?
         .keep();
-    let pending = staging.join("root");
+    fs::remove_dir(&pending).map_err(|e| disk::io(&pending, e))?;
     let result = (|| {
         backend.snapshot_recursive(source, &pending, true)?;
         backend.check_subvolume(&pending, true)?;
@@ -295,11 +297,11 @@ pub(super) fn commit(
         disk::write(&sidecar, &record)?;
         Ok(Cache { root, record })
     })();
-    let cleanup = (|| {
+    let cleanup = (|| -> Result<()> {
         if disk::exists(&pending)? {
             backend.delete_subvolume_recursive(&pending)?;
         }
-        fs::remove_dir(&staging).map_err(|e| disk::io(&staging, e))
+        Ok(())
     })();
     match (result, cleanup) {
         (Ok(cache), Ok(())) => Ok(cache),

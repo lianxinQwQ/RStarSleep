@@ -758,3 +758,92 @@ fn shared_cache_options_precede_the_package_argument_delimiter() {
     assert!(trace.starts_with("--cachedir "));
     assert!(trace.ends_with("-- vim git\n"));
 }
+
+#[test]
+fn shared_cache_repairs_legacy_package_permissions_without_opening_private_state() {
+    let fixture = Fixture::new();
+    let resources = fixture.temporary.path().join("plugin");
+    let cache = resources.join("state/packages");
+    let repository = resources.join("state/repository");
+    let keys = resources.join("state/sources/gnupg");
+    for directory in [&cache, &repository, &keys, &resources.join("lib")] {
+        fs::create_dir_all(directory).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+    fs::copy(
+        source.join("lib/common.sh"),
+        resources.join("lib/common.sh"),
+    )
+    .unwrap();
+    let public = [
+        cache.join("paru-2.1.0-2-x86_64.pkg.tar.zst"),
+        repository.join("paru-2.1.0-2-x86_64.pkg.tar.zst"),
+        repository.join("paru-2.1.0-2-x86_64.pkg.tar.zst.sig"),
+        repository.join("rstarsleep.files.tar.gz"),
+    ];
+    let private = [repository.join(".packages.json"), keys.join("private-key")];
+    for path in public.iter().chain(&private) {
+        fs::write(path, "data").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    std::os::unix::fs::symlink(&private[1], repository.join("linked.pkg.tar.zst")).unwrap();
+    let output = fixture.run_with_env(
+        "install",
+        &["paru"],
+        "",
+        &[("RSTAR_PLUGIN_ROOT", resources.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for directory in [&cache, &repository] {
+        assert_eq!(
+            fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+    for path in public {
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "data");
+    }
+    for path in private {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        fs::metadata(keys).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(fixture.trace().ends_with("-- paru\n"));
+    let database = repository.join("rstarsleep.db.tar.gz");
+    fs::write(&database, "database").unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            "source \"$1\"; prepare_shared_cache \"$2\" \"$3\"",
+            "repair-cache",
+        ])
+        .arg(source.join("lib/common.sh"))
+        .arg(&cache)
+        .arg(&repository)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::metadata(database).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+}

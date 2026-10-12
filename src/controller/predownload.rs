@@ -2,6 +2,7 @@
 //! 维护独立缓存环境，随后丢弃其下载工作根。
 use super::{
     BuildBackend, BuildContext, Error, Result, fs as disk, identity, plugins::LoadedPlugin,
+    progress,
 };
 use crate::base_system;
 use crate::{
@@ -79,6 +80,11 @@ pub(super) fn run(
     lock.try_lock()
         .map_err(|e| Error::Invalid(format!("预下载环境正在使用: {e}")))?;
     let _lock = Lock(lock);
+    progress::message(
+        "predownload",
+        "检查预下载环境缓存，恢复或清理未完成的工作",
+        "Check the predownload environment cache and recover or clean unfinished work",
+    );
     let completed = directory.join("completed");
     let old = directory.join("previous");
     let pending = directory.join("pending");
@@ -114,6 +120,11 @@ pub(super) fn run(
     let result = (|| {
         let reused = disk::exists(&completed)?;
         if reused {
+            progress::message(
+                "predownload",
+                "复用已保存的预下载环境，创建可写工作副本",
+                "Reuse the saved predownload environment and create a writable working copy",
+            );
             let path = completed.join("environment.toml");
             disk::checked(&path)?;
             if !fs::symlink_metadata(&path)
@@ -137,6 +148,11 @@ pub(super) fn run(
             backend.check_no_nested_subvolumes(&completed.join("root"))?;
             backend.snapshot(&completed.join("root"), &root, false)?;
         } else {
+            progress::message(
+                "predownload",
+                "首次创建独立预下载环境",
+                "Create an independent predownload environment for the first time",
+            );
             backend.create_subvolume(&root)?;
             base_system::install(backend, plugin, &root, &context)?;
             let machine_id = identity::machine_id(&directory, None)?;
@@ -161,6 +177,11 @@ pub(super) fn run(
             context: &context,
         }
         .capture(Vec::new())?;
+        progress::message(
+            "predownload",
+            "校验并保存预下载环境的只读快照",
+            "Validate and save a read-only snapshot of the predownload environment",
+        );
         backend.check_no_nested_subvolumes(&root)?;
         backend.snapshot(&root, &readonly, true)?;
         disk::write(
@@ -183,19 +204,29 @@ pub(super) fn run(
         if disk::exists(&old)? {
             remove_environment(backend, &old)?;
         }
+        progress::message(
+            "predownload",
+            "环境准备完成，创建下载工作根并处理合并的软件需求",
+            "Environment ready; create the download work root and process merged package requirements",
+        );
         backend.snapshot(&completed.join("root"), &work, false)?;
         backend.invoke(plugin, "predownload", packages, &work, &context)?;
         Ok(())
     })();
-    let cleanup = (|| {
-        if disk::exists(&work)? {
-            backend.delete_subvolume_recursive(&work)?;
-        }
-        if disk::exists(&pending)? {
-            remove_environment(backend, &pending)?;
-        }
-        Ok(())
-    })();
+    let cleanup = progress::run(
+        "predownload",
+        "清理预下载临时工作根",
+        "Clean temporary predownload work roots",
+        || {
+            if disk::exists(&work)? {
+                backend.delete_subvolume_recursive(&work)?;
+            }
+            if disk::exists(&pending)? {
+                remove_environment(backend, &pending)?;
+            }
+            Ok(())
+        },
+    );
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),

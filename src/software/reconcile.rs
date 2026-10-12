@@ -1,7 +1,7 @@
 //! First installation and maintenance with dependency-preserving orphan cleanup.
 //! 首次安装和保留必要依赖的维护及孤儿清理。
 use super::{PackageSession, SoftwareState, model::names};
-use crate::controller::{BuildBackend, Error, Result};
+use crate::controller::{BuildBackend, Error, Result, progress};
 use std::collections::BTreeSet;
 
 impl<B: BuildBackend> PackageSession<'_, B> {
@@ -57,9 +57,19 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         previous: &SoftwareState,
         maintenance: bool,
     ) -> Result<SoftwareState> {
+        progress::message(
+            &self.context.system_id,
+            "解析软件包、软件组及受保护的基础目标",
+            "Resolve packages, package groups and protected base targets",
+        );
         let requested = self.resolve(targets)?;
         let protected = self.resolve(&self.plugin.metadata.protected_packages)?;
         let retained: BTreeSet<_> = requested.union(&protected).cloned().collect();
+        progress::message(
+            &self.context.system_id,
+            "核对已安装软件和当前软件需求",
+            "Compare installed packages with current requirements",
+        );
         let actual = self.inventory()?;
         // Identify replacement roots from the post-update database before installation adds packages.
         // 安装增添软件前，从更新后的数据库识别替代根。
@@ -85,7 +95,18 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             .cloned()
             .collect();
         if !missing.is_empty() {
+            progress::message(
+                &self.context.system_id,
+                format!("需要安装 {} 个软件包", missing.len()),
+                format!("{} packages need installation", missing.len()),
+            );
             self.call("install", &missing)?;
+        } else {
+            progress::message(
+                &self.context.system_id,
+                "所需软件均已安装，跳过安装",
+                "All required packages are installed; skip installation",
+            );
         }
         let mut explicit = vec!["explicit".into()];
         explicit.extend(retained.iter().cloned());
@@ -102,6 +123,11 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         if demote.len() > 1 {
             self.call("mark_reason", &demote)?;
         }
+        progress::message(
+            &self.context.system_id,
+            "检查并清理不再需要的孤儿软件包",
+            "Check and remove orphan packages that are no longer needed",
+        );
         let orphans = names(&self.call("list_orphans", &[])?)?;
         let actual = self.inventory()?;
         if orphans
@@ -115,6 +141,11 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         if !orphans.is_empty() {
             self.call("remove_orphans", &orphans.into_iter().collect::<Vec<_>>())?;
         }
+        progress::message(
+            &self.context.system_id,
+            "校验最终软件清单及安装原因",
+            "Validate the final package inventory and installation reasons",
+        );
         let result = self.capture(requested.into_iter().collect())?;
         if retained.iter().any(|name| {
             !result

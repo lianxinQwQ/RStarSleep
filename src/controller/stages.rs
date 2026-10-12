@@ -6,6 +6,7 @@ use super::{
     frozen::config_hash,
     identity,
     plugins::LoadedPlugin,
+    progress,
     records::Attempt,
 };
 use crate::{
@@ -64,10 +65,22 @@ impl<B: BuildBackend> Stages<'_, B> {
         packages: Option<Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<BuildOutcome> {
-        let base = self.base_step(base.as_ref(), packages.as_ref(), owned)?;
-        let packages = self.packages_step(packages.as_ref(), &base, owned)?;
-        let scripts = self.script_step(&packages, owned)?;
-        self.inheritance_step(&scripts, owned)
+        let id = &self.context.system_id;
+        let base = progress::run(id, "基础系统（1/4）", "Base system (1/4)", || {
+            self.base_step(base.as_ref(), packages.as_ref(), owned)
+        })?;
+        let packages = progress::run(id, "软件包（2/4）", "Software packages (2/4)", || {
+            self.packages_step(packages.as_ref(), &base, owned)
+        })?;
+        let scripts = progress::run(id, "用户脚本（3/4）", "User scripts (3/4)", || {
+            self.script_step(&packages, owned)
+        })?;
+        progress::run(
+            id,
+            "继承和版本发布（4/4）",
+            "Inheritance and version publication (4/4)",
+            || self.inheritance_step(&scripts, owned),
+        )
     }
 
     /// Create or restore this system's own base, then always maintain it before committing.
@@ -92,9 +105,25 @@ impl<B: BuildBackend> Stages<'_, B> {
         let root = self.scratch.join("base-root");
         owned.push(root.clone());
         if let Some(cached) = cached {
+            progress::message(
+                &self.context.system_id,
+                format!(
+                    "复用基础系统缓存 {}，创建可写工作副本",
+                    cached.record.version
+                ),
+                format!(
+                    "Reuse base system cache {}; create a writable working copy",
+                    cached.record.version
+                ),
+            );
             self.backend
                 .snapshot_recursive(&cached.root, &root, false)?;
         } else {
+            progress::message(
+                &self.context.system_id,
+                "无可用基础缓存，创建新基础系统",
+                "No reusable base cache; create a fresh base system",
+            );
             if self.plugin.metadata.api_version != 3 {
                 return Err(super::Error::Invalid(
                     "无基础缓存的系统创建需要 API 3 的 system_init 操作".into(),
@@ -152,6 +181,25 @@ impl<B: BuildBackend> Stages<'_, B> {
         let root = self.scratch.join("root");
         owned.push(root.clone());
         let input = cached.unwrap_or(previous_step);
+        if let Some(cached) = cached {
+            progress::message(
+                &self.context.system_id,
+                format!(
+                    "复用软件包缓存 {}，更新并协调当前软件需求",
+                    cached.record.version
+                ),
+                format!(
+                    "Reuse package cache {}; update and reconcile current requirements",
+                    cached.record.version
+                ),
+            );
+        } else {
+            progress::message(
+                &self.context.system_id,
+                "从基础系统快照安装配置的软件",
+                "Install configured software from the base system snapshot",
+            );
+        }
         self.backend.snapshot_recursive(&input.root, &root, false)?;
         let session = PackageSession {
             backend: self.backend,
@@ -194,6 +242,11 @@ impl<B: BuildBackend> Stages<'_, B> {
             packages.record.software.clone()
         };
         if self.plugin.metadata.query_package_files {
+            progress::message(
+                &self.context.system_id,
+                "生成软件包文件归属清单",
+                "Generate the package file ownership inventory",
+            );
             let bytes = self
                 .backend
                 .query_package_files(self.plugin, &root, self.context)?;
@@ -229,8 +282,18 @@ impl<B: BuildBackend> Stages<'_, B> {
                 .parameters
                 .contains_key("RSTAR_CONTENT_FSTABLINES")
         {
+            progress::message(
+                &self.context.system_id,
+                "未配置继承，直接发布脚本阶段产物",
+                "No inheritance configured; publish the script stage output",
+            );
             return self.publish(scripts);
         }
+        progress::message(
+            &self.context.system_id,
+            "创建继承阶段的可写工作副本",
+            "Create a writable working copy for inheritance",
+        );
         let root = self.scratch.join("inherit-root");
         owned.push(root.clone());
         self.backend
@@ -248,9 +311,19 @@ impl<B: BuildBackend> Stages<'_, B> {
             && !config.copy_on_write.is_empty()
         {
             if self.prepare_boot_inheritance {
+                progress::message(
+                    &self.context.system_id,
+                    "准备启动阶段继承的 initramfs 集成",
+                    "Prepare initramfs integration for boot-time inheritance",
+                );
                 self.backend.prepare_inheritance_initramfs(&root)?;
             }
             let prepared = self.attempt.directory.join("prepared-root");
+            progress::message(
+                &self.context.system_id,
+                "保存待继承的只读快照和启动阶段任务",
+                "Save the read-only prepared snapshot and boot-time inheritance task",
+            );
             self.backend.snapshot_recursive(&root, &prepared, true)?;
             super::deferred::prepare(self.backend, self.context, &config, &prepared)?;
             return Ok(BuildOutcome {
@@ -274,10 +347,22 @@ impl<B: BuildBackend> Stages<'_, B> {
         if super::fs::exists(&cache)? {
             return Err(super::Error::Invalid("不覆盖已有继承缓存".into()));
         }
-        super::inheritance::snapshot_tree(self.backend, &root, &cache, true)?;
-        super::fs::write(&directory.join("inherit.toml"), &record)?;
+        progress::run(
+            &self.context.system_id,
+            "保存继承阶段只读缓存",
+            "Save the read-only inheritance cache",
+            || {
+                super::inheritance::snapshot_tree(self.backend, &root, &cache, true)?;
+                super::fs::write(&directory.join("inherit.toml"), &record)
+            },
+        )?;
         let published = self.attempt.directory.join("root");
-        super::inheritance::snapshot_tree(self.backend, &cache, &published, true)?;
+        progress::run(
+            &self.context.system_id,
+            "发布最终只读系统根",
+            "Publish the final read-only system root",
+            || super::inheritance::snapshot_tree(self.backend, &cache, &published, true),
+        )?;
         Ok(BuildOutcome {
             system_id: self.context.system_id.clone(),
             version: self.attempt.version.clone(),
@@ -309,7 +394,12 @@ impl<B: BuildBackend> Stages<'_, B> {
     ) -> Result<Cache> {
         let record = self.record(stage, software, source)?;
         let directory = self.attempt.layout.cache.join(&self.attempt.version);
-        cache::commit(self.backend, root, &directory, record)
+        progress::run(
+            &self.context.system_id,
+            format!("保存 {stage} 阶段的只读缓存"),
+            format!("Save the read-only {stage} stage cache"),
+            || cache::commit(self.backend, root, &directory, record),
+        )
     }
 
     /// Publish the last committed step as the version's read-only root.
@@ -323,9 +413,16 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   最后成功提交的步骤。
     fn publish(&self, completed: &Cache) -> Result<BuildOutcome> {
         let root = self.attempt.directory.join("root");
-        self.backend
-            .snapshot_recursive(&completed.root, &root, true)?;
-        self.backend.check_subvolume(&root, true)?;
+        progress::run(
+            &self.context.system_id,
+            "发布最终只读系统根",
+            "Publish the final read-only system root",
+            || {
+                self.backend
+                    .snapshot_recursive(&completed.root, &root, true)?;
+                self.backend.check_subvolume(&root, true)
+            },
+        )?;
         Ok(BuildOutcome {
             system_id: self.context.system_id.clone(),
             version: self.attempt.version.clone(),

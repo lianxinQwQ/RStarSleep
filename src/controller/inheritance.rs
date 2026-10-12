@@ -1,6 +1,8 @@
 //! Inherit current-system data after scripts, with explicit snapshots for directory subvolumes.
 //! 脚本后继承当前系统数据，显式为目录子卷建立快照。
-use super::{BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin};
+use super::{
+    BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin, progress,
+};
 use crate::config::{DEFAULT_MOUNT_POINT, InheritanceConfig, inheritance_name};
 use std::{
     fs,
@@ -36,6 +38,11 @@ pub(super) fn apply(
     let config = InheritanceConfig::read(&parameters)?;
     if config.timing == crate::config::InheritanceTiming::Build {
         for source in &config.copy_on_write {
+            progress::message(
+                &context.system_id,
+                format!("继承写时复制路径：{}", source.display()),
+                format!("Inherit copy-on-write path: {}", source.display()),
+            );
             let resolved = fs::canonicalize(source).map_err(|e| disk::io(source, e))?;
             check_source(&resolved, system)?;
             backend.check_cow_source(&resolved, scratch)?;
@@ -58,19 +65,24 @@ pub(super) fn apply(
     let mut needs_manager_mount = false;
     for source in &config.mounts {
         let persistent = pool.join(inheritance_name(source)?);
+        progress::message(
+            &context.system_id,
+            format!("准备持久继承挂载：{}", source.display()),
+            format!("Prepare persistent inherited mount: {}", source.display()),
+        );
         if !disk::exists(&persistent)? {
             check_source(source, system)?;
             if backend.check_subvolume(source, false).is_ok()
                 || backend.check_subvolume(source, true).is_ok()
             {
                 eprintln!(
-                    "Warning: Mount 继承来源本身是子卷，使用完整复制 {}",
-                    source.display()
+                    "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
+                    source.display(),
                 );
             }
             if let Err(error) = backend.check_cow_source(source, &pool) {
                 eprintln!(
-                    "Warning: Mount 继承允许跨分区、子卷及内部挂载点，使用完整复制 {}: {error}",
+                    "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
                     source.display()
                 );
             }
@@ -84,7 +96,7 @@ pub(super) fn apply(
         if info.is_dir() {
             if let Err(error) = backend.check_cow_source(&persistent, &pool) {
                 eprintln!(
-                    "Warning: 复用含子卷或挂载点的 Mount 持久目录 {}: {error}",
+                    "警告：复用含子卷或挂载点的 Mount 持久目录 {} / Warning: reusing a persistent mount directory containing subvolumes or mount points: {error}",
                     persistent.display()
                 );
             }

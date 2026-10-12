@@ -5,6 +5,7 @@ use super::{
     cache::{self, Cache, Identity},
     fs,
     plugins::{self, LoadedPlugin},
+    progress,
     records::{Attempt, Status},
     stages::Stages,
 };
@@ -54,6 +55,11 @@ pub fn build_with_backend(
     } else {
         store.list_systems()?
     };
+    progress::message(
+        "build",
+        format!("准备构建 {} 个系统", systems.len()),
+        format!("Preparing to build {} systems", systems.len()),
+    );
     let runtime = store.runtime_config()?;
     super::boot::sync_executable(store.root())?;
     let work = store.build_work_dir()?;
@@ -66,8 +72,17 @@ pub fn build_with_backend(
     let mut outcomes = Vec::new();
     let mut failures = Vec::new();
     let mut prepared = Vec::new();
-    for id in systems {
-        match prepare_system(store, &id, &backend) {
+    let system_count = systems.len();
+    for (index, id) in systems.into_iter().enumerate() {
+        match progress::run(
+            &id,
+            format!("准备配置与检查缓存（{}/{system_count}）", index + 1),
+            format!(
+                "Prepare configuration and check caches ({}/{system_count})",
+                index + 1
+            ),
+            || prepare_system(store, &id, &backend),
+        ) {
             Ok(value) => prepared.push(value),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{id}: {error}")),
@@ -95,19 +110,42 @@ pub fn build_with_backend(
         }
     }
     let mut failed = std::collections::BTreeSet::new();
-    for ((_, _, _, _), indices) in groups {
+    let group_count = groups.len();
+    for (group_index, ((_, _, _, _), indices)) in groups.into_iter().enumerate() {
         let mut requirements = std::collections::BTreeSet::new();
         for &index in &indices {
             requirements.extend(prepared[index].config.packages.iter().cloned());
             requirements.extend(prepared[index].upgrade_packages.iter().cloned());
         }
         let packages: Vec<_> = requirements.into_iter().collect();
-        if let Err(error) = super::predownload::run(
-            &backend,
-            store,
-            &prepared[indices[0]].plugin,
-            &prepared[indices[0]].context,
-            &packages,
+        let systems = indices
+            .iter()
+            .map(|&index| prepared[index].context.system_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let Err(error) = progress::run(
+            "predownload",
+            format!(
+                "预下载批次 {}/{}：系统 {systems}，{} 项软件需求",
+                group_index + 1,
+                group_count,
+                packages.len()
+            ),
+            format!(
+                "Predownload batch {}/{}: systems {systems}, {} package requirements",
+                group_index + 1,
+                group_count,
+                packages.len()
+            ),
+            || {
+                super::predownload::run(
+                    &backend,
+                    store,
+                    &prepared[indices[0]].plugin,
+                    &prepared[indices[0]].context,
+                    &packages,
+                )
+            },
         ) {
             for &index in &indices {
                 let value = &prepared[index];
@@ -133,18 +171,41 @@ pub fn build_with_backend(
         if failed.contains(&index) {
             continue;
         }
-        match build_system(value, &work, &backend, &runtime) {
+        match progress::run(
+            &value.context.system_id,
+            format!("构建版本 {}", value.attempt.version),
+            format!("Build version {}", value.attempt.version),
+            || build_system(value, &work, &backend, &runtime),
+        ) {
             Ok(outcome) => outcomes.push(outcome),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{}: {error}", value.context.system_id)),
         }
     }
     if failures.is_empty() {
+        progress::message(
+            "build",
+            format!("构建结束：{} 个系统成功", outcomes.len()),
+            format!("Build finished: {} systems succeeded", outcomes.len()),
+        );
         Ok(outcomes)
     } else {
+        progress::message(
+            "build",
+            format!(
+                "构建结束：{} 个系统成功，{} 项失败",
+                outcomes.len(),
+                failures.len()
+            ),
+            format!(
+                "Build finished: {} systems succeeded, {} failures",
+                outcomes.len(),
+                failures.len()
+            ),
+        );
         for outcome in outcomes {
             eprintln!(
-                "构建完成 {}: {} -> {}",
+                "构建完成 / Build completed {}: {} -> {}",
                 outcome.system_id,
                 outcome.version,
                 outcome.root.display()
@@ -243,7 +304,17 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
         // so every build also removes their caches, even when configuration validation fails.
         // script 输出绝不作为来源。未来 script 后的新阶段须追加到 cache::STAGES，
         // 使每次构建均清理其缓存，包括配置校验失败的情况。
+        progress::message(
+            id,
+            "清理历史脚本及后续阶段缓存",
+            "Clear previous script and later stage caches",
+        );
         cache::clear_from(backend, &attempt.layout.cache, "script")?;
+        progress::message(
+            id,
+            "冻结构建配置，检查插件及参数",
+            "Freeze build configuration and validate plugin parameters",
+        );
         attempt.freeze()?;
         let config = read_build_config_at(&attempt.config)?;
         let architecture = config
@@ -257,6 +328,17 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
             &architecture,
         )?);
         let loaded = plugin.as_ref().unwrap();
+        progress::message(
+            id,
+            format!(
+                "使用插件 {} {}，架构 {architecture}",
+                loaded.metadata.id, loaded.metadata.version
+            ),
+            format!(
+                "Using plugin {} {}, architecture {architecture}",
+                loaded.metadata.id, loaded.metadata.version
+            ),
+        );
         let distribution_options = read_distribution_options_at(&attempt.config)?;
         let input = read_plugin_parameters_at(&attempt.config)?;
         let environment = crate::config::read_environment_at(&attempt.config)?;
@@ -308,11 +390,21 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
                         .as_ref()
                         != Some(&identity.options_sha256)
                 {
+                    progress::message(
+                        id,
+                        "基础配置已变化，清理基础及后续缓存",
+                        "Base configuration changed; clearing base and later caches",
+                    );
                     cache::clear_from(backend, &attempt.layout.cache, "base-system")?;
                 } else if fs::exists(&previous)?
                     && loaded.cache_configuration_hash(&previous, true).ok()
                         != Some(loaded.cache_configuration_hash(&attempt.config, true)?)
                 {
+                    progress::message(
+                        id,
+                        "软件配置已变化，清理软件及后续缓存",
+                        "Software configuration changed; clearing software and later caches",
+                    );
                     cache::clear_from(backend, &attempt.layout.cache, "packages")?;
                 }
             }
@@ -412,7 +504,12 @@ fn build_system(
         };
         stages.run(base, packages, &mut owned)
     })();
-    let cleanup = cleanup(backend, &owned);
+    let cleanup = progress::run(
+        id,
+        "清理临时工作根",
+        "Clean temporary work roots",
+        || cleanup(backend, &owned),
+    );
     let result = match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
@@ -423,7 +520,12 @@ fn build_system(
     };
     let result = result.and_then(|outcome| {
         if runtime.main_system.as_deref() == Some(id.as_str()) {
-            backend.publish_boot(&outcome, runtime)?;
+            progress::run(
+                id,
+                "发布内核、启动镜像和启动项",
+                "Publish kernel, initramfs and boot entry",
+                || backend.publish_boot(&outcome, runtime),
+            )?;
         }
         Ok(outcome)
     });
@@ -439,7 +541,19 @@ fn build_system(
                 "complete"
             };
             status(attempt, id, state, None, Some(loaded))?;
+            progress::message(
+                id,
+                "发布当前构建版本引用",
+                "Publish current build version reference",
+            );
             super::current::publish_current_build(&attempt.layout.root, id, &attempt.version)?;
+            if state == "pending-inheritance" {
+                progress::message(
+                    id,
+                    "构建产物已准备，等待启动阶段完成继承",
+                    "Build artifacts prepared; inheritance will finish during boot",
+                );
+            }
             Ok(outcome)
         }
         Err(error) => {

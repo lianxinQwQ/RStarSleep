@@ -2,6 +2,102 @@
 //! 验证步骤失败、已提交缓存恢复和无效构建记录拒绝。
 use super::*;
 
+/// Restore test-only directory permissions before Fixture's recursive cleanup.
+/// 在 Fixture 递归清理前恢复测试专用目录权限。
+struct RestoreSnapshotPermissions(std::path::PathBuf);
+
+impl Drop for RestoreSnapshotPermissions {
+    fn drop(&mut self) {
+        use std::{os::unix::fs::PermissionsExt, path::Path};
+
+        fn restore(path: &Path) {
+            if !fs::symlink_metadata(path).is_ok_and(|entry| entry.is_dir()) {
+                return;
+            }
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    restore(&entry.path());
+                }
+            }
+        }
+
+        restore(&self.0);
+    }
+}
+
+/// Publish all stage snapshots while VFS rejects moving their roots across parents.
+/// 在 VFS 拒绝跨父目录移动只读根时，仍能发布各阶段快照。
+#[test]
+fn readonly_stage_snapshots_publish_successfully() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let _permissions = RestoreSnapshotPermissions(fixture.store.root().into());
+    let backend = SimulatedBackend::default();
+    backend.protect_readonly_snapshots.set(true);
+
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+
+    for stage in ["base-system", "packages", "script"] {
+        let root = fixture.cache(&outcome.version, stage);
+        backend.check_subvolume(&root, true).unwrap();
+        assert!(
+            fixture
+                .cache(&outcome.version, &format!("{stage}.toml"))
+                .is_file()
+        );
+        assert_eq!(fs::metadata(root).unwrap().permissions().mode() & 0o222, 0);
+    }
+    backend.check_subvolume(&outcome.root, true).unwrap();
+    assert_eq!(
+        fs::read_dir(fixture.cache(&outcome.version, ""))
+            .unwrap()
+            .count(),
+        6
+    );
+    fixture.cleaned(&outcome.version);
+}
+
+/// A partially created stage snapshot is cleaned before a later build retries.
+/// 阶段快照创建后失败会先清理暂存根，后续构建可重试。
+#[test]
+fn snapshot_creation_failure_leaves_no_stage_cache_or_temporary_subvolume() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let _permissions = RestoreSnapshotPermissions(fixture.store.root().into());
+    let backend = SimulatedBackend::default();
+    backend.protect_readonly_snapshots.set(true);
+    backend.fail_readonly_snapshot_after_create.set(true);
+
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failure after snapshot creation")
+    );
+    assert!(!fixture.cache("v00000001", "base-system").exists());
+    assert!(!fixture.cache("v00000001", "base-system.toml").exists());
+    assert_eq!(
+        fs::read_dir(fixture.cache("v00000001", ""))
+            .unwrap()
+            .count(),
+        0
+    );
+    fixture.cleaned("v00000001");
+
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    backend
+        .check_subvolume(&fixture.cache(&outcome.version, "base-system"), true)
+        .unwrap();
+    fixture.cleaned(&outcome.version);
+}
+
 /// Verify a failed software install preserves completed base cache for the next attempt.
 /// 验证软件安装失败时保留完成基础缓存供下次尝试使用。
 /// # Arguments

@@ -73,6 +73,24 @@ identity_root() {
     done
 }
 
+# Repair public artifacts retained by older plugin versions without opening private state.
+# 修复旧插件保留的公开文件权限，不修改私有状态。
+prepare_shared_cache() {
+    local directory artifact
+    local -a artifacts=()
+    for directory in "$@"; do
+        [[ -d $directory ]] || continue
+        chmod 0755 -- "$directory" || return
+        for artifact in "$directory"/*.pkg.tar.* "$directory"/rstarsleep.db* "$directory"/rstarsleep.files*; do
+            [[ -f $artifact && ! -L $artifact ]] || continue
+            artifacts+=("$artifact")
+        done
+    done
+    if (( ${#artifacts[@]} )); then
+        chmod 0644 -- "${artifacts[@]}"
+    fi
+}
+
 # One configuration path for all operations; only locally produced packages use
 # the explicitly trusted rstarsleep repository. Official signature policy stays intact.
 pacman() {
@@ -84,6 +102,7 @@ pacman() {
         command pacman "${args[@]}"
         return
     fi
+    prepare_shared_cache "$cache" "$repository" || return
     # Prepared official metadata is consumed by target builds. Preparation-environment
     # maintenance retains normal refresh semantics.
     if [[ ${RSTAR_SYSTEM_ID:-} != predownload && -f $repository/.prepared.json ]]; then

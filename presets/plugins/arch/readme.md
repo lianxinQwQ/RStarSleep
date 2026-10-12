@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.7.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.7.3 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -142,11 +142,21 @@ FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 
 ## 预下载及 AUR
 
-0.5.0 默认 `predownload = true`。同一次 build 中同插件、同架构、相同发行版配置的
+构建阶段和预下载关键步骤通过 stderr 输出中英双语进度，前缀标识当前系统或
+`arch:predownload`。控制器报告阶段开始、完成、失败及耗时；缓存复用、只读快照保存、
+临时工作根清理和共享缓存提交也会明确提示。预下载脚本另报告依赖解析、下载批次、
+AUR 配方、构建依赖、源码验证、编译、运行依赖及最终签名验证，长清单每 25 项报告进度。
+
+默认 `predownload = true`。同一次 build 中同插件、同架构、相同发行版配置和有效环境的
 软件需求合并后调用一次 `predownload.sh`。下载环境独立 bootstrap、基础安装、身份初始化
 并维护，首次运行 `predownload/install.sh`，后续运行 `predownload/update.sh`。
 `RSTAR_CONFIG_DIR` 指向插件的 `predownload/`，发行版配置变量仍取自本批已校验冻结输入。
 环境缓存按完整插件哈希、架构及发行版配置哈希保存，不依赖目标系统根。
+
+官方需求使用空 local 数据库解析完整依赖，保留各需求选择的版本和虚拟包提供者。
+同批结果按包文件去重，以具体包名和版本合并为一次下载及校验；同名不同版本分批处理。
+下载阶段不再重复解析已经确定的依赖，缓存中已有的文件仍会校验，本轮已校验文件不重复处理。
+AUR 每个 pkgbase 的官方构建依赖、二进制运行依赖也分别按批准备；编译依赖仍按原顺序安装。
 
 AUR 编译以非 root 的 rstar-build 用户执行；仓库包优先从官方源解析，其他包使用 AUR RPC，
 拆分包按 pkgbase 构建。提供者不明确、循环依赖或不满足版本约束均报错。
@@ -154,6 +164,9 @@ AUR 编译以非 root 的 rstar-build 用户执行；仓库包优先从官方源
 state/packages、state/repository、state/sources，保留包、仓库和源码缓存。
 每次插件调用使用事务 CoW 副本，失败回滚，成功发布。本地仓库使用 Optional TrustAll，
 官方包另按仓库摘要及签名校验。PGP 来源密钥缺失时从 AurKeyserver 获取。
+公开包和仓库数据库以 0644 发布，缓存及仓库根目录使用 0755，兼容 pacman 的
+`DownloadUser = alpm`。软件包操作也会修复旧公开文件的权限；私有状态和密钥不在此范围。
+容器资源根及挂载路径的父目录可供下载和构建用户进入，宿主临时父目录仍保持私有。
 禁用能力可设置 `predownload = false`，持久映射仍独立生效。
 
 流程已通过模拟存储、模拟工具和真实 Bash 测试；真实 Btrfs/nspawn 完整安装链路待集成验证。

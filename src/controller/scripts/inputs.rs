@@ -5,6 +5,7 @@ use crate::controller::{
     resources::{self, Prepared},
 };
 use std::{
+    ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -12,6 +13,9 @@ use std::{
 /// One frozen payload and its root-relative entrypoint.
 /// 一项冻结资源及其相对根入口。
 pub(super) struct Script {
+    /// Original configuration entry identifying the script in progress messages.
+    /// 在进度提示中标识脚本的原始配置条目。
+    pub name: OsString,
     /// Private payload root.
     /// 私有资源根。
     pub root: PathBuf,
@@ -59,6 +63,7 @@ pub(super) fn load(directory: &Path) -> Result<Vec<Script>> {
                 fs::copy(&path, temporary.path().join(&entrypoint))
                     .map_err(|e| disk::io(&path, e))?;
                 Ok(Script {
+                    name: entry.file_name(),
                     root: temporary.path().into(),
                     entrypoint,
                     _temporary: temporary,
@@ -70,6 +75,7 @@ pub(super) fn load(directory: &Path) -> Result<Vec<Script>> {
                     root, temporary, ..
                 } = resources::prepare(&path, "main.sh", "script")?;
                 Ok(Script {
+                    name: entry.file_name(),
                     root,
                     entrypoint: "main.sh".into(),
                     _temporary: temporary,

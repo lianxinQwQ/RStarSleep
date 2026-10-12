@@ -26,8 +26,8 @@ class PreparationError(Exception):
     pass
 
 
-def log(message):
-    print(f"Arch predownload: {message}", file=sys.stderr, flush=True)
+def log(chinese, english):
+    print(f"==> [RStarSleep][arch:predownload] {chinese} / {english}", file=sys.stderr, flush=True)
 
 
 def run(argv, capture=False, allowed=(0,)):
@@ -106,6 +106,8 @@ def atomic_copy(source, destination):
             with Path(source).open("rb") as src:
                 shutil.copyfileobj(src, stream)
             stream.flush()
+            # Packages and repository metadata must be readable by pacman's DownloadUser.
+            os.fchmod(stream.fileno(), 0o644)
             os.fsync(stream.fileno())
             os.replace(temporary, destination)
         finally:
@@ -178,7 +180,7 @@ class Preparer:
             text += f"{key}={shlex.quote(str(path))}\n"
         self.makepkg_conf.write_text(text)
         self.bases, self.states, self.artifacts = {}, {}, {}
-        self.stack, self.files, self.fetched = [], set(), set()
+        self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
         self.refresh_repo()
 
@@ -208,6 +210,7 @@ class Preparer:
         self.build_conf.write_text(config)
 
     def initialize(self):
+        log("刷新官方仓库数据库", "Refresh official repository databases")
         self.pacman(["-Sy", "--noconfirm"], isolated=True)
         sync = self.actual_db / "sync"
         sync.mkdir(parents=True, exist_ok=True)
@@ -229,29 +232,86 @@ class Preparer:
                     if fields.get("FILENAME"):
                         self.official_metadata.setdefault(fields["FILENAME"][0], fields)
         self.refresh_repo()
+        log("更新预下载工作环境", "Update the predownload working environment")
         self.pacman(["-Su", "--noconfirm"])
         self.baseline = set(self.pacman(["-Qq"], capture=True).stdout.splitlines())
+        log(f"预下载工作环境已就绪，基线含 {len(self.baseline)} 个软件包",
+            f"Predownload environment ready; baseline contains {len(self.baseline)} packages")
 
     def official(self, requirement):
+        if requirement in self.resolutions:
+            return self.resolutions[requirement]
         result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", requirement],
                              isolated=True, capture=True, allowed=(0, 1))
         if result.returncode:
             if "target not found:" not in (result.stderr or "") and "could not find" not in (result.stderr or ""):
                 raise PreparationError(f"official resolution failed: {requirement}\n{result.stderr}")
+            self.resolutions[requirement] = None
             return None
         filenames = result.stdout.splitlines()
         if not filenames or any(Path(name).name != name or name in (".", "..") for name in filenames):
             raise PreparationError(f"invalid official transaction: {requirement}")
+        self.resolutions[requirement] = filenames
         return filenames
 
-    def fetch(self, requirement, filenames):
-        if requirement not in self.fetched:
-            self.pacman(["-Sw", "--noconfirm", "--", requirement], isolated=True)
-            self.fetched.add(requirement)
+    def fetch(self, filenames):
+        filenames = set(filenames)
+        pending = filenames - self.files
+        batches = []
+        for filename in sorted(pending):
+            metadata = self.official_metadata.get(filename, {})
+            try:
+                name, = metadata["NAME"]
+                version, = metadata["VERSION"]
+            except (KeyError, ValueError):
+                raise PreparationError(f"missing official package identity: {filename}") from None
+            spec(f"{name}={version}")
+            # Pacman skips duplicate package names, even with different versions.
+            for batch in batches:
+                if name not in batch:
+                    break
+            else:
+                batch = {}
+                batches.append(batch)
+            batch[name] = f"{name}={version}"
+        if batches:
+            log(f"下载并校验官方软件包：{len(pending)} 个文件，{len(batches)} 批",
+                f"Download and verify official packages (files: {len(pending)}, batches: {len(batches)})")
+        for index, batch in enumerate(batches, 1):
+            if len(batches) > 1:
+                log(f"处理官方软件包批次 {index}/{len(batches)}，共 {len(batch)} 个包",
+                    f"Process official package batch {index}/{len(batches)} (packages: {len(batch)})")
+            # -Sp already resolved each full closure. Download those exact packages
+            # without choosing different providers or merging version constraints.
+            # Two --nodeps flags skip re-resolution, retaining integrity/signature checks.
+            self.pacman(["-Sw", "--nodeps", "--nodeps", "--noconfirm", "--", *batch.values()], isolated=True)
         for name in filenames:
             if not (self.cache / name).is_file():
                 raise PreparationError(f"missing downloaded package: {name}")
-            self.files.add(name)
+        self.files.update(filenames)
+        if batches:
+            log(f"本阶段官方包准备完成：{len(pending)} 个新校验文件",
+                f"Official packages ready for this phase: {len(pending)} newly verified files")
+
+    def prefetch(self, requirements):
+        requirements = list(dict.fromkeys(requirements))
+        resolving = any(requirement not in self.resolutions for requirement in requirements)
+        if resolving:
+            log(f"解析 {len(requirements)} 项软件需求及完整依赖",
+                f"Resolve package requirements and their full dependencies (requirements: {len(requirements)})")
+        filenames, aur = set(), []
+        for index, requirement in enumerate(requirements, 1):
+            spec(requirement)
+            closure = self.official(requirement)
+            if closure is None:
+                aur.append(requirement)
+            else:
+                filenames.update(closure)
+            if resolving and (index % 25 == 0 or index == len(requirements)):
+                log(f"软件需求解析进度：{index}/{len(requirements)}",
+                    f"Package resolution progress: {index}/{len(requirements)}")
+        self.fetch(filenames)
+        return aur
 
     def rpc(self, method, name):
         query = {"v": "5", "type": method}
@@ -268,6 +328,7 @@ class Preparer:
             return self.bases[name]
         if not NAME.fullmatch(name):
             raise PreparationError(f"invalid AUR pkgbase: {name}")
+        log(f"获取并解析 AUR 构建配方：{name}", f"Fetch and inspect the AUR build recipe: {name}")
         checkout = self.checkouts / name
         if checkout.exists():
             if not (checkout / ".git").is_dir():
@@ -314,8 +375,9 @@ class Preparer:
         spec(requirement)
         filenames = self.official(requirement)
         if filenames is not None:
-            self.fetch(requirement, filenames)
+            self.fetch(filenames)
             if install:
+                log(f"安装官方构建依赖：{requirement}", f"Install official build dependency: {requirement}")
                 self.pacman(["-S", "--needed", "--noconfirm", "--", requirement])
         else:
             base = self.aur(requirement)
@@ -325,6 +387,7 @@ class Preparer:
             if len(providers) != 1:
                 raise PreparationError(f"AUR binaries do not uniquely satisfy {requirement}")
             if install:
+                log(f"安装 AUR 构建依赖：{requirement}", f"Install AUR build dependency: {requirement}")
                 self.pacman(["-U", "--needed", "--noconfirm", "--", self.repo / providers[0]["filename"]])
         if install and self.pacman(["-T", requirement], capture=True, allowed=(0, 127)).returncode:
             raise PreparationError(f"unsatisfied build dependency: {requirement}")
@@ -335,27 +398,34 @@ class Preparer:
             return
         if self.states.get(name) == "building":
             raise PreparationError("AUR dependency cycle: " + " -> ".join(self.stack + [name]))
+        log(f"开始准备 AUR 构建：{name}", f"Prepare AUR build: {name}")
         self.states[name] = "building"
         self.stack.append(name)
-        for dependency in base["build"]:
-            self.ensure(dependency, install=True)
         provided = set(base["packages"]) | {spec(p)[0] for values in base["provides"].values() for p in values}
-        for dependency in base["build_runtime"]:
-            if spec(dependency)[0] not in provided:
-                self.ensure(dependency, install=True)
+        dependencies = list(dict.fromkeys(base["build"] + [dependency for dependency in base["build_runtime"]
+                                                            if spec(dependency)[0] not in provided]))
+        log(f"准备 {name} 的构建依赖：{len(dependencies)} 项",
+                f"Prepare build dependencies for {name} (requirements: {len(dependencies)})")
+        self.prefetch(dependencies)
+        for dependency in dependencies:
+            self.ensure(dependency, install=True)
         for fingerprint in base["keys"]:
             if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", fingerprint):
                 raise PreparationError("invalid source signing fingerprint")
             result = subprocess.run(["runuser", "-u", "rstar-build", "--", "env", f"GNUPGHOME={self.keys}", "gpg", "--batch", "--list-keys", fingerprint], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if result.returncode:
+                log(f"获取源码签名公钥：{fingerprint}", f"Fetch source signing public key: {fingerprint}")
                 self.user(["gpg", "--batch", "--keyserver", os.environ.get("RSTAR_AURKEYSERVER", "hkps://keyserver.ubuntu.com"), "--recv-keys", fingerprint])
         # A new output directory avoids stale binaries and supports dynamic VCS versions.
         output = self.outputs / name
         output.mkdir()
         os.chown(output, self.builder.pw_uid, self.builder.pw_gid)
         self.makepkg_conf.write_text(self.makepkg_conf.read_text() + f"\nPKGDEST={shlex.quote(str(output))}\n")
+        log(f"下载并校验 {name} 的源码", f"Download and verify sources for {name}")
         self.makepkg(base["checkout"], ["--verifysource", "--noconfirm"])
+        log(f"编译 AUR 软件包：{name}", f"Compile AUR package: {name}")
         self.makepkg(base["checkout"], ["--force", "--cleanbuild", "--clean", "--nodeps", "--noconfirm"])
+        log(f"收集并检查 {name} 的构建产物", f"Collect and inspect build artifacts for {name}")
         artifacts = []
         for package in sorted(output.glob("*.pkg.tar.*")):
             if package.name.endswith(".sig"):
@@ -378,14 +448,20 @@ class Preparer:
         self.artifacts[name] = artifacts
         self.publish(base, artifacts)
         self.states[name] = "built"
-        for artifact in artifacts:
-            for dependency in artifact["dependencies"]:
-                if not any(self.artifact_satisfies(p, dependency) for p in artifacts):
-                    self.ensure(dependency)
+        dependencies = list(dict.fromkeys(dependency for artifact in artifacts for dependency in artifact["dependencies"]
+                                          if not any(self.artifact_satisfies(p, dependency) for p in artifacts)))
+        log(f"准备 {name} 的二进制运行依赖：{len(dependencies)} 项",
+            f"Prepare binary runtime dependencies for {name} (requirements: {len(dependencies)})")
+        self.prefetch(dependencies)
+        for dependency in dependencies:
+            self.ensure(dependency)
         self.states[name] = "complete"
         self.stack.pop()
+        log(f"AUR 软件包准备完成：{name}，共 {len(artifacts)} 个产物",
+            f"AUR package ready: {name}, {len(artifacts)} artifacts")
 
     def publish(self, base, artifacts):
+        log(f"发布 {base['name']} 到共享 AUR 本地仓库", f"Publish {base['name']} to the shared local AUR repository")
         database = self.repo / f"{REPO}.db.tar.gz"
         ownership_path = self.repo / ".packages.json"
         ownership = json.loads(ownership_path.read_text()) if ownership_path.exists() else {}
@@ -410,14 +486,17 @@ class Preparer:
     def clean_dependencies(self):
         added = sorted(set(self.pacman(["-Qq"], capture=True).stdout.splitlines()) - self.baseline)
         if added:
+            log(f"清理临时 AUR 构建依赖：{len(added)} 个包", f"Remove temporary AUR build dependencies: {len(added)} packages")
             self.pacman(["-R", "--noconfirm", "--", *added])
         if set(self.pacman(["-Qq"], capture=True).stdout.splitlines()) != self.baseline:
             raise PreparationError("AUR dependency cleanup changed environment baseline")
 
     def finish(self, requested):
         files = self.files | {p["filename"] for values in self.artifacts.values() for p in values}
+        log(f"最终校验软件包摘要和官方签名：{len(files)} 个文件",
+            f"Final package checksum and official signature verification (files: {len(files)})")
         hashes = {}
-        for name in sorted(files):
+        for index, name in enumerate(sorted(files), 1):
             digest = hashlib.sha256()
             with (self.cache / name).open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -433,30 +512,37 @@ class Preparer:
                 signature = self.work / "verify.sig"
                 signature.write_bytes(base64.b64decode(signatures[0], validate=True))
                 run(["pacman-key", "--verify", signature, self.cache / name])
+            if index % 25 == 0 or index == len(files):
+                log(f"最终校验进度：{index}/{len(files)}", f"Final verification progress: {index}/{len(files)}")
+        log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
         prepared_sync = self.repo / "official-sync"
         prepared_sync.mkdir(exist_ok=True)
         for database in (self.db / "sync").iterdir():
             if database.is_file():
                 atomic_copy(database, prepared_sync / database.name)
         atomic_json(self.repo / ".prepared.json", dict(format=1, architecture=self.arch, requested=requested, packages=hashes, aur=self.artifacts))
-        log(f"prepared {len(files)} package files")
+        log(f"预下载及 AUR 准备完成：{len(files)} 个软件包文件", f"Predownload and AUR preparation complete: {len(files)} package files")
 
 
 def main():
     requested = list(dict.fromkeys(["base", *sys.argv[1:]]))
     if any(not NAME.fullmatch(name) for name in requested):
         raise PreparationError("invalid requested package")
+    log(f"开始共享软件准备：{len(requested)} 项需求（含 base）",
+        f"Start shared package preparation: {len(requested)} requirements (including base)")
     with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-") as workspace:
         preparer = Preparer(workspace)
         preparer.initialize()
-        aur_targets = [package for package in requested if preparer.official(package) is None]
+        aur_targets = preparer.prefetch(requested)
+        if aur_targets:
+            log(f"解析并构建 AUR 软件：{len(aur_targets)} 项需求", f"Resolve and build AUR packages (requirements: {len(aur_targets)})")
         for package in aur_targets:
             info = preparer.rpc("info", package)
             if info:
                 preparer.load_base(info[0]["PackageBase"])
         for package in aur_targets:
             preparer.aur(package)
-        for package in requested:
+        for package in aur_targets:
             preparer.ensure(package)
             preparer.clean_dependencies()
         preparer.finish(requested)
@@ -466,5 +552,5 @@ if __name__ == "__main__":
     try:
         main()
     except (PreparationError, OSError, KeyError, ValueError, urllib.error.URLError, tarfile.TarError) as error:
-        log(str(error))
+        log(f"预下载失败：{error}", f"Predownload failed: {error}")
         sys.exit(1)

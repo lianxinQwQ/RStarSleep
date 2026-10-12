@@ -22,6 +22,7 @@ mod mounts;
 mod output;
 mod persistent;
 mod predownload;
+pub(crate) mod progress;
 mod records;
 mod resources;
 mod scoped_backend;

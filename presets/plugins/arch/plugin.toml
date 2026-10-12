@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.7.0"
+version = "0.7.3"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -74,6 +74,6 @@ software = []
 host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
-system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv"]
+system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]
 
 predownload = ["python3", "git", "makepkg", "repo-add", "repo-remove", "bsdtar", "vercmp", "runuser", "gpg"]

@@ -181,6 +181,11 @@ pub fn finalize_inheritance_locked(
     backend: &impl BuildBackend,
 ) -> Result<()> {
     let manifest = read_manifest(manifest_path)?;
+    super::progress::message(
+        &manifest.system_id,
+        "校验启动阶段继承任务和来源",
+        "Validate the boot-time inheritance task and sources",
+    );
     disk::checked(filesystem_root)?;
     let (uuid, _) = backend.filesystem_location(filesystem_root)?;
     if uuid != manifest.filesystem_uuid {
@@ -226,7 +231,13 @@ pub fn finalize_inheritance_locked(
     );
     if disk::exists(&final_root)? {
         verify_commit(backend, directory, &final_root, &digest)?;
-        return mark_complete(directory);
+        mark_complete(directory)?;
+        super::progress::message(
+            &manifest.system_id,
+            "启动阶段继承已完成，复用最终系统根",
+            "Boot-time inheritance already complete; reuse the final system root",
+        );
+        return Ok(());
     }
     backend.check_subvolume(&prepared, true)?;
     if backend.source_subvolume_id(&prepared)? != manifest.prepared_subvolume_id {
@@ -258,41 +269,51 @@ pub fn finalize_inheritance_locked(
         sources.push((source, path));
     }
     backend.snapshot_recursive(&prepared, &staging, false)?;
-    let result = (|| {
-        for (source, path) in sources {
-            let target = disk::guest_path(&staging, &source.target)?;
-            super::inheritance::inherit_path(
-                backend,
-                &path,
-                &target,
-                manifest.directory_subvolume,
-            )?;
-        }
-        let mut identities = Vec::new();
-        for child in backend.nested_subvolumes(&staging)? {
-            identities.push((
-                child.clone(),
-                backend.source_subvolume_id(&staging.join(child))?,
-            ));
-        }
-        let receipt = CommitReceipt {
-            manifest_sha256: digest.clone(),
-            root_subvolume_id: backend.source_subvolume_id(&staging)?,
-            children: identities,
-        };
-        disk::write(&directory.join("inheritance-commit.toml"), &receipt)?;
-        let mut children = backend.nested_subvolumes(&staging)?;
-        children.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-        for child in children {
-            backend.set_readonly(&staging.join(child), true)?;
-        }
-        backend.set_readonly(&staging, true)?;
-        backend.sync_filesystem(&staging)?;
-        fs::rename(&staging, &final_root).map_err(|e| disk::io(&final_root, e))?;
-        disk::sync(directory)?;
-        backend.sync_filesystem(directory)?;
-        mark_complete(directory)
-    })();
+    let result = super::progress::run(
+        &manifest.system_id,
+        "应用启动阶段继承并发布只读系统根",
+        "Apply boot-time inheritance and publish the read-only system root",
+        || {
+            for (source, path) in sources {
+                super::progress::message(
+                    &manifest.system_id,
+                    format!("继承路径：{}", source.target.display()),
+                    format!("Inherit path: {}", source.target.display()),
+                );
+                let target = disk::guest_path(&staging, &source.target)?;
+                super::inheritance::inherit_path(
+                    backend,
+                    &path,
+                    &target,
+                    manifest.directory_subvolume,
+                )?;
+            }
+            let mut identities = Vec::new();
+            for child in backend.nested_subvolumes(&staging)? {
+                identities.push((
+                    child.clone(),
+                    backend.source_subvolume_id(&staging.join(child))?,
+                ));
+            }
+            let receipt = CommitReceipt {
+                manifest_sha256: digest.clone(),
+                root_subvolume_id: backend.source_subvolume_id(&staging)?,
+                children: identities,
+            };
+            disk::write(&directory.join("inheritance-commit.toml"), &receipt)?;
+            let mut children = backend.nested_subvolumes(&staging)?;
+            children.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+            for child in children {
+                backend.set_readonly(&staging.join(child), true)?;
+            }
+            backend.set_readonly(&staging, true)?;
+            backend.sync_filesystem(&staging)?;
+            fs::rename(&staging, &final_root).map_err(|e| disk::io(&final_root, e))?;
+            disk::sync(directory)?;
+            backend.sync_filesystem(directory)?;
+            mark_complete(directory)
+        },
+    );
     if let Err(error) = &result {
         disk::write_text(&directory.join("inheritance-error.txt"), &error.to_string())?;
     }

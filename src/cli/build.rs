@@ -53,7 +53,7 @@ fn warn_inheritance(store: &ConfigStore, system: Option<&str>) -> super::Result<
         let config = crate::config::InheritanceConfig::read(&parameters)?;
         if !config.copy_on_write.is_empty() {
             warnings.push(format!(
-                "警告：系统 {id} 将继承 {:?}；Timing={}，DirectorySubvolume={}。\n继承路径不设黑名单，内容及兼容性由用户负责；initramfs 模式的内核与启动镜像固定为构建时产物。\n",
+                "警告：系统 {id} 将继承 {:?}；Timing={}，DirectorySubvolume={}。\n继承路径不设黑名单，内容及兼容性由用户负责；initramfs 模式的内核与启动镜像固定为构建时产物。\nWarning: system {id} will inherit the paths above with the listed timing and directory subvolume settings. Inherited content and compatibility are user-managed; initramfs mode uses the kernel and boot image produced by this build.\n",
                 config.copy_on_write, config.timing.as_str(),
                 if config.directory_subvolume { "yes" } else { "no" }));
         }
@@ -63,7 +63,10 @@ fn warn_inheritance(store: &ConfigStore, system: Option<&str>) -> super::Result<
         for warning in warnings {
             write!(stderr, "{warning}")?;
         }
-        writeln!(stderr, "将在 3 秒后开始构建；按 Ctrl+C 取消。")?;
+        writeln!(
+            stderr,
+            "将在 3 秒后开始构建；按 Ctrl+C 取消。 / Build starts in 3 seconds; press Ctrl+C to cancel."
+        )?;
         stderr.flush()?;
         drop(stderr);
         std::thread::sleep(std::time::Duration::from_secs(3));

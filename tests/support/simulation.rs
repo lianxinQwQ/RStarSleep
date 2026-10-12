@@ -9,6 +9,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -54,6 +55,8 @@ pub struct SimulatedBackend {
     pub fail_operation: RefCell<Option<&'static str>>,
     pub fail_restore: Cell<bool>,
     pub fail_restore_to: RefCell<Option<&'static str>>,
+    pub protect_readonly_snapshots: Cell<bool>,
+    pub fail_readonly_snapshot_after_create: Cell<bool>,
     pub remove_kept_on_update: Cell<bool>,
     pub mutate_editable: RefCell<Option<PathBuf>>,
     pub mutate_environment: RefCell<Option<(PathBuf, String)>>,
@@ -378,6 +381,16 @@ impl BuildBackend for SimulatedBackend {
             if readonly { "readonly" } else { "writable" },
         )
         .unwrap();
+        if readonly && self.protect_readonly_snapshots.get() {
+            // Directory moves across parents check write access on the moved root.
+            // 跨父目录移动时，VFS 会检查被移动目录根的写权限。
+            fs::set_permissions(destination, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        if readonly && self.fail_readonly_snapshot_after_create.replace(false) {
+            return Err(Error::Invalid(
+                "injected failure after snapshot creation".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -397,6 +410,9 @@ impl BuildBackend for SimulatedBackend {
     }
     fn delete_subvolume(&self, path: &Path) -> Result<()> {
         assert!(path.join(MARKER).is_file());
+        if self.protect_readonly_snapshots.get() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         fs::remove_dir_all(path).unwrap();
         Ok(())
     }
