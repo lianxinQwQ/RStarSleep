@@ -234,6 +234,8 @@ persistent；继承 `/etc` 时把最终 fstab 同步回新根。Arch 在专用�
 主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
 `/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
 随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
+若版本的 `/boot` 中存在 `intel-ucode.img` 或 `amd-ucode.img`，一并复制到该版本的启动目录，
+并在启动项中将其 `initrd` 行放在主 initramfs 之前；微码镜像缺失时跳过，存在时必须为普通文件。
 通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
 全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
 实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。

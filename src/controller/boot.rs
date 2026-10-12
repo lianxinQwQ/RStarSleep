@@ -19,8 +19,8 @@ pub(super) struct BootRecord {
     pub entry: PathBuf,
 }
 
-/// Resolve the actual completed root mount and publish its kernel and initramfs.
-/// 解析完成根的实际挂载，并发布内核和 initramfs。
+/// Resolve the completed root mount and publish its kernel, initramfs and available microcode.
+/// 解析完成根的实际挂载，并发布内核、initramfs 及存在的微码镜像。
 /// # Arguments
 /// - `outcome`: Completed version. 完成版本。
 /// - `config`: Global boot settings. 全局启动设置。
@@ -104,11 +104,17 @@ fn publish_at(
         .prefix(".pending-")
         .tempdir_in(&parent)
         .map_err(|e| fs::io(&parent, e))?;
-    for (source, name) in [
-        ("boot/initramfs-linux.img", "initramfs-linux.img"),
-        ("boot/vmlinuz-linux", "vmlinuz"),
+    let mut initrds = String::new();
+    for (source, name, required) in [
+        ("boot/intel-ucode.img", "intel-ucode.img", false),
+        ("boot/amd-ucode.img", "amd-ucode.img", false),
+        ("boot/initramfs-linux.img", "initramfs-linux.img", true),
+        ("boot/vmlinuz-linux", "vmlinuz", true),
     ] {
         let source = outcome.root.join(source);
+        if !required && !fs::exists(&source)? {
+            continue;
+        }
         fs::checked(&source)?;
         if !disk::symlink_metadata(&source)
             .map_err(|e| fs::io(&source, e))?
@@ -124,6 +130,9 @@ fn publish_at(
         disk::File::open(&target)
             .and_then(|f| f.sync_all())
             .map_err(|e| fs::io(&target, e))?;
+        if name != "vmlinuz" {
+            initrds.push_str(&format!("initrd /RStarSleep/{}/{name}\n", outcome.version));
+        }
     }
     let record = BootRecord {
         system_id: outcome.system_id.clone(),
@@ -137,9 +146,8 @@ fn publish_at(
     disk::rename(staging.path(), &directory).map_err(|e| fs::io(&directory, e))?;
     fs::sync(&parent)?;
     let text = format!(
-        "title RStarSleep {} {}\nlinux /RStarSleep/{}/vmlinuz\ninitrd /RStarSleep/{}/initramfs-linux.img\noptions root=UUID={uuid} rootflags=subvol={} ro {}\n",
+        "title RStarSleep {} {}\nlinux /RStarSleep/{}/vmlinuz\n{initrds}options root=UUID={uuid} rootflags=subvol={} ro {}\n",
         outcome.system_id,
-        outcome.version,
         outcome.version,
         outcome.version,
         root_subvolume.to_str().unwrap().trim_start_matches('/'),
@@ -206,6 +214,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn publishes_available_microcode_before_the_main_initramfs() {
+        let cases: &[&[&str]] = &[
+            &[],
+            &["intel-ucode.img"],
+            &["amd-ucode.img"],
+            &["intel-ucode.img", "amd-ucode.img"],
+        ];
+        for &microcode in cases {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("versions/v00000001/root");
+            disk::create_dir_all(root.join("boot")).unwrap();
+            disk::write(root.join("boot/vmlinuz-linux"), "kernel").unwrap();
+            disk::write(root.join("boot/initramfs-linux.img"), "initramfs").unwrap();
+            for &name in microcode {
+                disk::write(root.join("boot").join(name), name).unwrap();
+            }
+            let outcome = BuildOutcome {
+                system_id: "desktop".into(),
+                version: "v00000001".into(),
+                root,
+            };
+            let config = RuntimeConfig {
+                schema_version: 1,
+                main_system: Some("desktop".into()),
+                subsystems: vec![],
+                boot_dir: temporary.path().join("esp"),
+                kernel_options: vec![],
+            };
+            publish_at(&outcome, &config, "abc-123", Path::new("/root")).unwrap();
+            let text = disk::read_to_string(
+                config
+                    .boot_dir
+                    .join("loader/entries/RStarSleep-desktop-v00000001.conf"),
+            )
+            .unwrap();
+            let expected: Vec<_> = microcode
+                .iter()
+                .copied()
+                .chain(["initramfs-linux.img"])
+                .map(|name| format!("initrd /RStarSleep/v00000001/{name}"))
+                .collect();
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.starts_with("initrd "))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let published = config.boot_dir.join("RStarSleep/v00000001");
+            for name in ["intel-ucode.img", "amd-ucode.img"] {
+                assert_eq!(published.join(name).exists(), microcode.contains(&name));
+                if microcode.contains(&name) {
+                    assert_eq!(disk::read(published.join(name)).unwrap(), name.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn pending_entry_loads_prepared_artifacts_but_mounts_only_the_final_root() {
         let directory = tempfile::tempdir().unwrap();
         let prepared = directory.path().join("versions/v00000001/prepared-root");
@@ -252,12 +318,12 @@ mod tests {
         assert!(!text.contains("prepared-root"));
     }
 
-    /// Publish exact kernel paths and reject collisions or missing artifacts without a boot entry.
-    /// 发布准确内核路径，拒绝冲突或缺失产物且不生成启动项。
+    /// Publish exact kernel paths and reject collisions, missing or invalid artifacts.
+    /// 发布准确内核路径，拒绝冲突、缺失或无效产物且不生成启动项。
     /// # Arguments
     /// No parameters. 无参数。
     #[test]
-    fn publishes_complete_entries_and_never_exposes_missing_artifacts() {
+    fn publishes_complete_entries_and_rejects_missing_or_invalid_artifacts() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("versions/v00000001/root");
         disk::create_dir_all(root.join("boot")).unwrap();
@@ -288,6 +354,25 @@ mod tests {
             .join("loader/entries/RStarSleep-desktop-v00000001.conf");
         assert!(!entry.exists());
         disk::write(root.join("boot/initramfs-linux.img"), "initramfs").unwrap();
+        for name in ["intel-ucode.img", "amd-ucode.img"] {
+            let source = root.join("boot").join(name);
+            for link in [false, true] {
+                if link {
+                    std::os::unix::fs::symlink("missing-microcode.img", &source).unwrap();
+                } else {
+                    disk::create_dir(&source).unwrap();
+                }
+                assert!(publish_at(&outcome, &config, "abc-123", Path::new("/root")).is_err());
+                assert!(!entry.exists());
+                assert!(!config.boot_dir.join("RStarSleep/v00000001").exists());
+                assert!(!root.parent().unwrap().join("boot.toml").exists());
+                if link {
+                    disk::remove_file(&source).unwrap();
+                } else {
+                    disk::remove_dir(&source).unwrap();
+                }
+            }
+        }
         publish_at(
             &outcome,
             &config,

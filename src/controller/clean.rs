@@ -239,8 +239,13 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
     if disk::exists(&record.directory)? {
         for entry in fs::read_dir(&record.directory).map_err(|e| disk::io(&record.directory, e))? {
             let entry = entry.map_err(|e| disk::io(&record.directory, e))?;
-            if !["vmlinuz", "initramfs-linux.img"]
-                .contains(&entry.file_name().to_str().unwrap_or(""))
+            if ![
+                "vmlinuz",
+                "initramfs-linux.img",
+                "intel-ucode.img",
+                "amd-ucode.img",
+            ]
+            .contains(&entry.file_name().to_str().unwrap_or(""))
                 || !entry
                     .file_type()
                     .map_err(|e| disk::io(&entry.path(), e))?

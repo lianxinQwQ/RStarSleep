@@ -345,6 +345,8 @@ fn clean_removes_only_owned_boot_files() {
     fs::create_dir_all(entry.parent().unwrap()).unwrap();
     fs::write(directory.join("vmlinuz"), "kernel").unwrap();
     fs::write(directory.join("initramfs-linux.img"), "initramfs").unwrap();
+    fs::write(directory.join("intel-ucode.img"), "intel-microcode").unwrap();
+    fs::write(directory.join("amd-ucode.img"), "amd-microcode").unwrap();
     fs::write(&entry, "entry").unwrap();
     let unrelated = entry.parent().unwrap().join("other.conf");
     fs::write(&unrelated, "keep").unwrap();
