@@ -6,6 +6,64 @@ use super::*;
 use crate::controller::plugins::container::nspawn;
 use std::fs;
 
+/// Both probe and task receive literal secrets through the environment, including list JSON.
+/// 探测和任务通过环境接收秘密的原值及列表 JSON，命令行只包含变量名。
+#[test]
+fn configuration_values_and_json_stay_out_of_container_arguments() {
+    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.config.optional.push("RSTAR_SECRET".into());
+    let secret = "private $value with spaces";
+    let parameters = BTreeMap::from([("RSTAR_SECRET".into(), secret.into())]);
+    let parameter_lists = BTreeMap::from([("RSTAR_SECRET".into(), vec![secret.into()])]);
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        parameters,
+        parameter_lists,
+        config: root.clone(),
+        distribution_options: Default::default(),
+        environment: Default::default(),
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    let launcher_path = path.join("systemd-nspawn");
+    fs::write(
+        &launcher_path,
+        r#"#!/bin/sh
+printf '%s\0' "$@" >> launcher-argv
+printf '%s\0%s\0' "$RSTAR_SECRET" "$RSTAR_PARAMETERS_JSON" >> launcher-values
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o755)).unwrap();
+    plugin
+        .invoke_environment(
+            "update",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+        )
+        .unwrap();
+    let arguments = fs::read_to_string(plugin.root().join("launcher-argv")).unwrap();
+    assert!(!arguments.contains(secret));
+    assert_eq!(arguments.matches("--setenv=RSTAR_SECRET\0").count(), 2);
+    assert_eq!(
+        arguments
+            .matches("--setenv=RSTAR_PARAMETERS_JSON\0")
+            .count(),
+        2
+    );
+    let json = serde_json::to_string(&context.parameter_lists).unwrap();
+    assert_eq!(
+        fs::read_to_string(plugin.root().join("launcher-values")).unwrap(),
+        format!("{secret}\0{json}\0{secret}\0{json}\0")
+    );
+}
+
 /// Pass native values literally to bootstrap, the guest probe and the guest task.
 /// 将原生值以字面量传入 bootstrap、容器检查及容器任务。
 /// # Arguments
@@ -208,16 +266,14 @@ fn passes_declared_configuration_values_literally_to_host_and_guest() {
     assert_eq!(
         fields
             .iter()
-            .filter(
-                |field| **field == format!("--setenv=RSTAR_DISTRIBUTION_MIRROR={value}").as_bytes()
-            )
+            .filter(|field| **field == b"--setenv=RSTAR_DISTRIBUTION_MIRROR")
             .count(),
         2
     );
     assert_eq!(
         fields
             .iter()
-            .filter(|field| **field == b"--setenv=RSTAR_DISTRIBUTION_CHANNEL=stable")
+            .filter(|field| **field == b"--setenv=RSTAR_DISTRIBUTION_CHANNEL")
             .count(),
         2
     );
@@ -519,8 +575,8 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
         .unwrap();
     let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
     let fields: Vec<_> = trace.split(|byte| *byte == 0).collect();
-    assert!(fields.contains(&b"--setenv=RSTAR_ARCHITECTURE=x86_64".as_slice()));
-    assert!(fields.contains(&b"--setenv=RSTAR_AURKEYSERVER=hkps://example.invalid".as_slice()));
+    assert!(fields.contains(&b"--setenv=RSTAR_ARCHITECTURE".as_slice()));
+    assert!(fields.contains(&b"--setenv=RSTAR_AURKEYSERVER".as_slice()));
     assert!(
         !fields
             .iter()

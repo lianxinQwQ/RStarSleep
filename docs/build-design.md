@@ -148,13 +148,14 @@ arch-plugin.tar.zst
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.10.0"
+version = "0.10.1"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
 # Protected explicit base targets.
 # 受保护的显式基础目标。
 protected_packages = ["base"]
+post_maintenance = true
 mount_inheritance = true
 
 # Initial installation downloads must be retained for later independent installations.
@@ -170,7 +171,11 @@ optional = [
     "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
+    "RSTAR_CONTENT_ROOTPASSWORD",
 ]
+
+[config.constraints.RSTAR_CONTENT_ROOTPASSWORD]
+kind = "free-single"
 
 [config.constraints.RSTAR_CONTENT_FSTABLINES]
 kind = "free-list"
@@ -185,12 +190,13 @@ software = []
 # 各执行环境所需的外部可执行工具。
 [tools]
 host = ["bash", "curl", "tar", "zstd", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
-system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir"]
+system = ["bash", "pacman", "pacman-key", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir"]
 ```
 
 操作文件优先使用 `<操作名>.sh`，例如 `install.sh`，也支持无后缀同名可执行文件，
 不通过元数据配置入口。API 2 加载时要求原十个必需操作，API 3 额外要求系统身份初始化
 `system_init`；声明 `mount_inheritance = true` 时还必须提供同名操作。
+`post_maintenance` 是可选能力，省略时为 false；声明为 true 时必须提供安全的同名操作入口。
 启动继承动作只在当前系统为主系统、`Timing=initramfs` 且 `CopyOnWrite` 非空时，
 于构建前要求存在；子系统不要求该入口。所需操作文件必须为普通文件，不接受目录或
 符号链接。每次调用前再次校验当前操作文件。公共函数可以放在 `lib/common.sh`
@@ -321,6 +327,7 @@ PATH 代替。操作执行器调用 `.sh` 入口时检查 Bash；无后缀入口
 | `system_init`（API 3） | 在独立安装根中初始化稳定身份和系统特定配置 |
 | `update` | 执行该发行版的完整系统更新 |
 | `maintain_packages`（可选） | 根据完整目标计划统一清理、安装、更新软件，返回实际软件状态 |
+| `post_maintenance`（可选） | 软件阶段完成后、用户脚本之前执行发行版自定义行为；无参数，每次构建调用 |
 | `collect_packages`（可选） | 收集配置目标、声明基础包及运行依赖，输出当前系统的具体包计划 |
 | `resolve_packages` / `query_packages` | 将配置解析为实际包名，查询已安装包及显式/依赖安装原因 |
 | `install` / `remove` / `mark_reason` | 安装、依赖检查下删除、调整安装原因 |
@@ -330,6 +337,13 @@ PATH 代替。操作执行器调用 `.sh` 入口时检查 Bash；无后缀入口
 
 主程序只理解这些操作的语义；pacman、apt 等具体命令及输出解释属于发行版插件。
 简单任务直接在脚本内完成，复杂任务调用随包携带的二进制，不改变核心接口。
+
+`post_maintenance` 沿用目标系统 nspawn、插件资源、持久挂载和冻结配置环境。
+配置值及 `RSTAR_PARAMETERS_JSON` 通过进程环境及 `--setenv=名称` 传递，值不进入 nspawn 的命令行参数。
+此接口只表示软件维护后的通用行为。Arch 预设用它读取 `[Content] RootPassword`
+（`RSTAR_CONTENT_ROOTPASSWORD`）并通过 stdin 调用 `chpasswd` 设置 root 密码，未配置或为空时跳过。
+RootPassword 是单项明文配置，不允许重复赋值或换行；沿用 INI 的首尾去空白和 `#` 注释规则，
+随既有配置归档流程保留明文。设置失败阻止发布，诊断不包含密码。
 
 使用短生命周期的任务调用，控制器按操作名优先选择对应的 `.sh` 文件，由 Bash 执行；
 不存在 `.sh` 文件时选择无后缀同名可执行普通文件，直接执行。
@@ -529,10 +543,13 @@ systems/<系统>/versions/<版本>/root/
 - 新版 Packages 为空时始终使用本次基础输出，跳过旧软件缓存及重复维护。
 - 旧插件无软件缓存时首次安装；有缓存时执行通用系统更新、目标调整和孤儿清理。
 
-步骤 3：script。
+步骤 3：插件后处理和 script。
 
 - 每次从本次已提交的软件缓存创建可写 CoW `script-root`，没有有缓存/无缓存分支，
   从不读取旧 script 缓存或最终版本根。即使 script 目录为空，也提交此步骤输出。
+- 插件后处理与用户脚本共用此阶段快照；script 及后续快照只供调试和备份，不作下次构建来源。
+- 若插件声明 `post_maintenance = true`，先无参数调用该操作，再执行用户脚本。
+  每次构建均重新调用，包括软件缓存复用和 Packages 为空的情况；结果不写回基础或软件缓存。
 - 按文件名顺序执行冻结配置的 `script/` 中全部条目；目录和压缩包要求根内普通
   `main.sh`，允许与插件相同的单层包装目录。独立 `*.sh` 保留原名并置于空目录。
 - 每项资源实际复制到系统根内一个独立可写临时目录，避免被 nspawn 的 `/run`、
@@ -540,7 +557,7 @@ systems/<系统>/versions/<版本>/root/
 - 传入 `RSTAR_SYSTEM_ID`、`RSTAR_DISTRIBUTION_ARCHITECTURE`、`RSTAR_ROOT=/`，冻结配置只读绑定，
   `RSTAR_CONFIG_DIR=/run/rstarsleep/config`。未知文件、特殊条目及越界链接直接报错。
 - 执行成功后捕获实际包清单，并提交 `cache/<版本>/script` 只读快照和 `script.toml`。
-  脚本失败时不提交 script 缓存、不发布版本，已完成的基础和软件缓存仍可复用。
+  插件后处理或脚本失败时不提交 script 缓存、不发布版本，已完成的基础和软件缓存仍可复用。
 
 步骤 4：inherit。
 

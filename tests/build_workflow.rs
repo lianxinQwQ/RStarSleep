@@ -224,6 +224,9 @@ mod base_system;
 #[path = "build_workflow/scripts.rs"]
 mod scripts;
 
+#[path = "build_workflow/post_maintenance.rs"]
+mod post_maintenance;
+
 #[path = "build_workflow/boot_preflight.rs"]
 mod boot_preflight;
 

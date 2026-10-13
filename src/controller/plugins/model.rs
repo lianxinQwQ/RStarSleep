@@ -241,6 +241,10 @@ pub struct Metadata {
     /// 由单个插件操作协调完整目标软件计划。
     #[serde(default)]
     pub package_maintenance: bool,
+    /// Optional behavior after software maintenance, before per-system user scripts.
+    /// 可选的软件维护后行为，在单系统用户脚本之前执行。
+    #[serde(default)]
+    pub post_maintenance: bool,
     /// Optional query of configured targets, base packages and runtime dependencies.
     /// 可选的配置目标、基础包及运行依赖查询。
     #[serde(default)]

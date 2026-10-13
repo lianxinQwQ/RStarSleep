@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.10.0"
+version = "0.10.1"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -14,6 +14,7 @@ protected_packages = ["base"]
 predownload = true
 predownload_plans = true
 package_maintenance = true
+post_maintenance = true
 mount_inheritance = true
 query_package_files = true
 persistent_dirs = [
@@ -55,6 +56,7 @@ optional = [
     "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
+    "RSTAR_CONTENT_ROOTPASSWORD",
 ]
 
 [config.constraints.RSTAR_CONFIG_SCHEMAVERSION]
@@ -69,6 +71,9 @@ kind = "free-list"
 
 [config.constraints.RSTAR_CONTENT_FSTABLINES]
 kind = "free-list"
+
+[config.constraints.RSTAR_CONTENT_ROOTPASSWORD]
+kind = "free-single"
 
 [config.constraints.RSTAR_DISTRIBUTION_ARCHITECTURE]
 kind = "enum-single"
@@ -99,6 +104,6 @@ software = []
 host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
-system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]
+system = ["bash", "pacman", "pacman-key", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]
 
 predownload = ["python3", "git", "makepkg", "repo-add", "repo-remove", "bsdtar", "vercmp", "runuser", "gpg"]

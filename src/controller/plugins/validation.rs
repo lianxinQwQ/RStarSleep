@@ -55,6 +55,9 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     if metadata.package_maintenance {
         operation_path(root, "maintain_packages")?;
     }
+    if metadata.post_maintenance {
+        operation_path(root, "post_maintenance")?;
+    }
     if let Some(plan) = &metadata.package_plan {
         if metadata.api_version != 3 {
             return Err(Error::Invalid(

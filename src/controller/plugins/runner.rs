@@ -149,6 +149,11 @@ impl LoadedPlugin {
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
     ) -> Result<Output> {
         let (host_path, context) = environment;
+        if operation == "post_maintenance" && !self.metadata.post_maintenance {
+            return Err(Error::Invalid(
+                "plugin does not advertise post_maintenance".into(),
+            ));
+        }
         if operation == "maintain_packages" && !self.metadata.package_maintenance {
             return Err(Error::Invalid(
                 "plugin does not advertise package_maintenance".into(),

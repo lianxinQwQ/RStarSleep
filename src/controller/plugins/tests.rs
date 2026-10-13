@@ -5,6 +5,28 @@ use super::validation::validate_metadata;
 use super::*;
 use std::{fs, io::Write, path::Path};
 
+/// Post-maintenance is optional; advertising it requires a safe executable entry.
+/// 软件维护后行为是可选能力；声明后必须提供安全的操作入口。
+#[test]
+fn optional_post_maintenance_capability() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    for api_version in [2, 3] {
+        fs::write(&path, tar_bytes(None, None, api_version)).unwrap();
+        let plugin = load(&path).unwrap();
+        assert!(!plugin.metadata.post_maintenance);
+        let mut metadata = plugin.metadata.clone();
+        metadata.post_maintenance = true;
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+        let entry = plugin.root().join("post_maintenance.sh");
+        fs::write(&entry, "#!/bin/bash\nexit 0\n").unwrap();
+        assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+        fs::remove_file(&entry).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", &entry).unwrap();
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+}
+
 /// Older plugins keep working while advertised file-query capabilities require a safe entry.
 /// 旧插件继续可用，声明文件查询能力时必须提供安全入口。
 /// # Arguments

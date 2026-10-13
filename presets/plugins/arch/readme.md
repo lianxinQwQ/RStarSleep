@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.10.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.10.1 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -29,6 +29,7 @@ optional = [
     "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL",
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
+    "RSTAR_CONTENT_ROOTPASSWORD",
 ]
 
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
@@ -54,6 +55,7 @@ software = []
 | Keyring | RSTAR_DISTRIBUTION_KEYRING | `/usr/share/pacman/keyrings/archlinux.gpg` |
 | Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用包内 `data/mirrorlist` |
 | AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
+| [Content] RootPassword | RSTAR_CONTENT_ROOTPASSWORD | 未配置或为空时不修改软件阶段输出中的密码 |
 
 控制器把配置值直接放入进程环境，不作为位置参数或 shell 源码。
 单系统接口和预下载环境的初始化、维护使用上述名称。
@@ -72,6 +74,26 @@ bootstrap 需要可信 Arch 签名密钥环和元数据中声明的下载、验�
 `Keyring` 支持二进制 OpenPGP 密钥环、GnuPG keybox 和 ASCII 装甲公钥；装甲公钥通过
 宿主 `gpg` 转换到临时二进制密钥环后交给 `gpgv` 验签，不修改原密钥文件。
 API 2 可维护已有兼容缓存，新安装需要 API 3。
+
+## 软件维护后行为
+
+插件声明顶层 `post_maintenance = true` 并提供无参数 `post_maintenance.sh`。
+控制器每次在软件阶段完成后、单系统 `script/` 之前，在全新的可写脚本阶段根内执行；
+复用软件缓存或没有用户脚本时仍执行。通用接口只表示“软件维护后行为”，
+设置 root 密码是本 Arch 预设的具体实现：
+
+```ini
+[Content]
+RootPassword=replace-with-your-password
+```
+
+`RootPassword` 为可选的单项明文值，未配置或为空时跳过；重复赋值和换行会报错。
+沿用 INI 规则：保留内部空格，去除首尾空白，`#` 开始注释，不能用它表示密码中的字面量 `#`。
+配置值会随构建配置以明文留档。密码只通过 stdin 交给目标系统的 `chpasswd`，
+配置值及参数 JSON 不进入 nspawn 命令行，脚本不输出密码；设置失败阻止后续脚本及版本发布。
+后处理结果不写回基础或软件缓存，修改或移除配置会从未做后处理的软件输出重新构建。
+后处理与用户脚本共用 script 阶段快照，该阶段及后续快照仅用于调试和备份，不作下次构建来源。
+后续用户脚本及继承仍按既有顺序执行，继承 `/etc` 或 `/etc/shadow` 时可能覆盖这里设置的密码。
 
 ## 主系统启动与延后继承
 

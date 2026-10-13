@@ -522,6 +522,14 @@ impl BuildBackend for SimulatedBackend {
         let mut packages = Self::inventory(root);
         let mut output = String::new();
         match operation {
+            "post_maintenance" => {
+                assert!(args.is_empty());
+                fs::write(
+                    root.join(".post-maintenance"),
+                    self.count("post_maintenance").to_string(),
+                )
+                .unwrap();
+            }
             "bootstrap" => {
                 if let Some((path, text)) = self.mutate_environment.borrow_mut().take() {
                     fs::write(path, text).unwrap();

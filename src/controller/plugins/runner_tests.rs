@@ -48,6 +48,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             predownload: false,
             predownload_plans: false,
             package_maintenance: false,
+            post_maintenance: false,
             package_plan: None,
             persistent_dirs: vec![],
             cache: super::super::CacheRequirements {
@@ -107,6 +108,25 @@ printf 'executed\n' > executed-inside
     );
     fs::write(&path, text).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Undeclared post-maintenance behavior is rejected before launching the container.
+/// 未声明的软件维护后行为在启动容器前被拒绝。
+#[test]
+fn post_maintenance_requires_an_advertised_capability() {
+    let plugin = fixture(&[], &[]);
+    let root = plugin.temporary.path().join("target");
+    let path = plugin.temporary.path().join("host-bin");
+    launcher(&plugin, "", false);
+    let error = plugin
+        .invoke_with_path("post_maintenance", &[], &root, "x86_64", path.as_os_str())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not advertise post_maintenance")
+    );
+    assert!(!plugin.root().join("launcher-argv").exists());
 }
 
 /// Verify all missing host tools are reported and the entry script is never invoked.
@@ -321,7 +341,7 @@ fn invokes_target_only_after_successful_probe() {
     assert!(plugin.root().join("executed-inside").is_file());
     let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
     assert!(trace.contains("--bind-ro="));
-    assert!(trace.contains("--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE=x86_64"));
+    assert!(trace.contains("--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE"));
     assert!(trace.contains("bash /run/rstarsleep/plugin/install.sh vim"));
 }
 

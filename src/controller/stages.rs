@@ -73,9 +73,12 @@ impl<B: BuildBackend> Stages<'_, B> {
         let packages = progress::run(id, "软件包（2/4）", "Software packages (2/4)", || {
             self.packages_step(packages.as_ref(), &base, owned)
         })?;
-        let scripts = progress::run(id, "用户脚本（3/4）", "User scripts (3/4)", || {
-            self.script_step(&packages, owned)
-        })?;
+        let scripts = progress::run(
+            id,
+            "软件维护后处理和用户脚本（3/4）",
+            "Post-maintenance and user scripts (3/4)",
+            || self.script_step(&packages, owned),
+        )?;
         progress::run(
             id,
             "继承和版本发布（4/4）",
@@ -252,8 +255,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         self.commit("packages", &root, software, cached)
     }
 
-    /// Reapply scripts on fresh software output so prior script effects are never inherited.
-    /// 在全新软件输出上重新应用脚本，避免继承先前脚本效果。
+    /// Reapply plugin behavior and scripts on fresh software output without prior effects.
+    /// 在全新软件输出上重新应用插件后处理及脚本，避免继承先前执行效果。
     /// # Arguments
     /// - `self`: Shared stage inputs.
     ///   共享阶段输入。
@@ -266,8 +269,12 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
+        if self.plugin.metadata.post_maintenance {
+            self.backend
+                .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
+        }
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
-        let software = if applied {
+        let software = if applied || self.plugin.metadata.post_maintenance {
             let session = PackageSession {
                 backend: self.backend,
                 plugin: self.plugin,

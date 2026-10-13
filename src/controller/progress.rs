@@ -66,6 +66,7 @@ pub(super) fn operation(name: &str) -> (&'static str, &'static str) {
         ),
         "install" => ("安装所需软件包", "Install required packages"),
         "maintain_packages" => ("清理并维护目标软件", "Reconcile and update target packages"),
+        "post_maintenance" => ("执行软件维护后行为", "Run post-maintenance behavior"),
         "remove" => ("移除软件包", "Remove packages"),
         "mark_reason" => (
             "整理软件包安装原因",

@@ -83,7 +83,9 @@ pub(super) fn nspawn_from(
         .arg(format!("--setenv=RSTAR_PLUGIN_TMP={SYSTEM_TMP}"))
         .arg("--setenv=RSTAR_ROOT=/");
     for (name, value) in configuration {
-        command.arg(format!("--setenv={name}={value}"));
+        // Inherit values by name so configuration secrets never appear in nspawn's argv.
+        // 按名称继承值，避免配置中的秘密进入 nspawn 命令行参数。
+        command.env(name, value).arg(format!("--setenv={name}"));
     }
     if let Some(context) = context {
         for mount in &context.inherited_mounts {

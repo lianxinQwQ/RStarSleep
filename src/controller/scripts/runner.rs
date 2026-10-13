@@ -34,22 +34,23 @@ fn command(
         .arg("--setenv=RSTAR_ROOT=/");
     for (name, value) in &context.parameters {
         let name = super::super::plugins::configuration::environment_name(name)?;
-        command.arg(format!("--setenv={name}={value}"));
+        command.env(&name, value).arg(format!("--setenv={name}"));
     }
     if !context
         .parameters
         .contains_key("RSTAR_DISTRIBUTION_ARCHITECTURE")
     {
-        command.arg(format!(
-            "--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE={}",
-            context.architecture
-        ));
+        command
+            .env("RSTAR_DISTRIBUTION_ARCHITECTURE", &context.architecture)
+            .arg("--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE");
     }
-    command.arg(format!(
-        "--setenv=RSTAR_PARAMETERS_JSON={}",
-        serde_json::to_string(&context.parameter_lists)
-            .map_err(|e| Error::Invalid(e.to_string()))?
-    ));
+    command
+        .env(
+            "RSTAR_PARAMETERS_JSON",
+            serde_json::to_string(&context.parameter_lists)
+                .map_err(|e| Error::Invalid(e.to_string()))?,
+        )
+        .arg("--setenv=RSTAR_PARAMETERS_JSON");
     container::environment(&mut command, &context.environment);
     command.arg("--").arg("bash").arg("--").arg(entrypoint);
     Ok(command)
@@ -103,13 +104,19 @@ mod tests {
             system_id: "desktop".into(),
             architecture: "x86_64".into(),
             distribution_options: Default::default(),
-            parameters: std::collections::BTreeMap::from([(
-                "RSTAR_DISTRIBUTION_MIRROR".into(),
-                "https://example.invalid/$repo/$arch".into(),
-            )]),
+            parameters: std::collections::BTreeMap::from([
+                (
+                    "RSTAR_DISTRIBUTION_MIRROR".into(),
+                    "https://example.invalid/$repo/$arch".into(),
+                ),
+                ("RSTAR_SECRET".into(), "private $value".into()),
+            ]),
             config: "/manager/config".into(),
             persistent_mounts: Vec::new(),
-            parameter_lists: Default::default(),
+            parameter_lists: std::collections::BTreeMap::from([(
+                "RSTAR_SECRET".into(),
+                vec!["private $value".into()],
+            )]),
             environment: std::collections::BTreeMap::from([
                 (
                     "https_proxy".into(),
@@ -131,6 +138,22 @@ mod tests {
         assert_eq!(command.get_current_dir(), Some(root));
         let args: Vec<OsString> = command.get_args().map(Into::into).collect();
         assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("private $value"))
+        );
+        assert!(args.contains(&"--setenv=RSTAR_SECRET".into()));
+        assert!(args.contains(&"--setenv=RSTAR_PARAMETERS_JSON".into()));
+        assert!(command.get_envs().any(
+            |(name, value)| name == "RSTAR_SECRET" && value == Some("private $value".as_ref())
+        ));
+        let json = serde_json::to_string(&context.parameter_lists).unwrap();
+        assert!(
+            command.get_envs().any(
+                |(name, value)| name == "RSTAR_PARAMETERS_JSON" && value == Some(json.as_ref())
+            )
+        );
+        assert!(
             args.windows(2)
                 .any(|pair| pair == [OsString::from("--directory"), root.into()])
         );
@@ -151,12 +174,12 @@ mod tests {
                 .get_envs()
                 .any(|(name, value)| name == "UNSET" && value.is_none())
         );
-        assert!(args[..delimiter].contains(
-            &"--setenv=RSTAR_DISTRIBUTION_MIRROR=https://example.invalid/$repo/$arch".into()
-        ));
-        assert!(
-            args[..delimiter].contains(&"--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE=x86_64".into())
-        );
+        assert!(args[..delimiter].contains(&"--setenv=RSTAR_DISTRIBUTION_MIRROR".into()));
+        assert!(args[..delimiter].contains(&"--setenv=RSTAR_DISTRIBUTION_ARCHITECTURE".into()));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "RSTAR_DISTRIBUTION_MIRROR"
+                && value == Some("https://example.invalid/$repo/$arch".as_ref())
+        }));
         assert_eq!(
             args.iter()
                 .filter(|arg| arg.to_string_lossy().starts_with("--bind"))
