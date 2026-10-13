@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.9.0"
+version = "0.10.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -12,6 +12,8 @@ protected_packages = ["base"]
 # Required host tools are checked before bootstrap.
 # bootstrap 前检查的宿主必需工具。
 predownload = true
+predownload_plans = true
+package_maintenance = true
 mount_inheritance = true
 query_package_files = true
 persistent_dirs = [

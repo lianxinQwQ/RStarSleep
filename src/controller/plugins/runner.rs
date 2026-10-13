@@ -149,6 +149,11 @@ impl LoadedPlugin {
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
     ) -> Result<Output> {
         let (host_path, context) = environment;
+        if operation == "maintain_packages" && !self.metadata.package_maintenance {
+            return Err(Error::Invalid(
+                "plugin does not advertise package_maintenance".into(),
+            ));
+        }
         if operation == "query_package_files" && !self.metadata.query_package_files {
             return Err(Error::Invalid(
                 "plugin does not advertise query_package_files".into(),
@@ -384,7 +389,11 @@ impl LoadedPlugin {
         }
         command.args(arguments);
         let output = if context.is_some() {
-            crate::controller::output::stream(&mut command, super::is_query(operation))
+            crate::controller::output::stream(
+                &mut command,
+                super::is_query(operation)
+                    || (operation == "predownload" && self.metadata.predownload_plans),
+            )
         } else {
             command.output()
         }

@@ -18,7 +18,9 @@ pub(super) fn replace_resource(fixture: &Fixture, name: &str, contents: &[u8]) {
     let contents = if name == "plugin.toml" {
         adjusted = String::from_utf8(contents.to_vec())
             .unwrap()
-            .replace("predownload = true", "predownload = false");
+            .replace("predownload = true", "predownload = false")
+            .replace("predownload_plans = true", "predownload_plans = false")
+            .replace("package_maintenance = true", "package_maintenance = false");
         adjusted.as_bytes()
     } else {
         contents

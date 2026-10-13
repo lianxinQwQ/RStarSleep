@@ -24,6 +24,22 @@ impl Fixture {
     }
 
     pub fn with_predownload(enabled: bool) -> Self {
+        Self::with_package_interfaces(enabled, false)
+    }
+
+    /// Opt into preparation plans and the combined maintenance operation.
+    /// 启用准备阶段计划输出和合并后的软件维护操作。
+    pub fn with_unified_packages() -> Self {
+        Self::with_package_interfaces(true, true)
+    }
+
+    /// Keep complete maintenance plans while turning shared downloads off.
+    /// 关闭共享下载，同时保留完整的软件维护计划。
+    pub fn with_unified_packages_without_predownload() -> Self {
+        Self::with_package_interfaces(false, true)
+    }
+
+    fn with_package_interfaces(enabled: bool, unified: bool) -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("manager");
         fs::create_dir_all(root.join("config")).unwrap();
@@ -36,18 +52,27 @@ impl Fixture {
         );
         let metadata = source.join("plugin.toml");
         let text = fs::read_to_string(&metadata).unwrap();
-        fs::write(
-            &metadata,
-            text.replace(
+        let mut text = text
+            .replace("predownload_plans = true", "predownload_plans = false")
+            .replace("package_maintenance = true", "package_maintenance = false")
+            .replace(
                 "predownload = true",
                 if enabled {
                     "predownload = true"
                 } else {
                     "predownload = false"
                 },
-            ),
-        )
-        .unwrap();
+            );
+        if unified {
+            text = text
+                .replace("predownload_plans = false", "predownload_plans = true")
+                .replace("package_maintenance = false", "package_maintenance = true")
+                .replace(
+                    "tools = [\"python3\", \"pacman\", \"git\", \"makepkg\", \"vercmp\", \"runuser\"]",
+                    "tools = []",
+                );
+        }
+        fs::write(&metadata, text).unwrap();
         let file = fs::File::create(root.join("plugins/arch.tar")).unwrap();
         let mut archive = tar::Builder::new(file);
         archive.append_dir_all(".", &source).unwrap();

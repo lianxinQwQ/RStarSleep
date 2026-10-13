@@ -299,7 +299,8 @@ class Protocol(unittest.TestCase):
             def inspect(command, **kwargs):
                 package = Path(command[2]).name.split("-dynamic")[0]
                 return subprocess.CompletedProcess(command, 0,
-                    f"pkgname = {package}\npkgver = 2.r15-1\ndepend = generated-runtime\n", "")
+                    f"pkgname = {package}\npkgver = 2.r15-1\ndepend = generated-runtime\n"
+                    "provides = generated-provider=2\nconflict = obsolete-provider\n", "")
 
             p.makepkg = makepkg
             base = arch.srcinfo(RECIPE, "x86_64")
@@ -308,6 +309,10 @@ class Protocol(unittest.TestCase):
                 p.build(base)
             self.assertEqual(len(p.artifacts["sample"]), 3)
             self.assertEqual(p.states["sample"], "complete")
+            self.assertEqual(base["version"], "2.r15-1")
+            self.assertEqual(base["runtime_by_package"]["sample-cli"], ["generated-runtime"])
+            self.assertEqual(base["provides"]["sample-cli"], ["generated-provider=2"])
+            self.assertEqual(base["conflicts"]["sample-cli"], ["obsolete-provider"])
             self.assertIn(["--force", "--cleanbuild", "--clean", "--nodeps", "--noconfirm"], calls)
             self.assertFalse(any("--packagelist" in call for call in calls))
             p.ensure.assert_any_call("compiler", install=True)
@@ -392,6 +397,62 @@ class OfflinePacman(unittest.TestCase):
         self.assertEqual(p.pacman.call_args.args[0][-2:], ["consumer", "z-alternative"])
         p.fetch.assert_not_called()
         p.build.assert_not_called()
+
+    def test_shared_preparation_resolves_conflicting_systems_once_each_and_downloads_union(self):
+        p = self.plan_preparer([
+            ("base", "1-1", {"DEPENDS": ["core"]}),
+            ("core", "1-1", {}),
+            ("alpha", "1-1", {"CONFLICTS": ["beta"], "DEPENDS": ["shared"]}),
+            ("beta", "1-1", {"CONFLICTS": ["alpha"], "DEPENDS": ["shared"]}),
+            ("shared", "1-1", {}),
+        ])
+        p.planned_transactions = {}
+        p.fetch, p.finish = Mock(), Mock()
+        p.aur = Mock(side_effect=AssertionError("official targets became AUR requests"))
+        result = arch.prepare_systems(p, {"desktop": ["alpha"], "server": ["beta"], "minimal": []})
+        self.assertEqual(result["systems"], {
+            "desktop": {"schema_version": 1, "packages": ["alpha", "base", "core", "shared"]},
+            "server": {"schema_version": 1, "packages": ["base", "beta", "core", "shared"]},
+            "minimal": {"schema_version": 1, "packages": ["base", "core"]},
+        })
+        self.assertEqual(p.pacman.call_count, 3, "one complete transaction per system, no per-target probing")
+        p.fetch.assert_called_once()
+        self.assertEqual(p.fetch.call_args.args[0], set(p.official_metadata))
+        p.finish.assert_called_once_with(["alpha", "base", "beta"])
+
+    def test_preparation_reports_the_system_whose_transaction_fails(self):
+        p = self.plan_preparer([
+            ("base", "1-1", {}),
+            ("broken", "1-1", {"DEPENDS": ["absent"]}),
+        ])
+        p.planned_transactions = {}
+        p.fetch, p.finish = Mock(), Mock()
+        with self.assertRaisesRegex(arch.PreparationError, "system desktop"):
+            arch.prepare_systems(p, {"desktop": ["broken"]})
+        p.fetch.assert_not_called()
+        p.finish.assert_not_called()
+
+    def test_final_aur_plan_uses_binary_runtime_dependencies_without_build_dependencies(self):
+        p = self.plan_preparer([
+            ("base", "1-1", {}), ("old-runtime", "1-1", {}),
+            ("new-runtime", "1-1", {}), ("compiler", "1-1", {}),
+        ])
+        recipe = arch.srcinfo(
+            "pkgbase = aur-tool\npkgver = 1\npkgrel = 1\nmakedepends = compiler\n"
+            "pkgname = aur-tool\ndepends = old-runtime\n", "x86_64")
+        p.planned_transactions = {}
+        p.aur = Mock(return_value=recipe)
+        p.fetch, p.finish, p.clean_dependencies = Mock(), Mock(), Mock()
+        def build_binary(target):
+            self.assertEqual(target, "aur-tool")
+            recipe["runtime_by_package"]["aur-tool"] = ["new-runtime"]
+            recipe["version"] = "2-1"
+        p.ensure = Mock(side_effect=build_binary)
+        result = arch.prepare_systems(p, {"desktop": ["aur-tool"]})
+        self.assertEqual(result["systems"]["desktop"]["packages"], ["aur-tool", "base", "new-runtime"])
+        self.assertEqual(p.pacman.call_count, 2, "AUR gets one source plan and one binary plan")
+        p.ensure.assert_called_once_with("aur-tool")
+        self.assertNotIn("compiler", result["systems"]["desktop"]["packages"])
 
     def test_plan_uses_explicit_aur_provider_for_official_runtime_dependencies(self):
         p = self.plan_preparer([
@@ -501,6 +562,22 @@ class OfflinePacman(unittest.TestCase):
 
 
 class PackagePlans(unittest.TestCase):
+    def test_system_preparation_keeps_download_diagnostics_out_of_json(self):
+        preparer = Mock()
+        preparer.initialize.side_effect = lambda: arch.run([sys.executable, "-c", "print('environment ready')"])
+        result = {"schema_version": 1, "systems": {"minimal": {"schema_version": 1, "packages": ["base"]}}}
+        output = StringIO()
+        with tempfile.TemporaryFile(mode="w+") as diagnostics:
+            with patch.object(arch, "Preparer", return_value=preparer), \
+                    patch.object(arch, "prepare_systems", return_value=result) as prepare, \
+                    redirect_stdout(output), redirect_stderr(diagnostics):
+                arch.systems_main(json.dumps({"schema_version": 1, "systems": {"minimal": []}}))
+            diagnostics.seek(0)
+            self.assertEqual(diagnostics.read(), "environment ready\n")
+        self.assertEqual(json.loads(output.getvalue()), result)
+        prepare.assert_called_once_with(preparer, {"minimal": []})
+        self.assertFalse(arch.QUERY_MODE)
+
     def test_query_keeps_child_diagnostics_out_of_json_stdout(self):
         preparer = Mock()
         preparer.initialize.side_effect = lambda **kwargs: arch.run([
@@ -600,17 +677,23 @@ class PackagePlans(unittest.TestCase):
         with self.assertRaisesRegex(arch.PreparationError, "uniquely satisfy"):
             preparer.collect(["unprovided"])
 
-    def test_planner_refreshes_metadata_without_updating_or_installing_the_resolver_environment(self):
+    def test_planner_reuses_updated_metadata_without_refreshing_or_upgrading_again(self):
         with tempfile.TemporaryDirectory() as temporary:
             preparer = arch.Preparer.__new__(arch.Preparer)
             preparer.db = Path(temporary) / "db"
             (preparer.db / "sync").mkdir(parents=True)
             preparer.actual_db = Path(temporary) / "actual"
+            (preparer.actual_db / "sync").mkdir(parents=True)
+            with tarfile.open(preparer.actual_db / "sync/fixture.db", "w:gz"):
+                pass
             preparer.pacman = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
             preparer.refresh_repo = Mock()
             preparer.initialize(planning=True)
-            self.assertEqual(preparer.pacman.call_count, 1)
-            self.assertEqual(preparer.pacman.call_args.args[0], ["-Sy", "--noconfirm"])
+            preparer.pacman.assert_not_called()
+            self.assertEqual((preparer.db / "sync/fixture.db").read_bytes(),
+                             (preparer.actual_db / "sync/fixture.db").read_bytes())
+            preparer.initialize()
+            self.assertEqual([call.args[0] for call in preparer.pacman.call_args_list], [["-Qq"]])
 
 
 if __name__ == "__main__":

@@ -46,6 +46,8 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             cache_format: "test-v1".into(),
             protected_packages: vec![],
             predownload: false,
+            predownload_plans: false,
+            package_maintenance: false,
             package_plan: None,
             persistent_dirs: vec![],
             cache: super::super::CacheRequirements {

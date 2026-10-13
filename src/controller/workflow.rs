@@ -112,7 +112,7 @@ pub fn build_with_backend(
     let mut groups: std::collections::BTreeMap<DownloadGroup, Vec<usize>> =
         std::collections::BTreeMap::new();
     for (index, value) in prepared.iter().enumerate() {
-        if value.plugin.metadata.predownload {
+        if value.plugin.metadata.predownload && !value.plugin.metadata.predownload_plans {
             groups
                 .entry((
                     value.plugin.archive_sha256.clone(),
@@ -439,6 +439,7 @@ fn collect_plans(
     for (index, value) in pending.iter().enumerate() {
         if value.plugin.metadata.package_plan.is_some()
             && (value.plugin.metadata.predownload
+                || value.plugin.metadata.package_maintenance
                 || runtime.main_system.as_deref() == Some(&value.context.system_id))
         {
             groups
@@ -462,6 +463,68 @@ fn collect_plans(
             &first.context,
             true,
             |root, _environment| {
+                if first.plugin.metadata.predownload && first.plugin.metadata.predownload_plans {
+                    let systems: std::collections::BTreeMap<_, _> = indices
+                        .iter()
+                        .map(|&index| {
+                            (
+                                &pending[index].context.system_id,
+                                &pending[index].config.packages,
+                            )
+                        })
+                        .collect();
+                    let request = serde_json::json!({"schema_version": 1, "systems": systems});
+                    let output = backend.invoke(
+                        &first.plugin,
+                        "predownload",
+                        &["--systems-json".into(), request.to_string()],
+                        root,
+                        _environment,
+                    )?;
+                    #[derive(serde::Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct Plans {
+                        schema_version: u32,
+                        systems: std::collections::BTreeMap<String, serde_json::Value>,
+                    }
+                    let mut response: Plans = serde_json::from_str(&output)
+                        .map_err(|e| Error::Invalid(format!("软件下载计划返回无效: {e}")))?;
+                    if response.schema_version != 1
+                        || response
+                            .systems
+                            .keys()
+                            .map(String::as_str)
+                            .ne(systems.keys().map(|id| id.as_str()))
+                    {
+                        return Err(Error::Invalid("软件下载计划的版本或系统集合不符".into()));
+                    }
+                    let mut plans = Vec::new();
+                    for &index in indices {
+                        let value = &pending[index];
+                        let result = (|| {
+                            let plan = crate::software::PackagePlan::parse(
+                                &response
+                                    .systems
+                                    .remove(&value.context.system_id)
+                                    .unwrap()
+                                    .to_string(),
+                            )?;
+                            let inheritance = crate::config::InheritanceConfig::read(
+                                &read_plugin_parameters_at(&value.context.config)?,
+                            )?;
+                            validate_boot_packages(
+                                &value.context.system_id,
+                                runtime,
+                                &inheritance,
+                                &value.plugin,
+                                &plan.packages,
+                            )?;
+                            Ok(plan)
+                        })();
+                        plans.push((index, result));
+                    }
+                    return Ok(plans);
+                }
                 let mut plans = Vec::with_capacity(indices.len());
                 for &index in indices {
                     plans.push((index, collect_plan(&pending[index], root, backend, runtime)));
@@ -580,6 +643,7 @@ fn prepare_system(
                 }
             }
             if loaded.metadata.predownload
+                && !loaded.metadata.package_maintenance
                 && let Some(cache) = packages.or(base)
             {
                 upgrade_packages = cache
@@ -762,6 +826,7 @@ fn build_system(
             config,
             identity: &identity,
             software_identity: &software_identity,
+            package_plan: prepared.package_plan.as_ref(),
             scratch: &scratch,
             prepare_boot_inheritance: runtime.main_system.as_deref() == Some(id.as_str()),
         };

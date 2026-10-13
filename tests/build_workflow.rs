@@ -385,3 +385,6 @@ fn clean_removes_only_owned_boot_files() {
     assert!(!entry.exists());
     assert!(unrelated.exists());
 }
+
+#[path = "build_workflow/unified_packages.rs"]
+mod unified_packages;

@@ -162,7 +162,6 @@ pub(super) fn with_environment<T>(
             backend.invoke(plugin, "system_init", &[machine_id], &root, &context)?;
         }
         if !reused || refresh {
-            base_system::maintain(backend, plugin, &root, &context)?;
             backend.invoke(
                 plugin,
                 if reused {

@@ -37,6 +37,7 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// 此完成阶段的兼容性要求。
     pub(super) identity: &'a Identity,
     pub(super) software_identity: &'a Identity,
+    pub(super) package_plan: Option<&'a crate::software::PackagePlan>,
     /// Independent owned temporary build directory.
     /// 独立所属构建临时目录。
     pub(super) scratch: &'a Path,
@@ -147,16 +148,30 @@ impl<B: BuildBackend> Stages<'_, B> {
                 self.context,
             )?;
         }
-        // Downloaded installation files can be old even when their version is unchanged.
-        // 安装文件即使版本未变也可能较旧；新建和恢复路径均必须维护一次。
-        base_system::maintain(self.backend, self.plugin, &root, self.context)?;
+        // Unified maintenance runs where configured targets are applied. A fresh
+        // base is already updated by base_install; legacy plugins still update here.
+        // 统一维护在应用配置目标的层运行；新基础已由 base_install 更新，旧插件仍在此维护。
         let session = PackageSession {
             backend: self.backend,
             plugin: self.plugin,
             root: &root,
             context: self.context,
         };
-        self.commit("base-system", &root, session.capture(Vec::new())?, cached)
+        let software = if self.plugin.metadata.package_maintenance {
+            if cached.is_some() && self.config.packages.is_empty() {
+                session.apply_plan(
+                    &[],
+                    self.package_plan
+                        .ok_or_else(|| super::Error::Invalid("软件维护缺少目标计划".into()))?,
+                )?
+            } else {
+                session.capture(Vec::new())?
+            }
+        } else {
+            base_system::maintain(self.backend, self.plugin, &root, self.context)?;
+            session.capture(Vec::new())?
+        };
+        self.commit("base-system", &root, software, cached)
     }
 
     /// Install from the preceding step's output, or maintain this step's own restored cache.
@@ -180,8 +195,20 @@ impl<B: BuildBackend> Stages<'_, B> {
     ) -> Result<Cache> {
         let root = self.scratch.join("root");
         owned.push(root.clone());
+        let cached = if self.plugin.metadata.package_maintenance && self.config.packages.is_empty()
+        {
+            None
+        } else {
+            cached
+        };
         let input = cached.unwrap_or(previous_step);
-        if let Some(cached) = cached {
+        if self.plugin.metadata.package_maintenance && self.config.packages.is_empty() {
+            progress::message(
+                &self.context.system_id,
+                "未配置软件目标，复用本次基础阶段输出",
+                "No package targets configured; use this build's base stage output",
+            );
+        } else if let Some(cached) = cached {
             progress::message(
                 &self.context.system_id,
                 format!(
@@ -207,7 +234,17 @@ impl<B: BuildBackend> Stages<'_, B> {
             root: &root,
             context: self.context,
         };
-        let software = if let Some(cached) = cached {
+        let software = if self.plugin.metadata.package_maintenance {
+            if self.config.packages.is_empty() {
+                previous_step.record.software.clone()
+            } else {
+                session.apply_plan(
+                    &self.config.packages,
+                    self.package_plan
+                        .ok_or_else(|| super::Error::Invalid("软件维护缺少目标计划".into()))?,
+                )?
+            }
+        } else if let Some(cached) = cached {
             session.maintain(&self.config.packages, &cached.record.software)?
         } else {
             session.install(&self.config.packages)?

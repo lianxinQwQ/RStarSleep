@@ -45,6 +45,16 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
+    if (metadata.predownload_plans || metadata.package_maintenance)
+        && metadata.package_plan.is_none()
+    {
+        return Err(Error::Invalid(
+            "统一软件准备及维护需要声明 [package_plan]".into(),
+        ));
+    }
+    if metadata.package_maintenance {
+        operation_path(root, "maintain_packages")?;
+    }
     if let Some(plan) = &metadata.package_plan {
         if metadata.api_version != 3 {
             return Err(Error::Invalid(

@@ -176,6 +176,48 @@ esac
     }
 }
 
+#[test]
+fn resolver_tools_install_after_base_update_and_reused_environment_updates_once() {
+    let fixture = Fixture::new();
+    // Keep user and directory management inside this isolated command fixture.
+    for (name, script) in [
+        (
+            "id",
+            "#!/usr/bin/env bash\ncase \"$1\" in -u) printf '1000\\n';; -gn) printf 'rstar-build\\n';; *) exit 1;; esac\n",
+        ),
+        ("install", "#!/usr/bin/env bash\nexit 0\n"),
+    ] {
+        let executable = fixture.temporary.path().join(name);
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for operation in ["base_install", "predownload/install"] {
+        let output = fixture.run(operation, &[], "");
+        assert!(output.status.success(), "{operation}: {output:?}");
+    }
+    let trace = fixture.trace();
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|line| line.starts_with("-Syu "))
+            .count(),
+        1
+    );
+    assert!(
+        trace
+            .lines()
+            .any(|line| line == "-S --needed --noconfirm -- git base-devel python sudo")
+    );
+
+    fs::write(&fixture.trace, "").unwrap();
+    let output = fixture.run("predownload/update", &[], "");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fixture.trace(),
+        "-Syu --needed --noconfirm -- git base-devel python sudo\n"
+    );
+}
+
 /// Query all package-owned files, preserve spaces, and propagate database failure.
 /// 查询全部包所属文件、保留空格，并传播数据库失败。
 /// # Arguments

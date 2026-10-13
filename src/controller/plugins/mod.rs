@@ -48,6 +48,7 @@ pub(crate) fn is_query(operation: &str) -> bool {
             | "collect_packages"
             | "list_orphans"
             | "query_package_files"
+            | "maintain_packages"
     )
 }
 use validation::{identifier, io_error};

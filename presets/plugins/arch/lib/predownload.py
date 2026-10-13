@@ -190,6 +190,7 @@ class Preparer:
         self.bases, self.states, self.artifacts = {}, {}, {}
         self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
+        self.planned_transactions = {}
         self.refresh_repo()
 
     def user(self, argv, capture=False):
@@ -218,13 +219,15 @@ class Preparer:
         self.build_conf.write_text(config)
 
     def initialize(self, planning=False):
-        log("刷新官方仓库数据库", "Refresh official repository databases")
-        self.pacman(["-Sy", "--noconfirm"], isolated=True)
+        log("复用独立环境已更新的仓库数据库", "Reuse the updated resolver repository databases")
         sync = self.actual_db / "sync"
-        sync.mkdir(parents=True, exist_ok=True)
-        for database in (self.db / "sync").glob("*"):
-            if database.is_file():
-                atomic_copy(database, sync / database.name)
+        isolated_sync = self.db / "sync"
+        isolated_sync.mkdir(parents=True, exist_ok=True)
+        for database in sync.glob("*"):
+            if database.is_file() and database.name not in (f"{REPO}.db", f"{REPO}.db.sig"):
+                atomic_copy(database, isolated_sync / database.name)
+        if not list(isolated_sync.glob("*.db")):
+            raise PreparationError("resolver environment has no synchronized official repository databases")
         for database in (self.db / "sync").glob("*.db"):
             with tarfile.open(database) as archive:
                 for member in archive:
@@ -242,8 +245,6 @@ class Preparer:
         self.refresh_repo()
         if planning:
             return
-        log("更新预下载工作环境", "Update the predownload working environment")
-        self.pacman(["-Su", "--noconfirm"])
         self.baseline = set(self.pacman(["-Qq"], capture=True).stdout.splitlines())
         log(f"预下载工作环境已就绪，基线含 {len(self.baseline)} 个软件包",
             f"Predownload environment ready; baseline contains {len(self.baseline)} packages")
@@ -264,14 +265,21 @@ class Preparer:
         self.resolutions[requirement] = filenames
         return filenames
 
-    def collect(self, requested):
+    def official_target(self, requirement):
+        """Classify targets from loaded metadata without resolving each closure."""
+        name = spec(requirement)[0]
+        return any(name in fields.get("NAME", []) or name in fields.get("GROUPS", [])
+                   or any(spec(value)[0] == name for value in fields.get("PROVIDES", []))
+                   for fields in self.official_metadata.values())
+
+    def collect(self, requested, prepare=False):
         """Collect only target roots and runtime dependencies, without downloading or building."""
         requested = list(dict.fromkeys(requested))
         selected, visited, pending = {}, set(), []
 
         def select(requirement):
-            closure = self.official(requirement)
-            if closure is not None:
+            official = self.official_target(requirement) if prepare else self.official(requirement) is not None
+            if official:
                 return
             base = self.aur(requirement)
             candidates = [name for name in base["packages"] if self.artifact_satisfies(
@@ -300,6 +308,8 @@ class Preparer:
         # Resolve the complete target transaction together. Independent closures
         # can contain a default provider that an explicit target later replaces.
         filenames, metadata = self._plan_transaction(requested, selected)
+        if prepare:
+            self.planned_transactions[tuple(requested)] = (filenames, selected)
         packages = set()
         for filename in filenames:
             names = metadata.get(filename, {}).get("NAME", [])
@@ -532,6 +542,7 @@ class Preparer:
                 raise PreparationError("invalid binary package metadata")
             artifact = dict(name=fields["pkgname"][0], version=fields["pkgver"][0],
                             provides=fields.get("provides", []), dependencies=fields.get("depend", []),
+                            conflicts=fields.get("conflict", []),
                             filename=package.name, pkgbase=name, commit=base["commit"])
             if not NAME.fullmatch(artifact["name"]):
                 raise PreparationError("invalid binary package name")
@@ -541,6 +552,13 @@ class Preparer:
         if not artifacts or set(base["packages"]) - {p["name"] for p in artifacts}:
             raise PreparationError(f"incomplete split-package outputs: {name}")
         self.artifacts[name] = artifacts
+        # VCS recipes and generated metadata may differ from .SRCINFO. The final
+        # runtime plan must use the actual binaries, excluding build-only deps.
+        base["version"] = artifacts[0]["version"]
+        for artifact in artifacts:
+            base["runtime_by_package"][artifact["name"]] = artifact["dependencies"]
+            base["provides"][artifact["name"]] = artifact["provides"]
+            base["conflicts"][artifact["name"]] = artifact["conflicts"]
         self.publish(base, artifacts)
         self.states[name] = "built"
         dependencies = list(dict.fromkeys(dependency for artifact in artifacts for dependency in artifact["dependencies"]
@@ -610,13 +628,17 @@ class Preparer:
             if index % 25 == 0 or index == len(files):
                 log(f"最终校验进度：{index}/{len(files)}", f"Final verification progress: {index}/{len(files)}")
         log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
+        self.save_sync()
+        atomic_json(self.repo / ".prepared.json", dict(format=1, architecture=self.arch, requested=requested, packages=hashes, aur=self.artifacts))
+        log(f"预下载及 AUR 准备完成：{len(files)} 个软件包文件", f"Predownload and AUR preparation complete: {len(files)} package files")
+
+    def save_sync(self):
         prepared_sync = self.repo / "official-sync"
         prepared_sync.mkdir(exist_ok=True)
         for database in (self.db / "sync").iterdir():
             if database.is_file():
                 atomic_copy(database, prepared_sync / database.name)
-        atomic_json(self.repo / ".prepared.json", dict(format=1, architecture=self.arch, requested=requested, packages=hashes, aur=self.artifacts))
-        log(f"预下载及 AUR 准备完成：{len(files)} 个软件包文件", f"Predownload and AUR preparation complete: {len(files)} package files")
+        atomic_json(self.repo / ".planned.json", dict(format=1, architecture=self.arch))
 
 
 def collect_main(arguments):
@@ -631,9 +653,67 @@ def collect_main(arguments):
             preparer = Preparer(workspace)
             preparer.initialize(planning=True)
             packages = preparer.collect(requested)
+            preparer.save_sync()
     finally:
         QUERY_MODE = previous_query_mode
     json.dump(dict(schema_version=1, packages=packages), sys.stdout, sort_keys=True)
+    sys.stdout.write("\n")
+
+
+def prepare_systems(preparer, systems):
+    """Plan each installation separately, then download their shared file union."""
+    plans, requests, official_files, aur_targets = {}, {}, set(), set()
+    for system_id, targets in systems.items():
+        requested = list(dict.fromkeys(["base", *targets]))
+        requests[system_id] = requested
+        try:
+            log(f"解析系统 {system_id} 的 {len(requested)} 项需求及完整依赖",
+                f"Resolve {len(requested)} targets and full dependencies for system {system_id}")
+            plans[system_id] = dict(schema_version=1, packages=preparer.collect(requested, prepare=True))
+            filenames, selected = preparer.planned_transactions[tuple(requested)]
+            official_files.update(name for name in filenames if name in preparer.official_metadata)
+            aur_targets.update(selected)
+        except PreparationError as error:
+            raise PreparationError(f"system {system_id}: {error}") from error
+    preparer.fetch(official_files)
+    for target in sorted(aur_targets):
+        preparer.ensure(target)
+        preparer.clean_dependencies()
+    # Only AUR transactions need a final plan after compiling: generated binary
+    # dependencies and VCS versions can differ from their source recipe metadata.
+    for system_id, requested in requests.items():
+        _, selected = preparer.planned_transactions[tuple(requested)]
+        if selected:
+            try:
+                plans[system_id]["packages"] = preparer.collect(requested, prepare=True)
+                filenames, _ = preparer.planned_transactions[tuple(requested)]
+                preparer.fetch(name for name in filenames if name in preparer.official_metadata)
+            except PreparationError as error:
+                raise PreparationError(f"system {system_id}: {error}") from error
+    preparer.finish(sorted({target for requested in requests.values() for target in requested}))
+    return dict(schema_version=1, systems=plans)
+
+
+def systems_main(argument):
+    global QUERY_MODE
+    request = json.loads(argument)
+    if (not isinstance(request, dict) or set(request) != {"schema_version", "systems"}
+            or request["schema_version"] != 1 or not isinstance(request["systems"], dict)
+            or not request["systems"]):
+        raise PreparationError("invalid per-system preparation request")
+    for system_id, targets in request["systems"].items():
+        if (not NAME.fullmatch(system_id) or not isinstance(targets, list)
+                or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in targets)):
+            raise PreparationError("invalid system identity or configured package targets")
+    previous_query_mode, QUERY_MODE = QUERY_MODE, True
+    try:
+        with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-") as workspace:
+            preparer = Preparer(workspace)
+            preparer.initialize()
+            result = prepare_systems(preparer, request["systems"])
+    finally:
+        QUERY_MODE = previous_query_mode
+    json.dump(result, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
 
 
@@ -663,7 +743,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if sys.argv[1:2] == ["--collect"]:
+        if sys.argv[1:2] == ["--systems-json"]:
+            if len(sys.argv) != 3:
+                raise PreparationError("expected one per-system preparation JSON argument")
+            systems_main(sys.argv[2])
+        elif sys.argv[1:2] == ["--collect"]:
             collect_main(sys.argv[2:])
         else:
             main()

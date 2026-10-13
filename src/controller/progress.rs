@@ -65,6 +65,7 @@ pub(super) fn operation(name: &str) -> (&'static str, &'static str) {
             "Predownload packages and build AUR packages",
         ),
         "install" => ("安装所需软件包", "Install required packages"),
+        "maintain_packages" => ("清理并维护目标软件", "Reconcile and update target packages"),
         "remove" => ("移除软件包", "Remove packages"),
         "mark_reason" => (
             "整理软件包安装原因",

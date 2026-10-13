@@ -349,7 +349,9 @@ impl BuildBackend for SystemBackend {
         self.check_subvolume(root, false)?;
         let args: Vec<_> = args.iter().map(OsString::from).collect();
         let output = plugin.invoke_for_build(operation, &args, root, context)?;
-        if super::plugins::is_query(operation) {
+        if super::plugins::is_query(operation)
+            || (operation == "predownload" && plugin.metadata.predownload_plans)
+        {
             String::from_utf8(output.stdout)
                 .map_err(|_| Error::Invalid(format!("{operation} 查询不是 UTF-8")))
         } else {

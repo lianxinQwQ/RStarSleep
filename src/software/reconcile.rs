@@ -5,6 +5,54 @@ use crate::controller::{BuildBackend, Error, Result, progress};
 use std::collections::BTreeSet;
 
 impl<B: BuildBackend> PackageSession<'_, B> {
+    /// Let the distribution reconcile its complete plan in one operation.
+    /// 由发行版插件在单个操作内协调完整计划。
+    pub fn apply_plan(
+        &self,
+        targets: &[String],
+        plan: &super::PackagePlan,
+    ) -> Result<SoftwareState> {
+        let plan = super::PackagePlan::parse(
+            &serde_json::to_string(plan).map_err(|e| Error::Invalid(e.to_string()))?,
+        )?;
+        for target in targets {
+            super::model::valid_name(target)?;
+        }
+        let mut arguments = vec!["--plan".into()];
+        arguments.extend(plan.packages.iter().cloned());
+        arguments.push("--targets".into());
+        arguments.extend(targets.iter().cloned());
+        let output = self.call("maintain_packages", &arguments)?;
+        let state: SoftwareState = serde_json::from_str(&output)
+            .map_err(|e| Error::Invalid(format!("软件维护返回的清单无效: {e}")))?;
+        state.validate()?;
+        let actual: BTreeSet<_> = state.installed.iter().map(|p| p.name.as_str()).collect();
+        let expected: BTreeSet<_> = plan.packages.iter().map(String::as_str).collect();
+        if actual != expected {
+            return Err(Error::Invalid("软件维护后的包清单与目标计划不符".into()));
+        }
+        let protected = self.resolve(&self.plugin.metadata.protected_packages)?;
+        let mut requested = if targets.is_empty() {
+            BTreeSet::new()
+        } else {
+            let resolved = super::model::names(&self.call("resolve_packages", targets)?)?;
+            if resolved.is_empty() {
+                return Err(Error::Invalid("软件维护后配置目标解析为空".into()));
+            }
+            resolved
+        };
+        requested.retain(|name| !protected.contains(name));
+        if requested != state.requested.iter().cloned().collect() {
+            return Err(Error::Invalid("软件维护返回的目标与当前配置不符".into()));
+        }
+        for name in protected {
+            if !state.installed.iter().any(|p| p.name == name && p.explicit) {
+                return Err(Error::Invalid("软件维护后缺少显式基础目标".into()));
+            }
+        }
+        Ok(state)
+    }
+
     /// Install configured software without repeating the base-system update.
     /// 安装配置软件，不重复基础系统更新。
     /// # Arguments

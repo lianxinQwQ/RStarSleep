@@ -63,6 +63,8 @@ pub struct SimulatedBackend {
     pub package_groups: RefCell<BTreeMap<String, Vec<String>>>,
     pub runtime_dependencies: RefCell<BTreeMap<String, Vec<String>>>,
     pub collected_package_plan_override: RefCell<Option<String>>,
+    pub prepared_package_plans_override: RefCell<Option<String>>,
+    pub maintained_software_state_override: RefCell<Option<String>>,
     generation: Cell<u32>,
 }
 
@@ -541,10 +543,36 @@ impl BuildBackend for SimulatedBackend {
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
             }
-            "predownload_install"
-            | "predownload_update"
-            | "predownload"
-            | "prepare_inheritance_initramfs" => {}
+            "predownload_install" | "predownload_update" | "prepare_inheritance_initramfs" => {}
+            "predownload" => {
+                if plugin.metadata.predownload_plans {
+                    assert_eq!(args.len(), 2);
+                    assert_eq!(args[0], "--systems-json");
+                    let request: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+                    assert_eq!(request["schema_version"], 1);
+                    let systems: BTreeMap<String, serde_json::Value> = request["systems"]
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(id, targets)| {
+                            let mut targets: Vec<String> =
+                                serde_json::from_value(targets.clone()).unwrap();
+                            targets.push("base".into());
+                            (
+                                id.clone(),
+                                serde_json::json!({"schema_version":1,"packages":self.closure(&targets)}),
+                            )
+                        })
+                        .collect();
+                    output = self
+                        .prepared_package_plans_override
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| {
+                            serde_json::json!({"schema_version":1,"systems":systems}).to_string()
+                        });
+                }
+            }
             "mount_inheritance" => {
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(
@@ -576,6 +604,37 @@ impl BuildBackend for SimulatedBackend {
                         serde_json::json!({"schema_version": 1, "packages": self.closure(args)})
                             .to_string()
                     });
+            }
+            "maintain_packages" => {
+                assert_eq!(args.first().map(String::as_str), Some("--plan"));
+                let split = args.iter().position(|arg| arg == "--targets").unwrap();
+                let plan: BTreeSet<String> = args[1..split].iter().cloned().collect();
+                let mut targets = args[split + 1..].to_vec();
+                targets.push("base".into());
+                let roots = self.resolve_targets(&targets);
+                assert_eq!(plan, self.closure(&targets));
+                packages = plan
+                    .into_iter()
+                    .map(|name| {
+                        let explicit = roots.contains(&name);
+                        (name, explicit)
+                    })
+                    .collect();
+                let state = rstarsleep::software::SoftwareState {
+                    requested: roots.into_iter().filter(|name| name != "base").collect(),
+                    installed: packages
+                        .iter()
+                        .map(|(name, explicit)| rstarsleep::software::InstalledPackage {
+                            name: name.clone(),
+                            explicit: *explicit,
+                        })
+                        .collect(),
+                };
+                output = self
+                    .maintained_software_state_override
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| serde_json::to_string(&state).unwrap());
             }
             "query_packages" => {
                 output = fs::read_to_string(root.join(DATABASE)).unwrap_or_default();

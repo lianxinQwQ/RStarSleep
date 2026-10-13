@@ -233,6 +233,14 @@ pub struct Metadata {
     /// Optional single predownload operation and its independent environment scripts.
     #[serde(default)]
     pub predownload: bool,
+    /// Predownload accepts per-system targets and returns their installation plans.
+    /// 预下载接收各系统目标，并返回各自的安装计划。
+    #[serde(default)]
+    pub predownload_plans: bool,
+    /// One plugin operation reconciles a complete target package plan.
+    /// 由单个插件操作协调完整目标软件计划。
+    #[serde(default)]
+    pub package_maintenance: bool,
     /// Optional query of configured targets, base packages and runtime dependencies.
     /// 可选的配置目标、基础包及运行依赖查询。
     #[serde(default)]

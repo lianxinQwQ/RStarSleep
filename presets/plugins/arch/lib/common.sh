@@ -96,7 +96,7 @@ prepare_shared_cache() {
 pacman() {
     local cache=${RSTAR_PLUGIN_ROOT:-}/state/packages
     local repository=${RSTAR_PLUGIN_ROOT:-}/state/repository
-    local configuration status=0
+    local configuration status=0 cleanup_status=0
     local -a args=("$@")
     if [[ ! -d $cache ]]; then
         command pacman "${args[@]}"
@@ -105,23 +105,32 @@ pacman() {
     prepare_shared_cache "$cache" "$repository" || return
     # Prepared official metadata is consumed by target builds. Preparation-environment
     # maintenance retains normal refresh semantics.
-    if [[ ${RSTAR_SYSTEM_ID:-} != predownload && -f $repository/.prepared.json ]]; then
-        mkdir -p /var/lib/pacman/sync
-        local database
+    if [[ ${RSTAR_SYSTEM_ID:-} != predownload && ( -f $repository/.prepared.json || -f $repository/.planned.json ) ]]; then
+        mkdir -p /var/lib/pacman/sync || return
+        local database database_count=0
         for database in "$repository"/official-sync/*.db "$repository"/official-sync/*.db.sig; do
             [[ -f $database ]] || continue
-            cp --remove-destination -- "$database" "/var/lib/pacman/sync/${database##*/}"
+            cp --remove-destination -- "$database" "/var/lib/pacman/sync/${database##*/}" || return
+            [[ $database != *.db ]] || (( database_count += 1 ))
         done
+        (( database_count )) || { log 'Prepared official repository databases are missing'; return 1; }
         if [[ ${args[0]:-} == -Syu ]]; then args[0]=-Su; fi
     fi
     if [[ -f $repository/rstarsleep.db.tar.gz ]]; then
-        configuration=$(mktemp "${RSTAR_PLUGIN_TMP:-/tmp}/pacman-conf.XXXXXXXX")
-        awk '/^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[rstarsleep\]/) } !skip { print }' /etc/pacman.conf >"$configuration"
-        printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration"
-        mkdir -p /var/lib/pacman/sync
-        cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db
-        command pacman --config "$configuration" --cachedir "$cache" "${args[@]}" || status=$?
-        rm -f -- "$configuration"
+        configuration=$(mktemp "${RSTAR_PLUGIN_TMP:-/tmp}/pacman-conf.XXXXXXXX") || return
+        # This wrapper is also called in if/|| contexts, where Bash disables
+        # errexit. Explicitly stop when preparing repository metadata fails.
+        # 此函数也用于 if/|| 条件，此时 Bash 禁用 errexit，须显式传播准备失败。
+        if awk '/^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[rstarsleep\]/) } !skip { print }' /etc/pacman.conf >"$configuration" &&
+            printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration" &&
+            mkdir -p /var/lib/pacman/sync &&
+            cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db; then
+            command pacman --config "$configuration" --cachedir "$cache" "${args[@]}" || status=$?
+        else
+            status=$?
+        fi
+        rm -f -- "$configuration" || cleanup_status=$?
+        (( status )) || status=$cleanup_status
         return "$status"
     fi
     command pacman --cachedir "$cache" "${args[@]}"
