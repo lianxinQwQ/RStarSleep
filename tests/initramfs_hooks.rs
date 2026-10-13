@@ -303,6 +303,113 @@ fn finalize_hook_mounts_top_level_and_propagates_executor_failure() {
     );
 }
 
+struct RuntimeWrapper {
+    _directory: tempfile::TempDir,
+    wrapper: PathBuf,
+    loader_name: PathBuf,
+}
+
+impl RuntimeWrapper {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("early runtime");
+        fs::create_dir_all(runtime.join("bin")).unwrap();
+        fs::create_dir_all(runtime.join("lib")).unwrap();
+        write_executable(
+            &runtime.join("bin/rstarsleep"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit \"${ENGINE_EXIT:-0}\"\n",
+        );
+        write_executable(
+            &runtime.join("lib/ld-test.so"),
+            r#"#!/bin/sh
+[ "$1" = --library-path ] || exit 64
+[ "$2" = "$EXPECTED_LIBRARY_PATH" ] || exit 64
+shift 2
+printf '%s\n' private-loader
+exec "$@"
+"#,
+        );
+        let wrapper = directory.path().join("run-rstarsleep");
+        fs::write(
+            &wrapper,
+            include_str!("../presets/initramfs/run-rstarsleep").replace(
+                "runtime=/usr/lib/rstarsleep/early-runtime",
+                &format!("runtime='{}'", runtime.display()),
+            ),
+        )
+        .unwrap();
+        Self {
+            wrapper,
+            loader_name: runtime.join("loader-name"),
+            _directory: directory,
+        }
+    }
+
+    fn run(&self, exit: &str) -> Output {
+        Command::new("bash")
+            .arg(&self.wrapper)
+            .args([
+                "finalize-inheritance",
+                "--manifest",
+                "manifest with spaces.toml",
+                "--filesystem-root",
+                "root with spaces",
+            ])
+            .env("ENGINE_EXIT", exit)
+            .env(
+                "EXPECTED_LIBRARY_PATH",
+                self.loader_name.parent().unwrap().join("lib"),
+            )
+            .output()
+            .unwrap()
+    }
+}
+
+#[test]
+fn runtime_wrapper_accepts_loader_names_with_or_without_a_final_newline() {
+    let fixture = RuntimeWrapper::new();
+    for record in ["ld-test.so", "ld-test.so\n"] {
+        fs::write(&fixture.loader_name, record).unwrap();
+        for exit in ["0", "23"] {
+            let output = fixture.run(exit);
+            assert_eq!(
+                output.status.code(),
+                exit.parse().ok(),
+                "record {record:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                "private-loader\nfinalize-inheritance\n--manifest\nmanifest with spaces.toml\n--filesystem-root\nroot with spaces\n"
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_wrapper_executes_static_engine_and_rejects_invalid_loader_names() {
+    let fixture = RuntimeWrapper::new();
+    let output = fixture.run("23");
+    assert_eq!(output.status.code(), Some(23));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "finalize-inheritance\n--manifest\nmanifest with spaces.toml\n--filesystem-root\nroot with spaces\n"
+    );
+
+    for record in [
+        "",
+        "\n",
+        "../ld-test.so\n",
+        "ld test.so\n",
+        "ld-test.so/child\n",
+    ] {
+        fs::write(&fixture.loader_name, record).unwrap();
+        let output = fixture.run("0");
+        assert!(!output.status.success(), "accepted loader name {record:?}");
+        assert!(output.stdout.is_empty(), "executed loader name {record:?}");
+    }
+}
+
 #[test]
 fn systemd_root_mount_requires_successful_inheritance_and_busybox_cannot_return_on_failure() {
     let dropin = include_str!("../presets/plugins/arch/initramfs/sysroot.conf");

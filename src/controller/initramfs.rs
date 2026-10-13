@@ -29,7 +29,7 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
     fs::copy(&executable, &engine).map_err(|e| disk::io(&engine, e))?;
     let loader = bundle_dependencies(&executable, &runtime.join("lib"))?;
     if let Some(loader) = loader {
-        disk::write_text(&runtime.join("loader-name"), &loader)?;
+        disk::write_text(&runtime.join("loader-name"), &format!("{loader}\n"))?;
     } else if runtime.join("loader-name").exists() {
         fs::remove_file(runtime.join("loader-name")).map_err(|e| disk::io(&runtime, e))?;
     }
@@ -146,26 +146,27 @@ mod tests {
     }
 
     #[test]
-    fn bundled_host_dependencies_can_execute_the_engine_with_a_private_loader() {
+    fn prepared_payload_can_execute_the_engine_through_its_runtime_wrapper() {
         let directory = tempfile::tempdir().unwrap();
-        let executable = std::env::current_exe().unwrap();
-        let loader = bundle_dependencies(&executable, directory.path()).unwrap();
-        let output = if let Some(loader) = loader {
-            Command::new(directory.path().join(loader))
-                .arg("--library-path")
-                .arg(directory.path())
-                .arg(&executable)
-                .arg("--list")
-                .output()
-                .unwrap()
-        } else {
-            Command::new(executable).arg("--list").output().unwrap()
-        };
+        prepare(directory.path()).unwrap();
+        let runtime = directory.path().join("usr/lib/rstarsleep/early-runtime");
+        let wrapper = runtime.join("run-rstarsleep");
+        let script = fs::read_to_string(&wrapper).unwrap().replace(
+            "runtime=/usr/lib/rstarsleep/early-runtime",
+            "runtime=$RSTAR_TEST_RUNTIME",
+        );
+        fs::write(&wrapper, script).unwrap();
+        let output = Command::new("bash")
+            .arg(&wrapper)
+            .arg("--list")
+            .env("RSTAR_TEST_RUNTIME", &runtime)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("bundled_host_dependencies"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("prepared_payload_can_execute"));
     }
 }

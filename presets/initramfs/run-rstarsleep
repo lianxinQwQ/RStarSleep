@@ -4,6 +4,13 @@ runtime=/usr/lib/rstarsleep/early-runtime
 if [ ! -f "$runtime/loader-name" ]; then
     exec "$runtime/bin/rstarsleep" "$@"
 fi
-IFS= read -r loader < "$runtime/loader-name"
-case "$loader" in ''|*/*|*[[:space:]]*) exit 1 ;; esac
+loader=
+# Accept older payloads whose final line has no newline; read returns 1 at EOF.
+IFS= read -r loader < "$runtime/loader-name" || :
+case "$loader" in
+    ''|*/*|*[[:space:]]*)
+        printf '%s\n' 'RStarSleep: invalid early-runtime loader name' >&2
+        exit 1
+        ;;
+esac
 exec "$runtime/lib/$loader" --library-path "$runtime/lib" "$runtime/bin/rstarsleep" "$@"
