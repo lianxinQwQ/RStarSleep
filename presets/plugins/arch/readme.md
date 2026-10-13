@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.7.3 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.9.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -73,6 +73,56 @@ bootstrap 需要可信 Arch 签名密钥环和元数据中声明的下载、验�
 宿主 `gpg` 转换到临时二进制密钥环后交给 `gpgv` 验签，不修改原密钥文件。
 API 2 可维护已有兼容缓存，新安装需要 API 3。
 
+## 主系统启动与延后继承
+
+插件通过 `[boot]` 声明主系统必需的软件包，以及目标根内的启动文件。预设要求目标安装计划包含
+`linux`、`mkinitcpio`，发布 `/boot/vmlinuz-linux`、`/boot/initramfs-linux.img`，并将存在的
+Intel/AMD 微码镜像放在主 initramfs 前。例如：
+
+```toml
+[boot]
+packages = ["linux", "mkinitcpio"]
+artifacts = [
+    { source = "boot/intel-ucode.img", destination = "intel-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/amd-ucode.img", destination = "amd-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/initramfs-linux.img", destination = "initramfs-linux.img", kind = "initrd" },
+    { source = "boot/vmlinuz-linux", destination = "vmlinuz", kind = "kernel" },
+]
+
+[initramfs_inheritance]
+packages = ["mkinitcpio", "btrfs-progs", "coreutils", "util-linux", "bash", "findutils"]
+tools = ["mkinitcpio", "btrfs", "cp", "mount", "findmnt", "mkdir", "sleep", "bash", "find", "install"]
+```
+
+`source` 是目标根内的规范相对路径；`destination` 是核心发布目录中的单个文件名。
+`kind` 只接受 `kernel`、`initrd`，产物声明中须有且只有一个必选内核；initrd 按声明顺序发布。
+核心负责验证文件、复制到启动分区、记录所有权和发布启动项，插件不直接写宿主启动分区。
+
+仅主系统启用 `Timing=initramfs` 且配置非空 `CopyOnWrite` 时检查
+`[initramfs_inheritance]` 并调用 `prepare_inheritance_initramfs.sh`。控制器在分配目标版本及修改目标缓存前，
+检查对应能力的 `packages` 是否出现在当前系统的具体目标计划中。软件组成员、基础包及
+运行依赖均可满足要求；缺项才要求调整配置，程序不会自动把能力要求的软件包补入目标。
+插件还声明 `[package_plan] base_packages=["base"]` 和仅收集时需要的 `tools`，提供
+`collect_packages.sh`。它复用共享准备的解析器，在独立环境中接收当前系统的原始目标及
+声明基础目标，输出 JSON `{"schema_version":1,"packages":[...]}`。将选中 AUR 拆分包的运行
+依赖及提供者元数据与官方包、软件组及基础目标联合求解，避免逐个解析后合并产生错误提供者。
+不下载目标二进制或编译包；不把临时编译依赖、
+其他系统目标或旧版本更新需求算作当前系统所需包。查询会刷新仓库元数据并获取 AUR 配方。
+所有系统配置先冻结，计划检查通过后才分配目标版本、清理目标缓存并合并预下载需求。
+即使关闭预下载，主系统仍需要此查询能力；解析环境可独立初始化及更新。
+版本目录的 `package-plan.toml` 保存本次校验的具体包清单。
+
+实际调用前还会在目标内检查 `tools`，缺失时不会执行操作脚本。
+
+此操作在软件及用户脚本完成后执行。核心先提供通用的早期 Rust 执行器、私有动态依赖及
+收尾入口，插件再安装 `initramfs/` 中的 mkinitcpio 配置、hook 和 systemd 挂载依赖，调用
+目标系统的 mkinitcpio。独立配置保留 `/etc/mkinitcpio.conf` 及其 drop-in，在 `filesystems`
+前插入 `rstarsleep`；失败时保留编译器输出并阻止候选版本发布。
+
+纯子系统不要求 `[boot]` 或 `[initramfs_inheritance]` 的包；宿主 daemon 在容器启动前完成
+同一继承事务，子系统使用宿主内核。若同一系统同时是主系统，则仍按主系统检查。
+用户为子系统安装内核或 mkinitcpio 时，pacman 自身的 hooks 仍可能生成启动镜像。
+
 ## 包文件候选索引
 
 顶层可选能力 `query_package_files = true` 声明 `query_package_files.sh`。
@@ -125,7 +175,7 @@ FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 安装文件可能来自较早时期，即使版本名称不变也需要更新。新建或恢复基础根后，
 控制器始终调用一次基础维护，成功后才保存基础缓存。软件有缓存时仍独立维护软件根。
 不再通过共享已安装系统根生成新系统；每系统缓存与 CoW 阶段快照继续保留。
-构建开始固定清理历史 script 及后续缓存；基础配置变化清理基础及后续缓存，
+当前系统的配置及能力依赖预检成功后，构建才清理历史 script 及后续缓存；基础配置变化清理基础及后续缓存，
 包列表和脚本变化保留基础缓存。已发布版本根不受缓存清理影响。
 
 基础目标为 `base`；内核及用途相关软件由 `[Content] Packages` 指定。

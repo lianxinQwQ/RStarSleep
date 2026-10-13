@@ -8,6 +8,16 @@ use std::{
     path::PathBuf,
 };
 
+/// Explicitly unlock even when a concurrent fork inherited the file description.
+/// 即使并发 fork 继承了文件描述，也显式释放锁。
+pub(super) struct Lock(File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// One allocated attempt retaining its exclusive system lock.
 /// 一个已分配构建尝试，保留独占系统锁。
 pub(super) struct Attempt {
@@ -28,7 +38,32 @@ pub(super) struct Attempt {
     pub config: PathBuf,
     /// Exclusive system lock held through status and cleanup.
     /// 状态记录和清理期间持有的独占系统锁。
-    _lock: File,
+    _lock: Lock,
+}
+
+/// Locked, frozen inputs checked before allocating a build version.
+/// 分配构建版本前用于校验的已锁定、冻结输入。
+pub(super) struct Preflight {
+    pub layout: SystemLayout,
+    pub config: tempfile::TempDir,
+    lock: Lock,
+}
+
+impl Preflight {
+    pub fn begin(store: &ConfigStore, id: &str) -> Result<Self> {
+        let layout = store.system_layout(id)?;
+        let lock = lock_system(&layout)?;
+        let config = tempfile::Builder::new()
+            .prefix("config-preflight-")
+            .tempdir_in(&layout.root)
+            .map_err(|e| disk::io(&layout.root, e))?;
+        super::frozen::copy_config(&layout.config, config.path())?;
+        Ok(Self {
+            layout,
+            config,
+            lock,
+        })
+    }
 }
 
 /// Durable status kept outside all system-root subvolumes.
@@ -65,8 +100,8 @@ pub(super) struct Status<'a> {
 /// 取得构建和清理共用的系统锁，不分配版本。
 /// # Arguments
 /// - `layout`: Existing managed-system layout. 已有被管理系统布局。
-pub(super) fn lock_system(layout: &SystemLayout) -> Result<File> {
-    lock_directory(&layout.root)
+pub(super) fn lock_system(layout: &SystemLayout) -> Result<Lock> {
+    lock_directory(&layout.root).map(Lock)
 }
 
 pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
@@ -89,21 +124,14 @@ pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
 }
 
 impl Attempt {
-    /// Lock the system and reserve the next version without overwriting any prior attempt.
-    /// 锁定系统并预留下一版本，不覆盖任何过往尝试。
-    /// # Arguments
-    ///
-    /// - `store`: Manager configuration store.
-    ///   管理器配置存储。
-    /// - `id`: Managed system identity.
-    ///   被管理系统标识。
-    pub fn begin(store: &ConfigStore, id: &str) -> Result<Self> {
-        let layout = store.system_layout(id)?;
-        disk::checked(&layout.root)?;
-        if !layout.root.is_dir() {
-            return Err(Error::Invalid(format!("系统未初始化: {id}")));
-        }
-        let lock = lock_system(&layout)?;
+    /// Allocate a version only after checking the frozen inputs under the same lock.
+    /// 在同一个锁内校验冻结输入后才分配版本。
+    pub fn begin(inputs: Preflight) -> Result<Self> {
+        let Preflight {
+            layout,
+            config,
+            lock,
+        } = inputs;
         disk::directory(&layout.versions)?;
         let mut previous = None;
         let mut highest = 0u64;
@@ -149,6 +177,9 @@ impl Attempt {
         let directory = layout.versions.join(&version);
         fs::create_dir(&directory).map_err(|e| disk::io(&directory, e))?;
         disk::sync(&layout.versions)?;
+        let frozen = directory.join("config");
+        fs::rename(config.path(), &frozen).map_err(|e| disk::io(&frozen, e))?;
+        disk::sync(&directory)?;
         Ok(Self {
             config: directory.join("config"),
             layout,
@@ -157,21 +188,6 @@ impl Attempt {
             directory,
             _lock: lock,
         })
-    }
-    /// Archive every ordinary configuration file before interpreting build inputs.
-    /// 解释构建输入前归档所有普通配置文件。
-    /// # Arguments
-    ///
-    /// - `self`: Locked allocated attempt.
-    ///   已锁定并分配的构建尝试。
-    pub fn freeze(&self) -> Result<()> {
-        let staging = tempfile::Builder::new()
-            .prefix("config-pending-")
-            .tempdir_in(&self.directory)
-            .map_err(|e| disk::io(&self.directory, e))?;
-        super::frozen::copy_config(&self.layout.config, staging.path())?;
-        fs::rename(staging.path(), &self.config).map_err(|e| disk::io(&self.config, e))?;
-        disk::sync(&self.directory)
     }
     /// Atomically persist a status transition.
     /// 原子持久化状态迁移。
@@ -186,20 +202,8 @@ impl Attempt {
     }
 }
 
-impl Drop for Attempt {
-    /// Explicitly release the lock before closing, including descriptions inherited during fork.
-    /// 关闭前显式释放锁，包括 fork 期间继承的文件描述。
-    /// # Arguments
-    ///
-    /// - `self`: Finished or failed attempt's lock guard.
-    ///   已完成或失败尝试的锁守卫。
-    fn drop(&mut self) {
-        let _ = self._lock.unlock();
-    }
-}
-
 /// Serialize source pin publication, first-boot finalization and version cleanup.
-pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<File> {
+pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<Lock> {
     let path = manager.join("inheritance.lock");
     disk::checked(&path)?;
     let lock = OpenOptions::new()
@@ -211,5 +215,24 @@ pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<File> {
         .map_err(|e| disk::io(&path, e))?;
     lock.try_lock()
         .map_err(|e| Error::Invalid(format!("无法取得继承事务锁: {e}")))?;
-    Ok(lock)
+    Ok(Lock(lock))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_lock_releases_it_even_when_another_description_survives() {
+        let directory = tempfile::tempdir().unwrap();
+        let guard = Lock(lock_directory(directory.path()).unwrap());
+        let inherited = guard.0.try_clone().unwrap();
+        assert!(lock_directory(directory.path()).is_err());
+        drop(guard);
+        let next = Lock(lock_directory(directory.path()).unwrap());
+        drop(inherited);
+        assert!(lock_directory(directory.path()).is_err());
+        drop(next);
+        assert!(lock_directory(directory.path()).is_ok());
+    }
 }

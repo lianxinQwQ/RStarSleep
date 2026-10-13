@@ -317,6 +317,13 @@ impl<B: BuildBackend> Stages<'_, B> {
                     "Prepare initramfs integration for boot-time inheritance",
                 );
                 self.backend.prepare_inheritance_initramfs(&root)?;
+                self.backend.invoke(
+                    self.plugin,
+                    "prepare_inheritance_initramfs",
+                    &[],
+                    &root,
+                    self.context,
+                )?;
             }
             let prepared = self.attempt.directory.join("prepared-root");
             progress::message(

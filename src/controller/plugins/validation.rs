@@ -1,7 +1,11 @@
 //! Validate metadata and bounded resource paths.
 //! 校验元数据和限定范围的资源路径。
-use super::{Error, Metadata, REQUIRED_OPERATIONS, Result, SYSTEM_OPERATIONS};
+use super::{
+    BootArtifactKind, BootRequirements, Error, Metadata, REQUIRED_OPERATIONS, Result,
+    SYSTEM_OPERATIONS,
+};
 use std::{
+    collections::BTreeSet,
     fs, io,
     path::{Component, Path, PathBuf},
 };
@@ -36,25 +40,42 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
         .chain(&metadata.tools.system)
         .chain(&metadata.tools.predownload)
     {
-        if tool.contains('/') {
-            relative_path(Path::new(tool))?;
-            if !Path::new(tool)
-                .components()
-                .any(|part| matches!(part, Component::Normal(_)))
-            {
-                return Err(Error::Invalid(format!(
-                    "工具路径必须指向插件内文件: {tool:?}"
-                )));
-            }
-        } else {
-            identifier(tool)?;
-        }
-        if tool.chars().any(char::is_control) || tool.trim() != tool {
-            return Err(Error::Invalid(format!("无效工具声明: {tool:?}")));
-        }
+        tool_requirement(tool)?;
     }
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
+    }
+    if let Some(plan) = &metadata.package_plan {
+        if metadata.api_version != 3 {
+            return Err(Error::Invalid(
+                "软件包计划解析环境需要 API 3 系统初始化接口".into(),
+            ));
+        }
+        for package in &plan.base_packages {
+            crate::software::valid_name(package).map_err(|e| Error::Invalid(e.to_string()))?;
+        }
+        for tool in &plan.tools {
+            tool_requirement(tool)?;
+        }
+        for operation in [
+            "collect_packages",
+            "predownload_install",
+            "predownload_update",
+        ] {
+            operation_path(root, operation)?;
+        }
+    }
+    if let Some(boot) = &metadata.boot {
+        validate_boot(boot)?;
+    }
+    if let Some(requirements) = &metadata.initramfs_inheritance {
+        for package in &requirements.packages {
+            crate::software::valid_name(package)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        }
+        for tool in &requirements.tools {
+            tool_requirement(tool)?;
+        }
     }
     for entry in super::commands::parse(&metadata.commands)?.values() {
         super::commands::entry_path(root, entry)?;
@@ -83,6 +104,91 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
         for operation in ["predownload", "predownload_install", "predownload_update"] {
             operation_path(root, operation)?;
         }
+    }
+    Ok(())
+}
+
+/// Validate concrete target paths and exactly one mandatory kernel before publication.
+/// 发布前校验具体目标路径，并要求恰好一个必需内核。
+/// # Arguments
+/// - `boot`: Main-system package and artifact declarations. 主系统软件包及产物声明。
+pub(crate) fn validate_boot(boot: &BootRequirements) -> Result<()> {
+    for package in &boot.packages {
+        crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
+    }
+    let mut destinations = BTreeSet::new();
+    for artifact in &boot.artifacts {
+        let source = &artifact.source;
+        if source.is_empty()
+            || source.contains('\\')
+            || source.chars().any(|c| c.is_whitespace() || c.is_control())
+            || source
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            || Path::new(source)
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(Error::Invalid(format!(
+                "启动产物 source 必须是目标系统根内的规范相对文件路径: {source:?}"
+            )));
+        }
+        identifier(&artifact.destination)?;
+        if artifact.destination.ends_with('.') {
+            return Err(Error::Invalid(format!(
+                "启动产物 destination 必须是安全的 ESP 文件名: {:?}",
+                artifact.destination
+            )));
+        }
+        if !destinations.insert(artifact.destination.to_ascii_lowercase()) {
+            return Err(Error::Invalid(format!(
+                "启动产物 destination 重复: {}",
+                artifact.destination
+            )));
+        }
+    }
+    let kernels: Vec<_> = boot
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == BootArtifactKind::Kernel)
+        .collect();
+    if kernels.len() != 1 || kernels[0].optional {
+        return Err(Error::Invalid(
+            "启动产物必须声明恰好一个必需的 kernel".into(),
+        ));
+    }
+    if !boot
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.kind == BootArtifactKind::Initrd && !artifact.optional)
+    {
+        return Err(Error::Invalid(
+            "启动产物必须声明至少一个必需的 initrd".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate names and plugin-relative executable declarations shared by all actions.
+/// 校验所有操作共用的工具名及插件内相对可执行文件声明。
+/// # Arguments
+/// - `tool`: Declared executable name or bounded relative path. 声明的工具名或限定相对路径。
+fn tool_requirement(tool: &str) -> Result<()> {
+    if tool.contains('/') {
+        relative_path(Path::new(tool))?;
+        if !Path::new(tool)
+            .components()
+            .any(|part| matches!(part, Component::Normal(_)))
+        {
+            return Err(Error::Invalid(format!(
+                "工具路径必须指向插件内文件: {tool:?}"
+            )));
+        }
+    } else {
+        identifier(tool)?;
+    }
+    if tool.chars().any(char::is_control) || tool.trim() != tool {
+        return Err(Error::Invalid(format!("无效工具声明: {tool:?}")));
     }
     Ok(())
 }

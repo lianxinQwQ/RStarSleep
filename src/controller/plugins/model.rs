@@ -1,6 +1,6 @@
 //! Plugin metadata, loaded resources, and errors.
 //! 插件元数据、已加载资源和错误。
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -52,7 +52,9 @@ pub enum Error {
     },
     /// The target preflight probe or plugin operation failed to execute successfully.
     /// 目标环境预检查或插件操作执行失败。
-    #[error("插件 {plugin} 的任务 {operation} 执行失败（{status}）: {stderr}")]
+    #[error(
+        "插件 {plugin} 的任务 {operation} 执行失败（{status}）\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )]
     Execution {
         /// Plugin identity.
         /// 插件标识。
@@ -63,6 +65,9 @@ pub enum Error {
         /// Process exit status, including signal termination.
         /// 进程退出状态，包括信号终止。
         status: String,
+        /// Captured standard output, including diagnostics emitted there.
+        /// 捕获的标准输出，包括发送到该流的诊断信息。
+        stdout: String,
         /// Process diagnostics retained for the caller.
         /// 为调用方保留的进程诊断信息。
         stderr: String,
@@ -125,6 +130,66 @@ pub struct CacheRequirements {
     pub software: Vec<String>,
 }
 
+/// Distribution boot requirements and ordered artifacts for main-system publication.
+/// 主系统发布所需的发行版软件包及按加载顺序排列的启动产物。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootRequirements {
+    /// Concrete packages required in the expanded target installation plan.
+    /// 目标安装计划中此能力所需的具体软件包。
+    pub packages: Vec<String>,
+    /// Target-root-relative files in their boot-loader order.
+    /// 按启动加载顺序排列的目标系统根内相对文件。
+    pub artifacts: Vec<BootArtifact>,
+}
+
+/// A declared boot file and its safe filename on the EFI system partition.
+/// 声明的启动文件及其在 EFI 系统分区上的安全文件名。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootArtifact {
+    pub source: String,
+    pub destination: String,
+    pub kind: BootArtifactKind,
+    #[serde(default)]
+    pub optional: bool,
+}
+
+/// Boot-loader artifact roles independent of the distribution's filename convention.
+/// 独立于发行版文件命名约定的启动产物角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BootArtifactKind {
+    Kernel,
+    Initrd,
+}
+
+/// Dependencies activated only for one optional plugin action.
+/// 仅在调用可选插件操作时启用的依赖。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionRequirements {
+    /// Concrete packages required in the expanded target package plan.
+    /// 展开后的目标软件包计划中必需的具体软件包。
+    pub packages: Vec<String>,
+    /// Target executables checked by the controller before invoking the action.
+    /// 控制器在调用操作前检查的目标可执行工具。
+    pub tools: Vec<String>,
+}
+
+/// Query capability for target package closures in an independent resolver environment.
+/// 在独立解析环境中查询目标软件包闭包的能力。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackagePlanRequirements {
+    /// Initial-system targets included even when the configured package list is empty.
+    /// 即使配置包列表为空也包含的初始系统目标。
+    pub base_packages: Vec<String>,
+    /// Tools needed only while collecting package requirements.
+    /// 仅收集软件包需求时需要的工具。
+    pub tools: Vec<String>,
+}
+
 /// Metadata describing one packaged distribution plugin.
 /// 描述一个打包的发行版插件的元数据。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -168,6 +233,10 @@ pub struct Metadata {
     /// Optional single predownload operation and its independent environment scripts.
     #[serde(default)]
     pub predownload: bool,
+    /// Optional query of configured targets, base packages and runtime dependencies.
+    /// 可选的配置目标、基础包及运行依赖查询。
+    #[serde(default)]
+    pub package_plan: Option<PackagePlanRequirements>,
     /// Globally named direct subvolumes, optionally followed by :relative/mountpoint.
     #[serde(default)]
     pub persistent_dirs: Vec<String>,
@@ -183,6 +252,14 @@ pub struct Metadata {
     /// 可选已安装包文件索引；无参数查询全部所属项。
     #[serde(default)]
     pub query_package_files: bool,
+    /// Optional main-system boot artifacts and their package requirements.
+    /// 可选的主系统启动产物及软件包需求。
+    #[serde(default)]
+    pub boot: Option<BootRequirements>,
+    /// Optional startup-time inheritance preparation requirements.
+    /// 可选的启动阶段继承准备需求。
+    #[serde(default)]
+    pub initramfs_inheritance: Option<ActionRequirements>,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.

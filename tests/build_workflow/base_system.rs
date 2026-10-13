@@ -231,12 +231,13 @@ fn api_two_keeps_existing_cache_maintenance() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch/plugin.toml"),
     )
     .unwrap();
+    let mut legacy: toml::Value = toml::from_str(&metadata).unwrap();
+    legacy["api_version"] = toml::Value::Integer(2);
+    legacy.as_table_mut().unwrap().remove("package_plan");
     replace_resource(
         &fixture,
         "plugin.toml",
-        metadata
-            .replace("api_version = 3", "api_version = 2")
-            .as_bytes(),
+        toml::to_string(&legacy).unwrap().as_bytes(),
     );
     backend.events.borrow_mut().clear();
     build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();

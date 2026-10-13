@@ -175,6 +175,7 @@ pub(super) fn execution_error(plugin: &LoadedPlugin, operation: &str, output: &O
         plugin: plugin.metadata.id.clone(),
         operation: operation.into(),
         status: output.status.to_string(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().into(),
         stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
     }
 }

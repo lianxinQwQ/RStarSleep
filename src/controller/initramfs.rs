@@ -1,4 +1,4 @@
-//! Install a self-contained early-boot executor and regenerate Arch initramfs.
+//! Install the self-contained early-boot payload consumed by distribution plugins.
 use super::{Error, Result, fs as disk};
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -20,12 +20,6 @@ fn install(root: &Path, relative: &str, text: &str, executable: bool) -> Result<
 
 pub(super) fn prepare(root: &Path) -> Result<()> {
     disk::checked(root)?;
-    let compiler = root.join("usr/bin/mkinitcpio");
-    if !compiler.is_file() {
-        return Err(Error::Invalid(
-            "Timing=initramfs 当前需要目标系统安装 mkinitcpio、btrfs-progs 和 GNU coreutils".into(),
-        ));
-    }
     let runtime = root.join("usr/lib/rstarsleep/early-runtime");
     disk::directory(&runtime.join("bin"))?;
     disk::directory(&runtime.join("lib"))?;
@@ -51,66 +45,6 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
         include_str!("../../presets/initramfs/finalize"),
         true,
     )?;
-    install(
-        root,
-        "usr/lib/initcpio/install/rstarsleep",
-        include_str!("../../presets/initramfs/install"),
-        true,
-    )?;
-    install(
-        root,
-        "usr/lib/initcpio/hooks/rstarsleep",
-        include_str!("../../presets/initramfs/hook"),
-        true,
-    )?;
-    install(
-        root,
-        "usr/lib/systemd/system/rstarsleep-inheritance.service",
-        include_str!("../../presets/initramfs/rstarsleep-inheritance.service"),
-        false,
-    )?;
-    install(
-        root,
-        "usr/lib/systemd/system/sysroot.mount.d/50-rstarsleep.conf",
-        include_str!("../../presets/initramfs/sysroot.conf"),
-        false,
-    )?;
-    // Use a dedicated compiler config, preserving /etc/mkinitcpio.conf and its drop-ins.
-    install(
-        root,
-        "usr/lib/rstarsleep/mkinitcpio.conf",
-        "source /etc/mkinitcpio.conf\nfor rstarsleep_config in /etc/mkinitcpio.conf.d/*.conf; do\n    [[ -f \"$rstarsleep_config\" ]] && source \"$rstarsleep_config\"\ndone\nsource /usr/lib/rstarsleep/mkinitcpio-hooks.conf\n",
-        false,
-    )?;
-    install(
-        root,
-        "usr/lib/rstarsleep/mkinitcpio-hooks.conf",
-        include_str!("../../presets/initramfs/config"),
-        false,
-    )?;
-    // Explicit paths match boot publication and avoid presets overriding the dedicated config.
-    let output = Command::new("systemd-nspawn")
-        .args(["--quiet", "--register=no", "--directory"])
-        .arg(root)
-        .args([
-            "--",
-            "/usr/bin/mkinitcpio",
-            "-c",
-            "/usr/lib/rstarsleep/mkinitcpio.conf",
-            "-k",
-            "/boot/vmlinuz-linux",
-            "-g",
-            "/boot/initramfs-linux.img",
-        ])
-        .output()
-        .map_err(|e| disk::io(Path::new("systemd-nspawn"), e))?;
-    if !output.status.success() {
-        return Err(Error::Command {
-            command: "mkinitcpio RStarSleep inheritance".into(),
-            status: output.status.to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).into(),
-        });
-    }
     Ok(())
 }
 
@@ -190,6 +124,27 @@ fn bundle_dependencies(executable: &Path, destination: &Path) -> Result<Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_preparation_does_not_require_a_distribution_image_generator() {
+        let directory = tempfile::tempdir().unwrap();
+        prepare(directory.path()).unwrap();
+        assert!(
+            directory
+                .path()
+                .join("usr/lib/rstarsleep/early-runtime/bin/rstarsleep")
+                .is_file()
+        );
+        assert!(
+            directory
+                .path()
+                .join("usr/lib/rstarsleep/initramfs-finalize")
+                .is_file()
+        );
+        assert!(!directory.path().join("usr/lib/initcpio").exists());
+        assert!(!directory.path().join("boot").exists());
+    }
+
     #[test]
     fn bundled_host_dependencies_can_execute_the_engine_with_a_private_loader() {
         let directory = tempfile::tempdir().unwrap();

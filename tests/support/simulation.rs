@@ -60,6 +60,9 @@ pub struct SimulatedBackend {
     pub remove_kept_on_update: Cell<bool>,
     pub mutate_editable: RefCell<Option<PathBuf>>,
     pub mutate_environment: RefCell<Option<(PathBuf, String)>>,
+    pub package_groups: RefCell<BTreeMap<String, Vec<String>>>,
+    pub runtime_dependencies: RefCell<BTreeMap<String, Vec<String>>>,
+    pub collected_package_plan_override: RefCell<Option<String>>,
     generation: Cell<u32>,
 }
 
@@ -133,13 +136,50 @@ impl SimulatedBackend {
         }
     }
 
+    fn resolve_targets(&self, targets: &[String]) -> BTreeSet<String> {
+        targets
+            .iter()
+            .flat_map(|target| {
+                self.package_groups
+                    .borrow()
+                    .get(target)
+                    .cloned()
+                    .unwrap_or_else(|| vec![target.clone()])
+            })
+            .collect()
+    }
+
+    fn closure(&self, targets: &[String]) -> BTreeSet<String> {
+        let mut result = self.resolve_targets(targets);
+        let mut pending: Vec<_> = result.iter().cloned().collect();
+        while let Some(name) = pending.pop() {
+            let dependencies = Self::dependencies(&name)
+                .iter()
+                .map(|s| s.to_string())
+                .chain(
+                    self.runtime_dependencies
+                        .borrow()
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+                .collect::<Vec<_>>();
+            for dependency in dependencies {
+                if result.insert(dependency.clone()) {
+                    pending.push(dependency);
+                }
+            }
+        }
+        result
+    }
+
     /// Compute dependencies no longer reachable from an explicit package.
     /// 计算从显式包不可再到达的依赖。
     /// # Arguments
     ///
     /// - `packages`: Actual simulated inventory.
     ///   实际模拟清单。
-    fn orphans(packages: &BTreeMap<String, bool>) -> Vec<String> {
+    fn orphans(&self, packages: &BTreeMap<String, bool>) -> Vec<String> {
         let mut needed: BTreeSet<String> = packages
             .iter()
             .filter(|(_, explicit)| **explicit)
@@ -147,9 +187,9 @@ impl SimulatedBackend {
             .collect();
         let mut pending: Vec<String> = needed.iter().cloned().collect();
         while let Some(package) = pending.pop() {
-            for dependency in Self::dependencies(&package) {
-                if needed.insert((*dependency).into()) {
-                    pending.push((*dependency).into());
+            for dependency in self.closure(&[package]) {
+                if needed.insert(dependency.clone()) {
+                    pending.push(dependency);
                 }
             }
         }
@@ -403,7 +443,9 @@ impl BuildBackend for SimulatedBackend {
     /// - `path`: Owned scratch subvolume.
     ///   所属临时子卷。
     fn delete_subvolume_recursive(&self, path: &Path) -> Result<()> {
-        if self.fail_cleanup.replace(false) {
+        if path.components().any(|part| part.as_os_str() == "work")
+            && self.fail_cleanup.replace(false)
+        {
             return Err(Error::Invalid("injected cleanup failure".into()));
         }
         self.delete_subvolume(path)
@@ -490,15 +532,19 @@ impl BuildBackend for SimulatedBackend {
                 }
             }
             "base_install" => {
-                packages.insert("base".into(), true);
-                packages.insert("base-dependency".into(), false);
+                for name in self.closure(&["base".into()]) {
+                    packages.insert(name.clone(), name == "base");
+                }
             }
             "system_init" => {
                 assert_eq!(args.len(), 1);
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
             }
-            "predownload_install" | "predownload_update" | "predownload" => {}
+            "predownload_install"
+            | "predownload_update"
+            | "predownload"
+            | "prepare_inheritance_initramfs" => {}
             "mount_inheritance" => {
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(
@@ -515,7 +561,21 @@ impl BuildBackend for SimulatedBackend {
                 }
             }
             "resolve_packages" => {
-                output = args.iter().map(|name| format!("{name}\n")).collect();
+                output = self
+                    .resolve_targets(args)
+                    .iter()
+                    .map(|name| format!("{name}\n"))
+                    .collect();
+            }
+            "collect_packages" => {
+                output = self
+                    .collected_package_plan_override
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| {
+                        serde_json::json!({"schema_version": 1, "packages": self.closure(args)})
+                            .to_string()
+                    });
             }
             "query_packages" => {
                 output = fs::read_to_string(root.join(DATABASE)).unwrap_or_default();
@@ -529,8 +589,8 @@ impl BuildBackend for SimulatedBackend {
             "install" => {
                 for name in args {
                     packages.insert(name.clone(), true);
-                    for dependency in Self::dependencies(name) {
-                        packages.entry((*dependency).into()).or_insert(false);
+                    for dependency in self.closure(std::slice::from_ref(name)) {
+                        packages.entry(dependency).or_insert(false);
                     }
                 }
             }
@@ -545,13 +605,14 @@ impl BuildBackend for SimulatedBackend {
                 }
             }
             "list_orphans" => {
-                output = Self::orphans(&packages)
+                output = self
+                    .orphans(&packages)
                     .iter()
                     .map(|name| format!("{name}\n"))
                     .collect();
             }
             "remove_orphans" => {
-                let orphans = Self::orphans(&packages);
+                let orphans = self.orphans(&packages);
                 for name in args {
                     assert!(orphans.contains(name));
                     packages.remove(name);

@@ -1,16 +1,197 @@
 //! Exercise initramfs hook ordering, dependency packaging and failure propagation.
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt, symlink},
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
 
 fn write_executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+struct ArchAction {
+    directory: tempfile::TempDir,
+    root: PathBuf,
+    trace: PathBuf,
+}
+
+impl ArchAction {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir_all(root.join("boot")).unwrap();
+        fs::create_dir_all(root.join("etc/mkinitcpio.conf.d")).unwrap();
+        fs::create_dir(directory.path().join("bin")).unwrap();
+        fs::write(root.join("boot/vmlinuz-linux"), "kernel").unwrap();
+        fs::write(
+            root.join("etc/mkinitcpio.conf"),
+            "HOOKS=(base block filesystems)\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("etc/mkinitcpio.conf.d/extra.conf"),
+            "MODULES=(btrfs)\n",
+        )
+        .unwrap();
+        write_executable(
+            &directory.path().join("bin/mkinitcpio"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$TRACE"
+printf '%s\n' '==> mkinitcpio compiler output'
+printf '%s\n' 'Note: compiler stderr remains visible' >&2
+if [[ ${COMPILER_EXIT:-0} != 0 ]]; then
+    printf '%s\n' '==> ERROR: failed to generate initramfs'
+    exit "$COMPILER_EXIT"
+fi
+if [[ ${SKIP_IMAGE:-0} == 0 ]]; then
+    while (( $# )); do
+        if [[ $1 == -g ]]; then printf image > "$2"; break; fi
+        shift
+    done
+fi
+"#,
+        );
+        let trace = directory.path().join("trace");
+        Self {
+            directory,
+            root,
+            trace,
+        }
+    }
+
+    fn run(&self, compiler_exit: &str, skip_image: bool) -> Output {
+        Command::new("bash")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("presets/plugins/arch/prepare_inheritance_initramfs.sh"),
+            )
+            .env("RSTAR_ROOT", &self.root)
+            .env(
+                "RSTAR_PLUGIN_ROOT",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch"),
+            )
+            .env(
+                "PATH",
+                format!(
+                    "{}:/usr/bin:/bin",
+                    self.directory.path().join("bin").display()
+                ),
+            )
+            .env("TRACE", &self.trace)
+            .env("COMPILER_EXIT", compiler_exit)
+            .env("SKIP_IMAGE", if skip_image { "1" } else { "0" })
+            .output()
+            .unwrap()
+    }
+}
+
+#[test]
+fn arch_action_preserves_user_configuration_and_propagates_compiler_diagnostics() {
+    let fixture = ArchAction::new();
+    let configuration = fs::read(fixture.root.join("etc/mkinitcpio.conf")).unwrap();
+    let dropin = fs::read(fixture.root.join("etc/mkinitcpio.conf.d/extra.conf")).unwrap();
+    for exit in ["0", "23"] {
+        let output = fixture.run(exit, false);
+        assert_eq!(output.status.code(), exit.parse().ok());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("mkinitcpio compiler output"));
+        if exit != "0" {
+            assert!(stdout.contains("ERROR: failed to generate initramfs"));
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("compiler stderr remains visible")
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("etc/mkinitcpio.conf")).unwrap(),
+            configuration
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("etc/mkinitcpio.conf.d/extra.conf")).unwrap(),
+            dropin
+        );
+    }
+    let args = fs::read_to_string(&fixture.trace).unwrap();
+    assert_eq!(
+        args.lines().collect::<Vec<_>>(),
+        [
+            "-c".into(),
+            fixture
+                .root
+                .join("usr/lib/rstarsleep/mkinitcpio.conf")
+                .display()
+                .to_string(),
+            "-k".into(),
+            fixture
+                .root
+                .join("boot/vmlinuz-linux")
+                .display()
+                .to_string(),
+            "-g".into(),
+            fixture
+                .root
+                .join("boot/initramfs-linux.img")
+                .display()
+                .to_string(),
+        ]
+    );
+    let wrapper = fs::read_to_string(fixture.root.join("usr/lib/rstarsleep/mkinitcpio.conf"))
+        .unwrap()
+        .replace(
+            "/etc/mkinitcpio",
+            &format!("{}/etc/mkinitcpio", fixture.root.display()),
+        )
+        .replace(
+            "/usr/lib/rstarsleep",
+            &format!("{}/usr/lib/rstarsleep", fixture.root.display()),
+        );
+    let config = fixture.directory.path().join("configuration");
+    fs::write(&config, wrapper).unwrap();
+    let output = Command::new("bash")
+        .args([
+            "-ec",
+            "source \"$1\"; printf '%s\\n' \"${HOOKS[*]}\" \"${MODULES[*]}\"",
+            "test",
+        ])
+        .arg(config)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "base block rstarsleep filesystems\nbtrfs\n"
+    );
+}
+
+#[test]
+fn arch_action_rejects_linked_outputs_and_a_compiler_that_produces_no_image() {
+    let fixture = ArchAction::new();
+    let outside = fixture.directory.path().join("outside");
+    fs::write(&outside, "keep").unwrap();
+    symlink(&outside, fixture.root.join("boot/initramfs-linux.img")).unwrap();
+    let output = fixture.run("0", false);
+    assert!(!output.status.success());
+    assert!(!fixture.trace.exists());
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+    fs::remove_file(fixture.root.join("boot/initramfs-linux.img")).unwrap();
+    let output = fixture.run("0", true);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("did not produce a regular, nonempty")
+    );
+}
+
 #[test]
 fn hook_config_preserves_device_order_and_inserts_exactly_once() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config");
-    fs::write(&config, include_str!("../presets/initramfs/config")).unwrap();
+    fs::write(
+        &config,
+        include_str!("../presets/plugins/arch/initramfs/config"),
+    )
+    .unwrap();
     for hooks in [
         "base udev block encrypt rstarsleep filesystems fsck",
         "base systemd autodetect block sd-encrypt filesystems",
@@ -124,13 +305,13 @@ fn finalize_hook_mounts_top_level_and_propagates_executor_failure() {
 
 #[test]
 fn systemd_root_mount_requires_successful_inheritance_and_busybox_cannot_return_on_failure() {
-    let dropin = include_str!("../presets/initramfs/sysroot.conf");
+    let dropin = include_str!("../presets/plugins/arch/initramfs/sysroot.conf");
     assert!(dropin.contains("Requires=rstarsleep-inheritance.service"));
     assert!(dropin.contains("After=rstarsleep-inheritance.service"));
-    let unit = include_str!("../presets/initramfs/rstarsleep-inheritance.service");
+    let unit = include_str!("../presets/plugins/arch/initramfs/rstarsleep-inheritance.service");
     assert!(unit.contains("DefaultDependencies=no") && unit.contains("Before=sysroot.mount"));
     assert!(!unit.contains("cryptsetup.target"));
-    let hook = include_str!("../presets/initramfs/hook");
+    let hook = include_str!("../presets/plugins/arch/initramfs/hook");
     assert!(hook.contains("exec /usr/lib/rstarsleep/tools/sh"));
     assert!(hook.contains("while :; do"));
 }

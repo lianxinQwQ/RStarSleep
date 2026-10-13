@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.7.3"
+version = "0.9.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -20,6 +20,29 @@ persistent_dirs = [
     "arch-repository:state/repository",
     "arch-sources:state/sources",
 ]
+
+# Target installation closure, collected before target build allocation.
+# 分配目标构建版本前收集的目标安装闭包。
+[package_plan]
+base_packages = ["base"]
+tools = ["python3", "pacman", "git", "makepkg", "vercmp", "runuser"]
+
+# Main-system boot requirements and ordered artifacts, relative to the target root.
+# 主系统启动依赖及有序启动产物；source 相对于目标系统根。
+[boot]
+packages = ["linux", "mkinitcpio"]
+artifacts = [
+    { source = "boot/intel-ucode.img", destination = "intel-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/amd-ucode.img", destination = "amd-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/initramfs-linux.img", destination = "initramfs-linux.img", kind = "initrd", optional = false },
+    { source = "boot/vmlinuz-linux", destination = "vmlinuz", kind = "kernel", optional = false },
+]
+
+# Required only for a main system with deferred copy-on-write inheritance.
+# 仅主系统启用延后写时复制继承时需要。
+[initramfs_inheritance]
+packages = ["mkinitcpio", "btrfs-progs", "coreutils", "util-linux", "bash", "findutils"]
+tools = ["mkinitcpio", "btrfs", "cp", "mount", "findmnt", "mkdir", "sleep", "bash", "find", "install"]
 
 # Unified effective build parameters accepted by single-system operations.
 # 单系统操作接受的统一生效构建参数。

@@ -4,12 +4,8 @@ build() {
     [[ -x "$runtime/bin/rstarsleep" && -x "$runtime/run-rstarsleep" ]] || {
         error 'RStarSleep runtime is incomplete'; return 1;
     }
-    [[ "$(/usr/bin/cp --version)" == *'GNU coreutils'* ]] || {
-        error 'GNU cp is required for reflink inheritance'; return 1;
-    }
     add_module btrfs || return 1
     for name in cp btrfs mount findmnt mkdir sleep; do
-        [[ -x "/usr/bin/$name" ]] || { error "Missing /usr/bin/$name"; return 1; }
         add_binary "/usr/bin/$name" "/usr/lib/rstarsleep/tools/$name" || return 1
     done
     add_binary /usr/bin/bash /usr/lib/rstarsleep/tools/sh || return 1

@@ -105,7 +105,11 @@ fn one_batch_union_is_prepared_before_any_target_and_environment_is_reused() {
         .position(|e| e.operation == "predownload")
         .unwrap();
     assert_eq!(events[pre].arguments, ["editor", "server", "shared"]);
-    assert!(events[..pre].iter().all(|e| e.system_id == "predownload"));
+    assert!(
+        events[..pre]
+            .iter()
+            .all(|e| e.system_id == "predownload" || e.operation == "collect_packages")
+    );
     assert_eq!(events[pre].persistent_mounts.len(), 4);
     assert!(
         events
@@ -158,7 +162,7 @@ fn failed_preparation_blocks_targets_and_rolls_back_shared_data_but_keeps_enviro
             .events
             .borrow()
             .iter()
-            .all(|e| e.system_id == "predownload")
+            .all(|e| e.system_id == "predownload" || e.operation == "collect_packages")
     );
     assert_eq!(fs::read_to_string(persistent).unwrap(), "old");
     for id in ["desktop", "server"] {

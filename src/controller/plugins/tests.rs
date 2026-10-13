@@ -484,6 +484,175 @@ fn validates_protected_package_targets() {
     }
 }
 
+/// A conventional kernel and ordered initrd declaration for metadata validation tests.
+/// 用于元数据校验测试的常规内核及有序 initrd 声明。
+fn boot_declaration() -> BootRequirements {
+    BootRequirements {
+        packages: vec!["linux".into()],
+        artifacts: vec![
+            BootArtifact {
+                source: "boot/vmlinuz-linux".into(),
+                destination: "vmlinuz-linux".into(),
+                kind: BootArtifactKind::Kernel,
+                optional: false,
+            },
+            BootArtifact {
+                source: "boot/intel-ucode.img".into(),
+                destination: "intel-ucode.img".into(),
+                kind: BootArtifactKind::Initrd,
+                optional: true,
+            },
+            BootArtifact {
+                source: "boot/initramfs-linux.img".into(),
+                destination: "initramfs-linux.img".into(),
+                kind: BootArtifactKind::Initrd,
+                optional: false,
+            },
+        ],
+    }
+}
+
+/// Optional capability declarations are backward compatible and do not require unused actions.
+/// 可选能力声明兼容旧插件，不要求尚未使用的操作入口存在。
+#[test]
+fn validates_optional_boot_and_inheritance_declarations_without_action_files() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&archive).unwrap();
+    assert!(plugin.metadata.boot.is_none());
+    assert!(plugin.metadata.initramfs_inheritance.is_none());
+    let mut metadata = plugin.metadata.clone();
+    metadata.boot = Some(boot_declaration());
+    metadata.initramfs_inheritance = Some(ActionRequirements {
+        packages: vec!["mkinitcpio".into(), "btrfs-progs".into()],
+        tools: vec!["mkinitcpio".into(), "btrfs".into()],
+    });
+    validate_metadata(&metadata, plugin.root()).unwrap();
+    assert!(
+        plugin
+            .operation_path("prepare_inheritance_initramfs")
+            .is_err()
+    );
+    let boot = metadata.boot.as_ref().unwrap();
+    let serialized = toml::to_string(boot).unwrap();
+    assert!(serialized.contains("kind = \"kernel\""));
+    assert_eq!(
+        toml::from_str::<BootRequirements>(&serialized).unwrap(),
+        *boot
+    );
+    let text = fs::read_to_string(plugin.root().join("plugin.toml")).unwrap();
+    let metadata_boot = serialized.replace("[[artifacts]]", "[[boot.artifacts]]");
+    let parsed = toml::from_str::<Metadata>(&format!(
+        "{text}\n[boot]\n{metadata_boot}\n[initramfs_inheritance]\npackages=['mkinitcpio']\ntools=['mkinitcpio']\n"
+    ))
+    .unwrap();
+    validate_metadata(&parsed, plugin.root()).unwrap();
+    assert_eq!(parsed.boot.as_ref(), metadata.boot.as_ref());
+}
+
+/// Unsafe declarations and ambiguous boot-loader roles are rejected before build side effects.
+/// 构建产生副作用前，拒绝不安全声明及含糊的启动加载角色。
+#[test]
+fn rejects_unsafe_or_incomplete_boot_declarations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&archive).unwrap();
+    let mut metadata = plugin.metadata.clone();
+    for invalid in [
+        "",
+        "/boot/kernel",
+        "../kernel",
+        "boot/../kernel",
+        "./boot/kernel",
+        "boot//kernel",
+        "boot/kernel/",
+        "boot\\kernel",
+        "boot/a b",
+        "boot/a\n",
+    ] {
+        let mut boot = boot_declaration();
+        boot.artifacts[0].source = invalid.into();
+        metadata.boot = Some(boot);
+        assert!(
+            validate_metadata(&metadata, plugin.root()).is_err(),
+            "accepted source {invalid:?}"
+        );
+    }
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "/kernel",
+        "dir/kernel",
+        "a\\b",
+        "kernel:",
+        "kernel.",
+        "two words",
+        "a\n",
+    ] {
+        let mut boot = boot_declaration();
+        boot.artifacts[0].destination = invalid.into();
+        metadata.boot = Some(boot);
+        assert!(
+            validate_metadata(&metadata, plugin.root()).is_err(),
+            "accepted destination {invalid:?}"
+        );
+    }
+    let mut invalid_structures = vec![BootRequirements {
+        packages: vec![],
+        artifacts: vec![],
+    }];
+    let mut optional_kernel = boot_declaration();
+    optional_kernel.artifacts[0].optional = true;
+    invalid_structures.push(optional_kernel);
+    let mut two_kernels = boot_declaration();
+    two_kernels.artifacts[1].kind = BootArtifactKind::Kernel;
+    invalid_structures.push(two_kernels);
+    let mut optional_initrds = boot_declaration();
+    optional_initrds.artifacts[2].optional = true;
+    invalid_structures.push(optional_initrds);
+    let mut duplicate = boot_declaration();
+    duplicate.artifacts[1].destination = "VMLINUZ-LINUX".into();
+    invalid_structures.push(duplicate);
+    for boot in invalid_structures {
+        metadata.boot = Some(boot);
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+}
+
+/// Capability package and executable names obey the same safety rules as existing declarations.
+/// 能力所需包名及工具名遵循现有声明的安全约束。
+#[test]
+fn rejects_invalid_action_package_and_tool_declarations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary.path().join("plugin.tar");
+    fs::write(&archive, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&archive).unwrap();
+    let mut metadata = plugin.metadata.clone();
+    for invalid in ["", "-flag", "repo/pkg", "pkg:version", "bad name"] {
+        let mut boot = boot_declaration();
+        boot.packages = vec![invalid.into()];
+        metadata.boot = Some(boot);
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+        metadata.boot = None;
+        metadata.initramfs_inheritance = Some(ActionRequirements {
+            packages: vec![invalid.into()],
+            tools: vec![],
+        });
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+        metadata.initramfs_inheritance = None;
+    }
+    for invalid in ["", "../escape", "/usr/bin/tool", "bad tool", "./"] {
+        metadata.initramfs_inheritance = Some(ActionRequirements {
+            packages: vec![],
+            tools: vec![invalid.into()],
+        });
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+}
+
 /// Verify directory discovery, immutable copies, and complete deterministic fingerprints.
 /// 验证目录发现、不可变副本及完整确定性指纹。
 /// # Arguments
@@ -716,4 +885,41 @@ fn requires_explicit_cache_dependencies_and_validates_selectors() {
     metadata.cache.base_system = vec!["RSTAR_DISTRIBUTION".into()];
     metadata.cache.software = vec!["RSTAR_*DISTRIBUTION_ARCHITECTURE".into()];
     validate_metadata(&metadata, plugin.root()).unwrap();
+}
+
+#[test]
+fn package_collection_requires_explicit_capability_and_safe_resolver_lifecycle() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    assert!(plugin.metadata.package_plan.is_none());
+    let mut metadata = plugin.metadata.clone();
+    metadata.package_plan = Some(PackagePlanRequirements {
+        base_packages: vec!["base".into()],
+        tools: vec!["python3".into()],
+    });
+    for operation in [
+        "collect_packages.sh",
+        "predownload/install.sh",
+        "predownload/update.sh",
+    ] {
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+        let entry = plugin.root().join(operation);
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(entry, "exit 0\n").unwrap();
+    }
+    assert!(!metadata.predownload);
+    assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+    let mut invalid = metadata.clone();
+    invalid.api_version = 2;
+    assert!(validate_metadata(&invalid, plugin.root()).is_err());
+    for package in ["bad name", "--unsafe"] {
+        let mut invalid = metadata.clone();
+        invalid.package_plan.as_mut().unwrap().base_packages = vec![package.into()];
+        assert!(validate_metadata(&invalid, plugin.root()).is_err());
+    }
+    metadata.package_plan.as_mut().unwrap().tools = vec!["../outside".into()];
+    assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    assert!(is_query("collect_packages"));
 }

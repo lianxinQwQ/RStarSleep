@@ -48,15 +48,18 @@ impl Drop for Lock {
 ///   提供独立环境操作的已校验插件。
 /// - `target`: Frozen configuration shared by this group.
 ///   此组共用的冻结配置。
-/// - `packages`: Sorted package demand, including planned full-upgrade inputs.
-///   已排序的软件需求，包括计划完整更新的输入。
-pub(super) fn run(
+/// - `refresh`: Update the resolver once before collection, reuse it during downloads.
+///   收集前更新一次解析环境，下载时复用。
+/// - `action`: Collection or download within the independent writable work root.
+///   在独立可写工作根内执行收集或下载。
+pub(super) fn with_environment<T>(
     backend: &impl BuildBackend,
     store: &ConfigStore,
     plugin: &LoadedPlugin,
     target: &BuildContext,
-    packages: &[String],
-) -> Result<()> {
+    refresh: bool,
+    action: impl FnOnce(&Path, &BuildContext) -> Result<T>,
+) -> Result<T> {
     plugin.validate_configuration(&target.parameters)?;
     let architecture = &target.architecture;
     let options = toml::to_string(&target.distribution_options)
@@ -158,18 +161,20 @@ pub(super) fn run(
             let machine_id = identity::machine_id(&directory, None)?;
             backend.invoke(plugin, "system_init", &[machine_id], &root, &context)?;
         }
-        base_system::maintain(backend, plugin, &root, &context)?;
-        backend.invoke(
-            plugin,
-            if reused {
-                "predownload_update"
-            } else {
-                "predownload_install"
-            },
-            &[],
-            &root,
-            &context,
-        )?;
+        if !reused || refresh {
+            base_system::maintain(backend, plugin, &root, &context)?;
+            backend.invoke(
+                plugin,
+                if reused {
+                    "predownload_update"
+                } else {
+                    "predownload_install"
+                },
+                &[],
+                &root,
+                &context,
+            )?;
+        }
         let software = PackageSession {
             backend,
             plugin,
@@ -206,17 +211,16 @@ pub(super) fn run(
         }
         progress::message(
             "predownload",
-            "环境准备完成，创建下载工作根并处理合并的软件需求",
-            "Environment ready; create the download work root and process merged package requirements",
+            "环境准备完成，创建解析工作根",
+            "Environment ready; create the resolver work root",
         );
         backend.snapshot(&completed.join("root"), &work, false)?;
-        backend.invoke(plugin, "predownload", packages, &work, &context)?;
-        Ok(())
+        action(&work, &context)
     })();
     let cleanup = progress::run(
         "predownload",
-        "清理预下载临时工作根",
-        "Clean temporary predownload work roots",
+        "清理解析环境临时工作根",
+        "Clean temporary resolver work roots",
         || {
             if disk::exists(&work)? {
                 backend.delete_subvolume_recursive(&work)?;
@@ -228,11 +232,27 @@ pub(super) fn run(
         },
     );
     match (result, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
         (Err(e), Err(c)) => Err(Error::Invalid(format!("{e}; 预下载环境清理失败: {c}"))),
     }
 }
+/// Download the union after per-system plans have passed capability checks.
+/// 各系统计划通过能力检查后，下载合并的需求。
+pub(super) fn run(
+    backend: &impl BuildBackend,
+    store: &ConfigStore,
+    plugin: &LoadedPlugin,
+    target: &BuildContext,
+    packages: &[String],
+    refresh: bool,
+) -> Result<()> {
+    with_environment(backend, store, plugin, target, refresh, |root, context| {
+        backend.invoke(plugin, "predownload", packages, root, context)?;
+        Ok(())
+    })
+}
+
 /// Remove known environment subvolumes before deleting their ordinary parent directory.
 /// 删除已知环境子卷后，再删除其普通父目录。
 /// # Arguments

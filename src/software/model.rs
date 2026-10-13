@@ -4,6 +4,30 @@ use crate::controller::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Concrete target installation closure returned by package collection.
+/// 软件包收集返回的具体目标安装闭包。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackagePlan {
+    pub schema_version: u32,
+    pub packages: Vec<String>,
+}
+
+impl PackagePlan {
+    pub(crate) fn parse(text: &str) -> Result<Self> {
+        let plan: Self = serde_json::from_str(text)
+            .map_err(|e| Error::Invalid(format!("软件包计划查询结果无效: {e}")))?;
+        if plan.schema_version != 1 {
+            return Err(Error::Invalid("软件包计划仅支持格式版本 1".into()));
+        }
+        names(&plan.packages.join("\n"))?;
+        for package in &plan.packages {
+            valid_name(package)?;
+        }
+        Ok(plan)
+    }
+}
+
 /// One concrete installed package and its normalized installation reason.
 /// 一个具体已安装包及其规范化安装原因。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

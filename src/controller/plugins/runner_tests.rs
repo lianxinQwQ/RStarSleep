@@ -35,6 +35,8 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             commands: Vec::new(),
             mount_inheritance: false,
             query_package_files: false,
+            boot: None,
+            initramfs_inheritance: None,
             schema_version: 1,
             api_version: 2,
             id: "test".into(),
@@ -44,6 +46,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             cache_format: "test-v1".into(),
             protected_packages: vec![],
             predownload: false,
+            package_plan: None,
             persistent_dirs: vec![],
             cache: super::super::CacheRequirements {
                 base_system: vec![],
@@ -211,6 +214,83 @@ fn blocks_target_operation_before_plugin_entry_when_guest_tool_is_missing() {
             .filter(|line| *line == "CALL")
             .count(),
         1
+    );
+}
+
+/// Inheritance requirements are checked only when the optional inheritance action runs.
+/// 仅执行可选继承操作时检查继承依赖。
+#[test]
+fn checks_inheritance_tools_only_for_the_declared_action() {
+    let mut plugin = fixture(&[], &["pacman"]);
+    plugin.metadata.initramfs_inheritance = Some(super::super::ActionRequirements {
+        packages: vec!["btrfs-progs".into()],
+        tools: vec!["mkinitcpio".into(), "btrfs".into(), "pacman".into()],
+    });
+    fs::write(
+        plugin.root().join("prepare_inheritance_initramfs.sh"),
+        "exit 0\n",
+    )
+    .unwrap();
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    launcher(&plugin, "", false);
+    plugin
+        .invoke_with_path("update", &[], &root, "x86_64", path.as_os_str())
+        .unwrap();
+    let trace = fs::read_to_string(plugin.root().join("launcher-trace")).unwrap();
+    assert!(!trace.contains("mkinitcpio"));
+    assert!(!trace.contains("btrfs"));
+    fs::remove_file(plugin.root().join("executed-inside")).unwrap();
+    launcher(&plugin, "mkinitcpio", false);
+    assert!(matches!(
+        plugin.invoke_with_path("prepare_inheritance_initramfs", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::MissingTools { tools, .. }) if tools == ["mkinitcpio"]
+    ));
+    assert!(!plugin.root().join("executed-inside").exists());
+    launcher(&plugin, "", false);
+    plugin
+        .invoke_with_path(
+            "prepare_inheritance_initramfs",
+            &[],
+            &root,
+            "x86_64",
+            path.as_os_str(),
+        )
+        .unwrap();
+    assert!(plugin.root().join("executed-inside").is_file());
+    plugin.metadata.initramfs_inheritance = None;
+    assert!(matches!(
+        plugin.invoke_with_path(
+            "prepare_inheritance_initramfs",
+            &[],
+            &root,
+            "x86_64",
+            path.as_os_str()
+        ),
+        Err(Error::Invalid(_))
+    ));
+}
+
+/// Failed processes preserve diagnostics from both output streams in their reported error.
+/// 报告失败进程时保留两个输出流中的诊断信息。
+#[test]
+fn reports_stdout_and_stderr_for_failed_operations() {
+    let plugin = fixture(&[], &[]);
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        "printf 'actual failure\\n'\nprintf 'launcher note\\n' >&2\nexit 7\n",
+    )
+    .unwrap();
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    let error = plugin
+        .invoke_with_path("bootstrap", &[], &root, "x86_64", path.as_os_str())
+        .unwrap_err();
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains("stdout:\nactual failure"));
+    assert!(diagnostic.contains("stderr:\nlauncher note"));
+    assert!(
+        matches!(error, Error::Execution { stdout, stderr, .. } if stdout == "actual failure" && stderr == "launcher note")
     );
 }
 
@@ -483,4 +563,35 @@ fn probe_checks_executable_files_in_the_actual_target_search_path() {
         String::from_utf8(output.stdout).unwrap(),
         "missing\n./bin/noexec\n"
     );
+}
+
+#[test]
+fn collector_tools_are_checked_only_for_collection_and_undeclared_queries_are_rejected() {
+    let mut plugin = fixture(&[], &["pacman"]);
+    fs::write(plugin.root().join("collect_packages.sh"), "exit 0\n").unwrap();
+    let path = plugin.temporary.path().join("host-bin");
+    let root = plugin.temporary.path().join("target");
+    assert!(matches!(
+        plugin.invoke_with_path("collect_packages", &[], &root, "x86_64", path.as_os_str()),
+        Err(Error::Invalid(_))
+    ));
+    plugin.metadata.package_plan = Some(super::super::PackagePlanRequirements {
+        base_packages: vec!["base".into()],
+        tools: vec!["python3".into(), "pacman".into()],
+    });
+    launcher(&plugin, "", false);
+    plugin
+        .invoke_with_path("update", &[], &root, "x86_64", path.as_os_str())
+        .unwrap();
+    assert!(
+        !fs::read_to_string(plugin.root().join("launcher-trace"))
+            .unwrap()
+            .contains("python3")
+    );
+    fs::remove_file(plugin.root().join("executed-inside")).unwrap();
+    launcher(&plugin, "python3", false);
+    assert!(
+        matches!(plugin.invoke_with_path("collect_packages", &["base".into()], &root, "x86_64", path.as_os_str()), Err(Error::MissingTools {tools, ..}) if tools == ["python3"])
+    );
+    assert!(!plugin.root().join("executed-inside").exists());
 }

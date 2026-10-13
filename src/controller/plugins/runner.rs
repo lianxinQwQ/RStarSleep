@@ -154,6 +154,18 @@ impl LoadedPlugin {
                 "plugin does not advertise query_package_files".into(),
             ));
         }
+        if operation == "prepare_inheritance_initramfs"
+            && self.metadata.initramfs_inheritance.is_none()
+        {
+            return Err(Error::Invalid(
+                "plugin does not advertise initramfs_inheritance".into(),
+            ));
+        }
+        if operation == "collect_packages" && self.metadata.package_plan.is_none() {
+            return Err(Error::Invalid(
+                "plugin does not advertise package_plan".into(),
+            ));
+        }
         let standalone = std::collections::BTreeMap::from([(
             "RSTAR_DISTRIBUTION_ARCHITECTURE".into(),
             architecture.into(),
@@ -161,7 +173,7 @@ impl LoadedPlugin {
         let options = context
             .map(|value| &value.parameters)
             .unwrap_or(&standalone);
-        let mut configuration = if operation == "predownload" {
+        let mut configuration = if matches!(operation, "predownload" | "collect_packages") {
             self.download_environment(context, architecture)?
         } else {
             self.configuration_environment(options, architecture)?
@@ -254,6 +266,16 @@ impl LoadedPlugin {
             let mut declared = self.metadata.tools.system.clone();
             if operation == "predownload" {
                 declared.extend(self.metadata.tools.predownload.iter().cloned());
+            }
+            if operation == "prepare_inheritance_initramfs"
+                && let Some(requirements) = &self.metadata.initramfs_inheritance
+            {
+                declared.extend(requirements.tools.iter().cloned());
+            }
+            if operation == "collect_packages"
+                && let Some(plan) = &self.metadata.package_plan
+            {
+                declared.extend(plan.tools.iter().cloned());
             }
             let required = required_tools(&declared, mandatory);
             let mut probe = nspawn_from(

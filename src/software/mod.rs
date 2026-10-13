@@ -8,5 +8,5 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 pub(crate) use model::valid_name;
-pub use model::{InstalledPackage, SoftwareState};
+pub use model::{InstalledPackage, PackagePlan, SoftwareState};
 pub use session::PackageSession;

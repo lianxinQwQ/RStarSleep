@@ -4,7 +4,7 @@ use super::{
     BuildBackend, Error, Result, SystemBackend, boot::BootRecord, cache, fs as disk, records,
 };
 use crate::config::ConfigStore;
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 /// Parse a numeric version without lexicographic ordering assumptions.
 /// 解析数字版本，不依赖字典序。
@@ -236,16 +236,34 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
     {
         return Err(Error::Invalid("启动所有权记录不匹配版本".into()));
     }
+    let owned: BTreeSet<_> = match &record.files {
+        Some(files) => {
+            let mut names = BTreeSet::new();
+            for name in files {
+                if !super::boot::artifact_name(name) || !names.insert(name.to_ascii_lowercase()) {
+                    return Err(Error::Invalid("启动所有权文件名无效或重复".into()));
+                }
+            }
+            if names.is_empty() {
+                return Err(Error::Invalid("启动所有权文件列表不能为空".into()));
+            }
+            // Preserve exact case when comparing actual directory entries.
+            files.iter().map(String::as_str).collect()
+        }
+        // Compatibility for versions published before declarations were retained.
+        None => [
+            "vmlinuz",
+            "initramfs-linux.img",
+            "intel-ucode.img",
+            "amd-ucode.img",
+        ]
+        .into_iter()
+        .collect(),
+    };
     if disk::exists(&record.directory)? {
         for entry in fs::read_dir(&record.directory).map_err(|e| disk::io(&record.directory, e))? {
             let entry = entry.map_err(|e| disk::io(&record.directory, e))?;
-            if ![
-                "vmlinuz",
-                "initramfs-linux.img",
-                "intel-ucode.img",
-                "amd-ucode.img",
-            ]
-            .contains(&entry.file_name().to_str().unwrap_or(""))
+            if !owned.contains(entry.file_name().to_str().unwrap_or(""))
                 || !entry
                     .file_type()
                     .map_err(|e| disk::io(&entry.path(), e))?
@@ -263,4 +281,61 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
         return Err(Error::Invalid("启动项必须为普通文件".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(root: &Path, files: Option<Vec<String>>) -> BootRecord {
+        BootRecord {
+            system_id: "desktop".into(),
+            version: "v00000001".into(),
+            directory: root.join("RStarSleep/v00000001"),
+            entry: root.join("loader/entries/RStarSleep-desktop-v00000001.conf"),
+            files,
+        }
+    }
+
+    #[test]
+    fn cleanup_uses_retained_artifact_ownership_for_custom_distributions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let boot = record(
+            temporary.path(),
+            Some(vec!["custom-kernel".into(), "custom-initrd".into()]),
+        );
+        fs::create_dir_all(&boot.directory).unwrap();
+        fs::write(boot.directory.join("custom-kernel"), "kernel").unwrap();
+        fs::write(boot.directory.join("custom-initrd"), "initrd").unwrap();
+        validate_boot(&boot, "desktop", "v00000001").unwrap();
+        fs::write(boot.directory.join("unowned"), "keep").unwrap();
+        assert!(validate_boot(&boot, "desktop", "v00000001").is_err());
+        fs::remove_file(boot.directory.join("unowned")).unwrap();
+        fs::remove_file(boot.directory.join("custom-initrd")).unwrap();
+        std::os::unix::fs::symlink("custom-kernel", boot.directory.join("custom-initrd")).unwrap();
+        assert!(validate_boot(&boot, "desktop", "v00000001").is_err());
+    }
+
+    #[test]
+    fn cleanup_rejects_unsafe_owned_names_and_preserves_legacy_records() {
+        let temporary = tempfile::tempdir().unwrap();
+        for names in [
+            vec!["../outside"],
+            vec!["kernel", "KERNEL"],
+            vec!["kernel."],
+            vec![],
+        ] {
+            let boot = record(
+                temporary.path(),
+                Some(names.into_iter().map(str::to_string).collect()),
+            );
+            assert!(validate_boot(&boot, "desktop", "v00000001").is_err());
+        }
+        let boot = record(temporary.path(), None);
+        fs::create_dir_all(&boot.directory).unwrap();
+        fs::write(boot.directory.join("vmlinuz"), "kernel").unwrap();
+        validate_boot(&boot, "desktop", "v00000001").unwrap();
+        fs::write(boot.directory.join("custom-kernel"), "kernel").unwrap();
+        assert!(validate_boot(&boot, "desktop", "v00000001").is_err());
+    }
 }

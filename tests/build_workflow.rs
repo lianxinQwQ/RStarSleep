@@ -224,6 +224,9 @@ mod base_system;
 #[path = "build_workflow/scripts.rs"]
 mod scripts;
 
+#[path = "build_workflow/boot_preflight.rs"]
+mod boot_preflight;
+
 #[path = "build_workflow/predownload.rs"]
 mod predownload;
 
@@ -305,7 +308,7 @@ mod inheritance;
 #[test]
 fn main_system_boot_publication_requires_successful_scratch_cleanup() {
     let fixture = Fixture::new();
-    fixture.system("desktop", &[]);
+    fixture.system("desktop", &["linux", "mkinitcpio"]);
     fs::write(
         fixture.store.global_config_path(),
         "schema_version=1\nmain_system='desktop'\n",

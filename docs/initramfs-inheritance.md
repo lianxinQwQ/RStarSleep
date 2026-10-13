@@ -37,7 +37,14 @@ CopyOnWrite=/var/lib/myapp
 
 ## 构建和启动流程
 
-构建先完成软件、脚本和 Mount 配置，在可写工作根中安装早期执行器并重新生成 initramfs，
+构建前先冻结并检查配置。主系统必须满足插件的通用启动声明；主系统启用
+`Timing=initramfs` 且 `CopyOnWrite` 非空时，另检查启动时 CoW 声明和集成动作入口。
+声明的包与当前系统在需求收集时得到的安装计划比较，软件组、基础系统包和运行依赖均可满足要求。
+计划缺项即退出，不自动补包；失败不分配目标版本、清理旧目标缓存或预下载目标软件。
+独立解析环境初始化可能下载自己的基础包和工具，查询会刷新仓库元数据并获取 AUR 配方。
+子系统跳过这两组启动要求及镜像集成动作。
+
+主系统构建先完成软件、脚本和 Mount 配置，在可写工作根中安装早期执行器，再由插件重新生成 initramfs，
 随后独立保存 `versions/<版本>/prepared-root`。软件阶段清单记录的是继承之前的构建结果；
 启动时不会运行包管理器或插件重新查询继承后的包数据库。
 
@@ -65,9 +72,16 @@ rstarsleep.pending=/<Btrfs 顶层内的版本目录>/inheritance-pending.toml
 
 ## Arch initramfs 集成
 
-目前生产集成使用 Arch mkinitcpio，内核路径沿用 `/boot/vmlinuz-linux` 和
-`/boot/initramfs-linux.img`。目标应安装 `linux`、`mkinitcpio`、`btrfs-progs`、GNU coreutils、
-Bash、util-linux，宿主需要 `ldd` 和 systemd-nspawn。工具缺失或镜像生成失败会阻止候选发布。
+Arch 插件的 `prepare_inheritance_initramfs` 动作调用 mkinitcpio，并拥有其配置、hook
+和 systemd 接线资源。核心只打包通用早期执行器及私有宿主动态依赖，不直接调用 mkinitcpio。
+启动产物路径由插件 `[boot] artifacts` 声明，Arch 使用 `/boot/vmlinuz-linux` 和
+`/boot/initramfs-linux.img`。`[boot] packages` 要求配置 `linux`、`mkinitcpio`；
+`[initramfs_inheritance] packages` 额外要求 `btrfs-progs`、`coreutils`、`util-linux`、
+`bash`、`findutils`。这些包已由软件组、`base` 或其他包的运行依赖带入时，无需重复写入配置。
+`[package_plan] base_packages=["base"]` 声明初始系统目标；`collect_packages` 查询返回
+展开后的具体包清单，只包含当前系统的目标及运行依赖，不包含临时 AUR 编译依赖。
+宿主需要 `ldd` 和 systemd-nspawn。目标工具按动作元数据由统一 runner 检查，实际打包
+或镜像生成失败会阻止候选发布；错误保留 stdout、stderr 和退出状态。
 
 使用独立的 mkinitcpio 配置读取用户配置及 drop-in，在 `filesystems` 前插入 `rstarsleep`，
 不改变用户原配置。用户的设备发现及解密 hook 应在 `filesystems` 前，配置缺少该 hook 时失败。

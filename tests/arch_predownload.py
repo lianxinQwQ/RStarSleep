@@ -1,13 +1,17 @@
 """Protocol tests and optional offline pacman checks in disposable databases."""
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from io import BytesIO
+from io import StringIO
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -341,6 +345,87 @@ class OfflinePacman(unittest.TestCase):
                 raise unittest.SkipTest("unprivileged user namespaces are disabled")
             cls.command = [*namespace, pacman]
 
+    def plan_preparer(self, packages):
+        temporary = tempfile.TemporaryDirectory(prefix="rstarsleep-offline-plan-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        p = arch.Preparer.__new__(arch.Preparer)
+        p.work, p.db, p.resolutions = root, root / "db", {}
+        for directory in (p.db / "local", p.db / "sync", root / "cache"):
+            directory.mkdir(parents=True)
+        p.configuration = "[options]\nArchitecture = x86_64\nSigLevel = Never\n[fixture]\nServer = file:///nonexistent\n"
+        p.official_conf = root / "pacman.conf"
+        p.official_conf.write_text(p.configuration)
+        p.official_metadata = {}
+        with tarfile.open(p.db / "sync/fixture.db", "w:gz") as database:
+            for name, version, extra in packages:
+                filename = f"{name}-{version}-x86_64.pkg.tar.zst"
+                fields = {"NAME": [name], "VERSION": [version], "FILENAME": [filename],
+                          "CSIZE": ["1"], "ISIZE": ["1"], **extra}
+                p.official_metadata[filename] = fields
+                data = "".join("%" + key + "%\n" + "\n".join(values) + "\n\n" for key, values in fields.items()).encode()
+                member = tarfile.TarInfo(f"{name}-{version}/desc")
+                member.size = len(data)
+                database.addfile(member, BytesIO(data))
+
+        def pacman(arguments, **kwargs):
+            self.assertEqual(arguments[0], "-Sp", "collector must only query metadata")
+            self.assertTrue(kwargs["isolated"])
+            result = subprocess.run([*self.command, "--config", str(p.official_conf), "--dbpath", str(p.db),
+                                     "--cachedir", str(root / "cache"), "--logfile", "/dev/null", *arguments],
+                                    text=True, capture_output=True)
+            self.assertIn(result.returncode, kwargs.get("allowed", (0,)), result.stderr)
+            return result
+
+        p.pacman = Mock(side_effect=pacman)
+        p.fetch = Mock(side_effect=AssertionError("collector downloaded packages"))
+        p.build = Mock(side_effect=AssertionError("collector compiled packages"))
+        return p
+
+    def test_plan_uses_explicit_official_provider_in_the_combined_transaction(self):
+        p = self.plan_preparer([
+            ("btrfs-progs", "1-1", {"PROVIDES": ["virtual-tool=1"]}),
+            ("z-alternative", "1-1", {"PROVIDES": ["virtual-tool=1"]}),
+            ("consumer", "1-1", {"DEPENDS": ["virtual-tool"]}),
+        ])
+        self.assertEqual(p.collect(["consumer", "z-alternative"]), ["consumer", "z-alternative"])
+        self.assertEqual(p.pacman.call_args.args[0][-2:], ["consumer", "z-alternative"])
+        p.fetch.assert_not_called()
+        p.build.assert_not_called()
+
+    def test_plan_uses_explicit_aur_provider_for_official_runtime_dependencies(self):
+        p = self.plan_preparer([
+            ("btrfs-progs", "1-1", {"PROVIDES": ["virtual-tool=1"]}),
+            ("consumer", "1-1", {"DEPENDS": ["virtual-tool"]}),
+        ])
+        recipe = arch.srcinfo("pkgbase = z-alternative\npkgver = 1\npkgrel = 1\npkgname = z-alternative\nprovides = virtual-tool=1\nconflicts = btrfs-progs\n", "x86_64")
+        p.aur = Mock(return_value=recipe)
+        original_configuration = p.official_conf
+        self.assertEqual(p.collect(["consumer", "z-alternative"]), ["consumer", "z-alternative"])
+        self.assertEqual(p.official_conf, original_configuration)
+        self.assertEqual(list((p.db / "sync").iterdir()), [p.db / "sync/fixture.db"])
+
+    def test_plan_uses_explicit_official_provider_for_aur_runtime_dependencies(self):
+        p = self.plan_preparer([
+            ("btrfs-progs", "1-1", {"PROVIDES": ["virtual-tool=1"]}),
+            ("z-alternative", "1-1", {"PROVIDES": ["virtual-tool=1"]}),
+        ])
+        recipe = arch.srcinfo("pkgbase = consumer\npkgver = 1\npkgrel = 1\npkgname = consumer\ndepends = virtual-tool\n", "x86_64")
+        p.aur = Mock(return_value=recipe)
+        self.assertEqual(p.collect(["consumer", "z-alternative"]), ["consumer", "z-alternative"])
+
+    def test_plan_restores_official_configuration_when_joint_resolution_fails(self):
+        p = self.plan_preparer([])
+        recipe = arch.srcinfo("pkgbase = consumer\npkgver = 1\npkgrel = 1\npkgname = consumer\ndepends = absent\n", "x86_64")
+        p.aur = Mock(return_value=recipe)
+        # Select a recipe whose dependency becomes unsatisfied after discovery.
+        p.official = Mock(side_effect=[None, ["changed.pkg"]])
+        original_configuration = p.official_conf
+        with self.assertRaisesRegex(arch.PreparationError, "cannot be resolved"):
+            p.collect(["consumer"])
+        self.assertEqual(p.official_conf, original_configuration)
+        self.assertEqual(list((p.db / "sync").iterdir()), [p.db / "sync/fixture.db"])
+
     def test_conflicting_packages_providers_and_versions_are_cached_without_installing(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -413,6 +498,119 @@ class OfflinePacman(unittest.TestCase):
             self.assertEqual(len(downloads), 3)
             self.assertTrue(all((cache / name).is_file() for name in p.files))
             self.assertFalse(any(path.is_dir() for path in (db / "local").iterdir()))
+
+
+class PackagePlans(unittest.TestCase):
+    def test_query_keeps_child_diagnostics_out_of_json_stdout(self):
+        preparer = Mock()
+        preparer.initialize.side_effect = lambda **kwargs: arch.run([
+            sys.executable, "-c", "print('repository refreshed')"])
+        preparer.collect.return_value = ["base", "coreutils"]
+        output = StringIO()
+        with tempfile.TemporaryFile(mode="w+") as diagnostics:
+            with patch.object(arch, "Preparer", return_value=preparer), \
+                    redirect_stdout(output), redirect_stderr(diagnostics):
+                arch.collect_main(["base", "base"])
+            diagnostics.seek(0)
+            self.assertEqual(diagnostics.read(), "repository refreshed\n")
+        self.assertEqual(json.loads(output.getvalue()),
+                         {"schema_version": 1, "packages": ["base", "coreutils"]})
+        preparer.initialize.assert_called_once_with(planning=True)
+        preparer.collect.assert_called_once_with(["base"])
+        self.assertFalse(arch.QUERY_MODE)
+
+    def test_failed_query_restores_output_mode(self):
+        with self.assertRaises(arch.PreparationError):
+            arch.collect_main(["../invalid"])
+        self.assertFalse(arch.QUERY_MODE)
+
+    def preparer(self, closures):
+        preparer = arch.Preparer.__new__(arch.Preparer)
+        preparer.resolutions = {}
+        preparer.official_metadata = {
+            name + ".pkg": {"NAME": [name], "VERSION": ["1-1"]}
+            for names in closures.values() for name in names
+        }
+        def pacman(arguments, **kwargs):
+            self.assertEqual(arguments[0], "-Sp", "collector must not install or download")
+            self.assertTrue(kwargs["isolated"])
+            target = arguments[-1]
+            if target not in closures:
+                return subprocess.CompletedProcess([], 1, "", f"error: target not found: {target}")
+            return subprocess.CompletedProcess([], 0, "\n".join(name + ".pkg" for name in closures[target]) + "\n", "")
+        preparer.pacman = Mock(side_effect=pacman)
+        def plan_transaction(requested, selected):
+            filenames, metadata = set(), dict(preparer.official_metadata)
+            for requirement in [*requested, *(dependency for artifact in selected.values() for dependency in artifact["dependencies"])]:
+                if requirement in closures:
+                    filenames.update(name + ".pkg" for name in closures[requirement])
+            for name in selected:
+                filename = name + ".aur.pkg"
+                filenames.add(filename)
+                metadata[filename] = {"NAME": [name]}
+            return sorted(filenames), metadata
+        preparer._plan_transaction = Mock(side_effect=plan_transaction)
+        preparer.fetch = Mock(side_effect=AssertionError("collector downloaded packages"))
+        preparer.build = Mock(side_effect=AssertionError("collector compiled an AUR package"))
+        return preparer
+
+    def test_group_base_and_runtime_closures_are_collected_without_package_downloads(self):
+        preparer = self.preparer({"base": ["base", "coreutils"], "desktop": ["linux", "mkinitcpio", "libdependency"]})
+        self.assertEqual(preparer.collect(["base", "desktop"]), ["base", "coreutils", "libdependency", "linux", "mkinitcpio"])
+        self.assertNotIn("base", preparer.collect(["desktop"]))  # Core explicitly supplies declared base roots.
+        preparer.fetch.assert_not_called()
+        preparer.build.assert_not_called()
+
+    def test_aur_selects_only_requested_split_package_and_its_runtime_dependencies(self):
+        preparer = self.preparer({"common": ["common"]})
+        recipe = arch.srcinfo(RECIPE, "x86_64")
+        preparer.aur = Mock(return_value=recipe)
+        self.assertEqual(preparer.collect(["sample-cli"]), ["common", "sample-cli"])
+        preparer.aur.assert_called_once_with("sample-cli")
+        self.assertNotIn("compiler", preparer.collect(["sample-cli"]))
+        self.assertNotIn("gui-library", preparer.collect(["sample-cli"]))
+        self.assertNotIn("sample-gui", preparer.collect(["sample-cli"]))
+
+    def test_selected_aur_provider_satisfies_runtime_dependency_without_adding_another_package(self):
+        preparer = self.preparer({})
+        recipe = arch.srcinfo(RECIPE, "x86_64")
+        consumer = arch.srcinfo("pkgbase = consumer\npkgver = 1\npkgrel = 1\npkgname = consumer\ndepends = virtual-gui=1\n", "x86_64")
+        recipe["runtime_by_package"]["sample-gui"] = []
+        preparer.aur = Mock(side_effect=lambda target: consumer if target == "consumer" else recipe)
+        self.assertEqual(preparer.collect(["consumer", "sample-gui"]), ["consumer", "sample-gui"])
+        self.assertEqual(preparer.aur.call_count, 2)
+
+    def test_aur_cycles_terminate_and_transitive_runtime_dependencies_are_included(self):
+        preparer = self.preparer({"library": ["library", "libsupport"]})
+        recipes = {name: arch.srcinfo(
+            f"pkgbase = {name}\npkgver = 1\npkgrel = 1\npkgname = {name}\ndepends = {dependency}\n", "x86_64")
+            for name, dependency in [("one", "two"), ("two", "one")]}
+        recipes["two"]["runtime_by_package"]["two"].append("library")
+        preparer.aur = Mock(side_effect=lambda target: recipes[target])
+        self.assertEqual(preparer.collect(["one"]), ["library", "libsupport", "one", "two"])
+
+    def test_invalid_official_metadata_and_ambiguous_aur_providers_fail_closed(self):
+        preparer = self.preparer({"base": ["base"]})
+        preparer.official_metadata.clear()
+        with self.assertRaisesRegex(arch.PreparationError, "identity"):
+            preparer.collect(["base"])
+        preparer = self.preparer({})
+        recipe = arch.srcinfo(RECIPE, "x86_64")
+        preparer.aur = Mock(return_value=recipe)
+        with self.assertRaisesRegex(arch.PreparationError, "uniquely satisfy"):
+            preparer.collect(["unprovided"])
+
+    def test_planner_refreshes_metadata_without_updating_or_installing_the_resolver_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preparer = arch.Preparer.__new__(arch.Preparer)
+            preparer.db = Path(temporary) / "db"
+            (preparer.db / "sync").mkdir(parents=True)
+            preparer.actual_db = Path(temporary) / "actual"
+            preparer.pacman = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+            preparer.refresh_repo = Mock()
+            preparer.initialize(planning=True)
+            self.assertEqual(preparer.pacman.call_count, 1)
+            self.assertEqual(preparer.pacman.call_args.args[0], ["-Sy", "--noconfirm"])
 
 
 if __name__ == "__main__":

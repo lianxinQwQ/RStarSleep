@@ -92,6 +92,7 @@ impl LoadedPlugin {
                 plugin: self.metadata.id.clone(),
                 operation: name.into(),
                 status: status.to_string(),
+                stdout: String::new(),
                 stderr: "插件命令退出失败".into(),
             });
         }

@@ -271,7 +271,8 @@ pub trait BuildBackend {
         Err(Error::Invalid("此后端不能识别来源子卷".into()))
     }
 
-    /// Prepare a distribution's initramfs before exposing a pending boot entry.
+    /// Bundle the generic early executor before the distribution plugin builds its initramfs.
+    /// 发行版插件生成 initramfs 前，打包通用早期执行器。
     fn prepare_inheritance_initramfs(&self, root: &Path) -> Result<()> {
         let _ = root;
         Err(Error::Invalid("此后端不支持 initramfs 继承".into()))

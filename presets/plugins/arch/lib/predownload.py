@@ -15,11 +15,13 @@ import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from io import BytesIO
 from pathlib import Path
 
 NAME = re.compile(r"^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$")
 SPEC = re.compile(r"^([A-Za-z0-9@_+][A-Za-z0-9@._+-]*)(?:(>=|<=|=|>|<)([^\s]+))?$")
 REPO = "rstarsleep"
+QUERY_MODE = False
 
 
 class PreparationError(Exception):
@@ -32,7 +34,7 @@ def log(chinese, english):
 
 def run(argv, capture=False, allowed=(0,)):
     result = subprocess.run(list(map(str, argv)), text=True,
-                            stdout=subprocess.PIPE if capture else None,
+                            stdout=subprocess.PIPE if capture else (sys.stderr if QUERY_MODE else None),
                             stderr=subprocess.PIPE if capture else None)
     if result.returncode not in allowed:
         raise PreparationError(f"command failed ({result.returncode}): {shlex.join(list(map(str, argv)))}\n{result.stderr or ''}")
@@ -84,18 +86,24 @@ def srcinfo(text, architecture):
             result.extend(v for v in (fields[field] if field in fields else base.get(field, [])) if v)
         return result
 
-    runtime, build, provides = [], values(base, "makedepends") + values(base, "checkdepends"), {}
+    runtime, build, provides, runtime_by_package, conflicts = [], values(base, "makedepends") + values(base, "checkdepends"), {}, {}, {}
     for package, fields in packages.items():
         arches = fields.get("arch", base.get("arch", []))
         if arches and "any" not in arches and architecture not in arches:
             raise PreparationError(f"{package} does not support {architecture}")
-        runtime.extend(inherited(fields, "depends"))
+        runtime_by_package[package] = inherited(fields, "depends")
+        runtime.extend(runtime_by_package[package])
         build.extend(v for v in values(fields, "makedepends") + values(fields, "checkdepends") if v)
         provides[package] = inherited(fields, "provides")
+        conflicts[package] = inherited(fields, "conflicts")
     for dependency in runtime + build:
         spec(dependency)
-    return dict(name=name, packages=packages, runtime=list(dict.fromkeys(runtime)),
-                build=list(dict.fromkeys(build)), build_runtime=[v for v in values(base, "depends") if v], provides=provides, keys=base.get("validpgpkeys", []))
+    version = "{}-{}".format(base.get("pkgver", [""])[0], base.get("pkgrel", [""])[0])
+    if base.get("epoch", ["0"])[0] != "0":
+        version = base["epoch"][0] + ":" + version
+    return dict(name=name, packages=packages, version=version, runtime_by_package=runtime_by_package,
+                runtime=list(dict.fromkeys(runtime)),
+                build=list(dict.fromkeys(build)), build_runtime=[v for v in values(base, "depends") if v], provides=provides, conflicts=conflicts, keys=base.get("validpgpkeys", []))
 
 
 def atomic_copy(source, destination):
@@ -209,7 +217,7 @@ class Preparer:
             atomic_copy(database, sync / f"{REPO}.db")
         self.build_conf.write_text(config)
 
-    def initialize(self):
+    def initialize(self, planning=False):
         log("刷新官方仓库数据库", "Refresh official repository databases")
         self.pacman(["-Sy", "--noconfirm"], isolated=True)
         sync = self.actual_db / "sync"
@@ -232,6 +240,8 @@ class Preparer:
                     if fields.get("FILENAME"):
                         self.official_metadata.setdefault(fields["FILENAME"][0], fields)
         self.refresh_repo()
+        if planning:
+            return
         log("更新预下载工作环境", "Update the predownload working environment")
         self.pacman(["-Su", "--noconfirm"])
         self.baseline = set(self.pacman(["-Qq"], capture=True).stdout.splitlines())
@@ -253,6 +263,91 @@ class Preparer:
             raise PreparationError(f"invalid official transaction: {requirement}")
         self.resolutions[requirement] = filenames
         return filenames
+
+    def collect(self, requested):
+        """Collect only target roots and runtime dependencies, without downloading or building."""
+        requested = list(dict.fromkeys(requested))
+        selected, visited, pending = {}, set(), []
+
+        def select(requirement):
+            closure = self.official(requirement)
+            if closure is not None:
+                return
+            base = self.aur(requirement)
+            candidates = [name for name in base["packages"] if self.artifact_satisfies(
+                dict(name=name, version=base["version"], provides=base["provides"][name]), requirement)]
+            exact = [name for name in candidates if name == spec(requirement)[0]]
+            candidates = exact or candidates
+            if len(candidates) != 1:
+                raise PreparationError(f"AUR recipe does not uniquely satisfy {requirement}")
+            name = candidates[0]
+            selected[name] = dict(name=name, version=base["version"], provides=base["provides"][name],
+                                  dependencies=base["runtime_by_package"][name], conflicts=base["conflicts"][name])
+            if name not in visited:
+                visited.add(name)
+                pending.extend(base["runtime_by_package"][name])
+
+        for requirement in requested:
+            spec(requirement)
+            select(requirement)
+        while pending:
+            requirement = pending.pop()
+            if any(self.artifact_satisfies(artifact, requirement) for artifact in selected.values()):
+                continue
+            select(requirement)
+        if not requested:
+            return []
+        # Resolve the complete target transaction together. Independent closures
+        # can contain a default provider that an explicit target later replaces.
+        filenames, metadata = self._plan_transaction(requested, selected)
+        packages = set()
+        for filename in filenames:
+            names = metadata.get(filename, {}).get("NAME", [])
+            if len(names) != 1 or not NAME.fullmatch(names[0]):
+                raise PreparationError(f"missing planned package identity: {filename}")
+            packages.add(names[0])
+        return sorted(packages)
+
+    def _plan_transaction(self, requested, selected):
+        metadata = dict(self.official_metadata)
+
+        def resolve():
+            result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", *requested],
+                                 isolated=True, capture=True, allowed=(0, 1))
+            if result.returncode:
+                raise PreparationError(f"target package plan cannot be resolved:\n{result.stderr or ''}")
+            filenames = result.stdout.splitlines()
+            if not filenames or any(Path(name).name != name or name in (".", "..") for name in filenames):
+                raise PreparationError("invalid target package plan")
+            return filenames, metadata
+
+        if not selected:
+            return resolve()
+        # Pacman can account for AUR providers before any binaries exist by
+        # reading a temporary sync database containing only runtime metadata.
+        with tempfile.TemporaryDirectory(prefix="rstarsleep-plan-", dir=self.work) as temporary:
+            repository = Path(temporary)
+            database = self.db / "sync" / f"{repository.name}.db"
+            configuration = repository / "pacman.conf"
+            configuration.write_text(self.configuration + f"\n[{repository.name}]\nSigLevel = Never\nServer = {repository.as_uri()}\n")
+            original_configuration = self.official_conf
+            try:
+                with tarfile.open(database, "w:gz") as archive:
+                    for name, artifact in sorted(selected.items()):
+                        filename = f"{name}.rstarsleep-plan.pkg.tar.zst"
+                        fields = dict(NAME=[name], VERSION=[artifact["version"]], FILENAME=[filename],
+                                      CSIZE=["0"], ISIZE=["0"], DEPENDS=artifact["dependencies"],
+                                      PROVIDES=artifact["provides"], CONFLICTS=artifact["conflicts"])
+                        metadata[filename] = fields
+                        data = "".join(f"%{key}%\n" + "\n".join(values) + "\n\n" for key, values in fields.items() if values).encode()
+                        member = tarfile.TarInfo(f"{name}-{artifact['version']}/desc")
+                        member.size = len(data)
+                        archive.addfile(member, BytesIO(data))
+                self.official_conf = configuration
+                return resolve()
+            finally:
+                self.official_conf = original_configuration
+                database.unlink(missing_ok=True)
 
     def fetch(self, filenames):
         filenames = set(filenames)
@@ -524,6 +619,24 @@ class Preparer:
         log(f"预下载及 AUR 准备完成：{len(files)} 个软件包文件", f"Predownload and AUR preparation complete: {len(files)} package files")
 
 
+def collect_main(arguments):
+    global QUERY_MODE
+    previous_query_mode = QUERY_MODE
+    QUERY_MODE = True
+    try:
+        requested = list(dict.fromkeys(arguments))
+        if any(not NAME.fullmatch(name) for name in requested):
+            raise PreparationError("invalid requested package")
+        with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-") as workspace:
+            preparer = Preparer(workspace)
+            preparer.initialize(planning=True)
+            packages = preparer.collect(requested)
+    finally:
+        QUERY_MODE = previous_query_mode
+    json.dump(dict(schema_version=1, packages=packages), sys.stdout, sort_keys=True)
+    sys.stdout.write("\n")
+
+
 def main():
     requested = list(dict.fromkeys(["base", *sys.argv[1:]]))
     if any(not NAME.fullmatch(name) for name in requested):
@@ -550,7 +663,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if sys.argv[1:2] == ["--collect"]:
+            collect_main(sys.argv[2:])
+        else:
+            main()
     except (PreparationError, OSError, KeyError, ValueError, urllib.error.URLError, tarfile.TarError) as error:
         log(f"预下载失败：{error}", f"Predownload failed: {error}")
         sys.exit(1)

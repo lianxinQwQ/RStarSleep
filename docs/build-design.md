@@ -122,7 +122,10 @@ arch-plugin.tar.zst
 ├── base_install.sh
 ├── system_init.sh           # API 3 初始化独立安装系统的稳定身份
 ├── mount_inheritance.sh     # 声明能力后提供的可选挂载配置接口
+├── prepare_inheritance_initramfs.sh # 主系统启动时 CoW 继承的可选集成动作
+├── initramfs/               # 发行版镜像工具的配置、hook 等资源
 ├── update.sh
+├── collect_packages.sh      # 配置、基础包及运行依赖的目标计划查询
 ├── resolve_packages.sh
 ├── query_packages.sh
 ├── install.sh
@@ -145,7 +148,7 @@ arch-plugin.tar.zst
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.7.3"
+version = "0.9.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -188,7 +191,8 @@ system = ["bash", "pacman", "pacman-key", "awk", "cat", "rm", "mktemp", "dirname
 操作文件优先使用 `<操作名>.sh`，例如 `install.sh`，也支持无后缀同名可执行文件，
 不通过元数据配置入口。API 2 加载时要求原十个必需操作，API 3 额外要求系统身份初始化
 `system_init`；声明 `mount_inheritance = true` 时还必须提供同名操作。
-所有声明的操作文件必须存在且为普通文件，不接受目录或
+启动继承动作只在当前系统为主系统、`Timing=initramfs` 且 `CopyOnWrite` 非空时，
+于构建前要求存在；子系统不要求该入口。所需操作文件必须为普通文件，不接受目录或
 符号链接。每次调用前再次校验当前操作文件。公共函数可以放在 `lib/common.sh`
 供各操作脚本引用。
 
@@ -316,10 +320,12 @@ PATH 代替。操作执行器调用 `.sh` 入口时检查 Bash；无后缀入口
 | `base_install` | 定义并安装基础包，完成 bootstrap 包状态的整理 |
 | `system_init`（API 3） | 在独立安装根中初始化稳定身份和系统特定配置 |
 | `update` | 执行该发行版的完整系统更新 |
+| `collect_packages`（可选） | 收集配置目标、声明基础包及运行依赖，输出当前系统的具体包计划 |
 | `resolve_packages` / `query_packages` | 将配置解析为实际包名，查询已安装包及显式/依赖安装原因 |
 | `install` / `remove` / `mark_reason` | 安装、依赖检查下删除、调整安装原因 |
 | `list_orphans` / `remove_orphans` | 查找并清理孤儿包 |
 | `mount_inheritance`（可选） | 在软件与脚本完成后生成系统所需的持久挂载配置 |
+| `prepare_inheritance_initramfs`（可选） | 在脚本和 Mount 配置后，为主系统打包早期执行器并生成启动时 CoW 继承镜像；无参数 |
 
 主程序只理解这些操作的语义；pacman、apt 等具体命令及输出解释属于发行版插件。
 简单任务直接在脚本内完成，复杂任务调用随包携带的二进制，不改变核心接口。
@@ -449,8 +455,11 @@ Arch 预设提供上述包管理操作及挂载配置；构建控制器完成基
 ## 版本与缓存选择
 
 版本使用每个系统独立的递增序号，例如 `v00000001`，在系统构建锁内分配，
-不通过目录修改时间推断先后。取得系统构建锁后，固定删除本系统所有历史版本的 script、inherit 缓存，
-再完成配置留档；后续只读取冻结留档。`cache::STAGES` 保持阶段顺序，新增 script 后阶段
+不通过目录修改时间推断先后。取得系统构建锁后，先在临时目录冻结配置并完成插件、参数及按角色选择的启动要求检查。
+所有系统的输入先冻结，再在独立解析环境中分别收集软件组、基础包及运行依赖；收集过程中检查启动要求。
+检查通过后才分配目标版本，将同一份冻结输入移入版本目录，然后删除本系统所有历史版本的 script、inherit 缓存。
+能力或目标计划检查失败不会分配目标版本、改写当前构建引用、删除目标缓存或预下载目标软件；
+初始化或更新独立解析环境可能下载其基础包和工具，也会刷新仓库元数据、获取 AUR 配方。后续只读取冻结留档。`cache::STAGES` 保持阶段顺序，新增 script 后阶段
 也须加入以纳入固定清理。缓存删除不影响已发布版本根、配置留档或持久数据。
 
 “最新过往版本”是当前构建开始前序号最大的构建记录，可以包含失败构建。
@@ -567,8 +576,10 @@ CopyOnWrite 默认在构建时从当前运行系统继承；`Timing=initramfs` �
 子卷仍保留。阶段缓存保存、恢复及最终发布均处理完整子卷树，全部封存为只读。
 构建时继承的来源不允许尚未解析的内部挂载；initramfs 模式将内部挂载固定为独立来源映射。
 
-initramfs 模式完成软件、脚本及 Mount 配置后，重新生成包含早期执行器的 mkinitcpio 镜像，
-保存独立准备根及待办清单，预先发布候选启动项并标记 `pending-inheritance`。首次启动在
+initramfs 模式完成软件、脚本及 Mount 配置后，主系统由核心打包通用早期执行器，再调用
+`prepare_inheritance_initramfs` 插件动作；Arch 插件通过 mkinitcpio 生成镜像。
+随后保存独立准备根及待办清单，预先发布候选启动项并标记 `pending-inheritance`。
+子系统保存准备根及待办清单，不调用主系统的镜像集成动作。首次启动在
 正式根挂载前提交最终根，成功后标记 `complete`；不运行插件或重新捕获包清单。
 路径不设黑名单，构建前提供 3 秒 Ctrl+C 取消时间；启动内核及 initramfs 保持构建时产物，
 兼容性由用户负责。详细协议见 [首次启动继承](initramfs-inheritance.md)。
@@ -770,19 +781,60 @@ AUR 二进制写入共享包缓存，并由 repo-add 发布到标识为 `[rstars
 
 ## 主系统启动发布
 
-主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
-`/boot/initramfs-linux.img` 复制到 `/boot/RStarSleep/<版本>/vmlinuz` 和 `initramfs-linux.img`，
-随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
-若版本的 `/boot` 中存在 `intel-ucode.img` 或 `amd-ucode.img`，一并复制到该版本的启动目录，
-并在启动项中将其 `initrd` 行放在主 initramfs 之前；微码镜像缺失时跳过，存在时必须为普通文件。
+主系统由全局 `main_system` 指定。构建前检查插件的 `[boot]` 声明；只有主系统且
+`Timing=initramfs`、`CopyOnWrite` 非空时，才追加检查 `[initramfs_inheritance]` 声明和
+`prepare_inheritance_initramfs` 入口。主系统还要求 `[package_plan]` 查询能力。
+随后在收集软件包需求时，将两组 `packages` 与当前系统的具体目标安装计划比较；软件组成员、
+基础包及运行依赖均可满足要求，缺项才报错，不自动把能力要求的软件包加入安装目标。
+子系统跳过两组启动要求；启用预下载时仍可收集其自己的包计划。
+
+```toml
+[package_plan]
+base_packages = ["base"]
+tools = ["python3", "pacman", "git", "makepkg", "vercmp", "runuser"]
+```
+
+声明该能力需要 API 3 及 `collect_packages`、`predownload/install`、`predownload/update` 入口。
+`collect_packages` 在独立解析环境中接收当前系统原始 `Packages` 与 `base_packages` 的去重集合，
+返回 JSON `{"schema_version":1,"packages":["base","coreutils",...]}`。`tools` 仅此查询前检查。
+查询不下载目标二进制、不编译 AUR；Arch 复用预下载的配方解析器，将选中 AUR 拆分包的
+运行依赖及提供者元数据写入临时仓库，与官方软件组及当前系统的全部目标在隔离包数据库中联合求解。
+编译/检查依赖、同批其他
+系统的包和仅因旧版本完整更新而预下载的包都不计入此系统的计划。
+所有系统先冻结输入，再进行查询；单个系统计划不满足时排除该系统，批次其他系统继续。
+各自检查通过后才合并下载需求。即使 `predownload=false`，主系统仍使用独立环境查询计划。
+
+```toml
+[boot]
+packages = ["linux", "mkinitcpio"]
+artifacts = [
+    { source = "boot/intel-ucode.img", destination = "intel-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/amd-ucode.img", destination = "amd-ucode.img", kind = "initrd", optional = true },
+    { source = "boot/initramfs-linux.img", destination = "initramfs-linux.img", kind = "initrd" },
+    { source = "boot/vmlinuz-linux", destination = "vmlinuz", kind = "kernel" },
+]
+[initramfs_inheritance]
+packages = ["mkinitcpio", "btrfs-progs", "coreutils", "util-linux", "bash", "findutils"]
+tools = ["mkinitcpio", "btrfs", "cp", "mount", "findmnt", "mkdir", "sleep", "bash", "find", "install"]
+```
+
+`source` 是目标根内的规范相对路径，`destination` 是安全的 ESP 单文件名。必须有一个必需
+`kernel` 及至少一个必需 `initrd`；`initrd` 按声明顺序写入启动项。可选产物缺失时跳过，
+存在时仍须为普通文件。上例为 Arch；其他发行版自行声明文件路径和包名。
+`initramfs_inheritance.tools` 仅在对应动作执行前由统一 runner 检查，不加到所有系统操作
+都要满足的 `[tools] system`，动作脚本不再重复编码软件包或工具缺失策略。
+
+检查通过时，将目标软件包计划保存为版本内的 `package-plan.toml`，启动声明保存为 `boot-spec.toml`。成功构建主系统后按该声明复制
+产物到 `/boot/RStarSleep/<版本>/`，再原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
 通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
 全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
 实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
-各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
+各版本的 `boot.toml` 保存实际复制文件的所有权清单，清理不依赖之后的主系统角色或插件变更。
+没有文件清单的旧记录仍按旧版固定文件名规则清理。
 
 新初始化使用 `@RStarSleep`，已有 `@rstarsleep` 会继续复用。
-每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
+至少一个系统通过配置及软件包计划检查后，将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
 
 ## 插件宿主子命令
 

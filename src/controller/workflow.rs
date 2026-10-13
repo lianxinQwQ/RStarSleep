@@ -6,7 +6,7 @@ use super::{
     fs,
     plugins::{self, LoadedPlugin},
     progress,
-    records::{Attempt, Status},
+    records::{Attempt, Preflight, Status},
     stages::Stages,
 };
 use crate::config::{
@@ -61,7 +61,6 @@ pub fn build_with_backend(
         format!("Preparing to build {} systems", systems.len()),
     );
     let runtime = store.runtime_config()?;
-    super::boot::sync_executable(store.root())?;
     let work = store.build_work_dir()?;
     check_workspace(store, &work)?;
     let backend = super::scoped_backend::ScopedBackend {
@@ -71,7 +70,7 @@ pub fn build_with_backend(
     };
     let mut outcomes = Vec::new();
     let mut failures = Vec::new();
-    let mut prepared = Vec::new();
+    let mut pending = Vec::new();
     let system_count = systems.len();
     for (index, id) in systems.into_iter().enumerate() {
         match progress::run(
@@ -81,19 +80,35 @@ pub fn build_with_backend(
                 "Prepare configuration and check caches ({}/{system_count})",
                 index + 1
             ),
-            || prepare_system(store, &id, &backend),
+            || check_system(store, &id, &runtime),
         ) {
+            Ok(value) => pending.push(value),
+            Err(error) if system.is_some() => return Err(error),
+            Err(error) => failures.push(format!("{id}: {error}")),
+        }
+    }
+    let collection_failures = collect_plans(store, &backend, &runtime, &mut pending);
+    let mut rejected = std::collections::BTreeSet::new();
+    for (index, error) in collection_failures {
+        if system.is_some() {
+            return Err(error);
+        }
+        failures.push(format!("{}: {error}", pending[index].context.system_id));
+        rejected.insert(index);
+    }
+    let mut prepared = Vec::new();
+    let mut executable_synced = false;
+    for (index, inputs) in pending.into_iter().enumerate() {
+        if rejected.contains(&index) {
+            continue;
+        }
+        let id = inputs.context.system_id.clone();
+        match prepare_system(store, inputs, &backend, &runtime, &mut executable_synced) {
             Ok(value) => prepared.push(value),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{id}: {error}")),
         }
     }
-    type DownloadGroup = (
-        String,
-        String,
-        std::collections::BTreeMap<String, String>,
-        crate::config::Environment,
-    );
     let mut groups: std::collections::BTreeMap<DownloadGroup, Vec<usize>> =
         std::collections::BTreeMap::new();
     for (index, value) in prepared.iter().enumerate() {
@@ -144,6 +159,7 @@ pub fn build_with_backend(
                     &prepared[indices[0]].plugin,
                     &prepared[indices[0]].context,
                     &packages,
+                    prepared[indices[0]].package_plan.is_none(),
                 )
             },
         ) {
@@ -284,86 +300,241 @@ struct Prepared {
     config: crate::config::BuildConfig,
     context: BuildContext,
     upgrade_packages: Vec<String>,
+    package_plan: Option<crate::software::PackagePlan>,
 }
 
-/// Freeze one system, validate its selected plugin, and remove invalidated caches before preparation.
-/// 冻结单个系统、校验其选定插件，并在准备前删除失效缓存。
-/// # Arguments
-/// - `store`: Initialized manager containing the system and plugins.
-///   包含系统和插件的已初始化管理器。
-/// - `id`: Managed-system identifier to lock and prepare.
-///   待锁定和准备的被管理系统标识。
-/// - `backend`: Checked cache storage backend.
-///   经检查的缓存存储后端。
-fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result<Prepared> {
-    let attempt = Attempt::begin(store, id)?;
-    let mut plugin = None;
-    let result: Result<(crate::config::BuildConfig, BuildContext, Vec<String>)> = (|| {
-        status(&attempt, id, "building", None, None)?;
-        // Script output is never a donor. Append future stages after script to cache::STAGES
-        // so every build also removes their caches, even when configuration validation fails.
-        // script 输出绝不作为来源。未来 script 后的新阶段须追加到 cache::STAGES，
-        // 使每次构建均清理其缓存，包括配置校验失败的情况。
+type DownloadGroup = (
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+    crate::config::Environment,
+);
+
+struct Pending {
+    inputs: Preflight,
+    plugin: LoadedPlugin,
+    config: crate::config::BuildConfig,
+    context: BuildContext,
+    package_plan: Option<crate::software::PackagePlan>,
+}
+
+fn collect_plan(
+    value: &Pending,
+    root: &Path,
+    backend: &impl BuildBackend,
+    runtime: &crate::config::RuntimeConfig,
+) -> Result<crate::software::PackagePlan> {
+    progress::run(
+        &value.context.system_id,
+        "收集软件组、基础包及运行依赖，检查启动要求",
+        "Collect package groups, base packages and runtime dependencies; check boot requirements",
+        || {
+            let requirements = value
+                .plugin
+                .metadata
+                .package_plan
+                .as_ref()
+                .expect("package-plan groups contain only capable plugins");
+            let mut targets: std::collections::BTreeSet<_> =
+                value.config.packages.iter().cloned().collect();
+            targets.extend(requirements.base_packages.iter().cloned());
+            let output = backend.invoke(
+                &value.plugin,
+                "collect_packages",
+                &targets.into_iter().collect::<Vec<_>>(),
+                root,
+                &value.context,
+            )?;
+            let plan = crate::software::PackagePlan::parse(&output)?;
+            let inheritance = crate::config::InheritanceConfig::read(&read_plugin_parameters_at(
+                &value.context.config,
+            )?)?;
+            validate_boot_packages(
+                &value.context.system_id,
+                runtime,
+                &inheritance,
+                &value.plugin,
+                &plan.packages,
+            )?;
+            Ok(plan)
+        },
+    )
+}
+
+/// Check frozen inputs before reserving a version or changing build caches.
+/// 预留版本或修改构建缓存前检查冻结输入。
+fn check_system(
+    store: &ConfigStore,
+    id: &str,
+    runtime: &crate::config::RuntimeConfig,
+) -> Result<Pending> {
+    progress::message(
+        id,
+        "冻结配置，检查插件、参数及启动要求",
+        "Freeze configuration and check plugin, parameters and boot requirements",
+    );
+    let inputs = Preflight::begin(store, id)?;
+    let frozen = inputs.config.path();
+    let config = read_build_config_at(frozen)?;
+    let architecture = config
+        .architecture
+        .as_deref()
+        .unwrap_or(std::env::consts::ARCH)
+        .to_owned();
+    let plugin = plugins::find(&store.plugins_path(), &config.system_type, &architecture)?;
+    let distribution_options = read_distribution_options_at(frozen)?;
+    let input = read_plugin_parameters_at(frozen)?;
+    let environment = crate::config::read_environment_at(frozen)?;
+    plugin.validate_parameter_lists(&input)?;
+    let inheritance = crate::config::InheritanceConfig::read(&input)?;
+    validate_boot_capabilities(id, runtime, &inheritance, &plugin)?;
+    for warning in &plugin.discovery_warnings {
+        eprintln!("{warning}");
+    }
+    progress::message(
+        id,
+        format!(
+            "配置检查通过，使用插件 {} {}，架构 {architecture}",
+            plugin.metadata.id, plugin.metadata.version
+        ),
+        format!(
+            "Configuration checks passed; using plugin {} {}, architecture {architecture}",
+            plugin.metadata.id, plugin.metadata.version
+        ),
+    );
+    let context = BuildContext {
+        system_id: id.into(),
+        architecture,
+        distribution_options,
+        parameters: input
+            .values
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with("RSTAR_INHERITANCE_"))
+            .collect(),
+        config: frozen.to_path_buf(),
+        persistent_mounts: Vec::new(),
+        parameter_lists: input.lists,
+        environment,
+        inherited_mounts: Vec::new(),
+    };
+    Ok(Pending {
+        inputs,
+        plugin,
+        config,
+        context,
+        package_plan: None,
+    })
+}
+
+/// Collect each system's closure separately inside the shared resolver environment.
+/// 在共享解析环境内分别收集每个系统的闭包。
+fn collect_plans(
+    store: &ConfigStore,
+    backend: &impl BuildBackend,
+    runtime: &crate::config::RuntimeConfig,
+    pending: &mut [Pending],
+) -> Vec<(usize, Error)> {
+    let mut groups: std::collections::BTreeMap<DownloadGroup, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, value) in pending.iter().enumerate() {
+        if value.plugin.metadata.package_plan.is_some()
+            && (value.plugin.metadata.predownload
+                || runtime.main_system.as_deref() == Some(&value.context.system_id))
+        {
+            groups
+                .entry((
+                    value.plugin.archive_sha256.clone(),
+                    value.context.architecture.clone(),
+                    value.context.distribution_options.clone(),
+                    value.context.environment.clone(),
+                ))
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut failures = Vec::new();
+    for indices in groups.values() {
+        let first = &pending[indices[0]];
+        let result = super::predownload::with_environment(
+            backend,
+            store,
+            &first.plugin,
+            &first.context,
+            true,
+            |root, _environment| {
+                let mut plans = Vec::with_capacity(indices.len());
+                for &index in indices {
+                    plans.push((index, collect_plan(&pending[index], root, backend, runtime)));
+                }
+                Ok(plans)
+            },
+        );
+        match result {
+            Ok(plans) => {
+                for (index, result) in plans {
+                    match result {
+                        Ok(plan) => pending[index].package_plan = Some(plan),
+                        Err(error) => failures.push((index, error)),
+                    }
+                }
+            }
+            Err(error) => {
+                for &index in indices {
+                    failures.push((
+                        index,
+                        Error::Invalid(format!("软件包收集环境失败: {error}")),
+                    ));
+                }
+            }
+        }
+    }
+    failures
+}
+
+/// Allocate target attempts and retire caches only after package collection passes.
+/// 软件包收集检查通过后才分配目标构建版本及清理缓存。
+fn prepare_system(
+    store: &ConfigStore,
+    pending: Pending,
+    backend: &impl BuildBackend,
+    runtime: &crate::config::RuntimeConfig,
+    executable_synced: &mut bool,
+) -> Result<Prepared> {
+    let Pending {
+        inputs,
+        plugin,
+        config,
+        mut context,
+        package_plan,
+    } = pending;
+    let id = context.system_id.clone();
+    let id = id.as_str();
+    if !*executable_synced {
+        super::boot::sync_executable(store.root())?;
+        *executable_synced = true;
+    }
+    let attempt = Attempt::begin(inputs)?;
+    let loaded = &plugin;
+    context.config = attempt.config.clone();
+    let result: Result<Vec<String>> = (|| {
+        status(&attempt, id, "building", None, Some(loaded))?;
+        if runtime.main_system.as_deref() == Some(id) {
+            fs::write(
+                &attempt.directory.join("boot-spec.toml"),
+                loaded.metadata.boot.as_ref().unwrap(),
+            )?;
+        }
+        if let Some(plan) = &package_plan {
+            fs::write(&attempt.directory.join("package-plan.toml"), plan)?;
+        }
+        // Script caches are never donors; retire them only after configuration passes preflight.
+        // script 缓存绝不作为来源；配置通过预检查后才清理。
         progress::message(
             id,
             "清理历史脚本及后续阶段缓存",
             "Clear previous script and later stage caches",
         );
         cache::clear_from(backend, &attempt.layout.cache, "script")?;
-        progress::message(
-            id,
-            "冻结构建配置，检查插件及参数",
-            "Freeze build configuration and validate plugin parameters",
-        );
-        attempt.freeze()?;
-        let config = read_build_config_at(&attempt.config)?;
-        let architecture = config
-            .architecture
-            .as_deref()
-            .unwrap_or(std::env::consts::ARCH)
-            .to_owned();
-        plugin = Some(plugins::find(
-            &store.plugins_path(),
-            &config.system_type,
-            &architecture,
-        )?);
-        let loaded = plugin.as_ref().unwrap();
-        progress::message(
-            id,
-            format!(
-                "使用插件 {} {}，架构 {architecture}",
-                loaded.metadata.id, loaded.metadata.version
-            ),
-            format!(
-                "Using plugin {} {}, architecture {architecture}",
-                loaded.metadata.id, loaded.metadata.version
-            ),
-        );
-        let distribution_options = read_distribution_options_at(&attempt.config)?;
-        let input = read_plugin_parameters_at(&attempt.config)?;
-        let environment = crate::config::read_environment_at(&attempt.config)?;
-        loaded.validate_parameter_lists(&input)?;
-        crate::config::InheritanceConfig::read(&input)?;
-        let parameters = input
-            .values
-            .into_iter()
-            .filter(|(name, _)| !name.starts_with("RSTAR_INHERITANCE_"))
-            .collect();
-        for warning in &loaded.discovery_warnings {
-            eprintln!("{warning}");
-        }
-        status(&attempt, id, "building", None, Some(loaded))?;
-        let context = BuildContext {
-            system_id: id.into(),
-            architecture,
-            distribution_options,
-            parameters,
-            config: attempt.config.clone(),
-            persistent_mounts: Vec::new(),
-            parameter_lists: input.lists,
-            environment,
-            inherited_mounts: Vec::new(),
-        };
         let mut upgrade_packages = Vec::new();
         {
             let mut protected = loaded.metadata.protected_packages.clone();
@@ -420,15 +591,16 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
                     .collect();
             }
         }
-        Ok((config, context, upgrade_packages))
+        Ok(upgrade_packages)
     })();
     match result {
-        Ok((config, context, upgrade_packages)) => Ok(Prepared {
+        Ok(upgrade_packages) => Ok(Prepared {
             attempt,
-            plugin: plugin.unwrap(),
+            plugin,
             config,
             context,
             upgrade_packages,
+            package_plan,
         }),
         Err(error) => {
             status(
@@ -436,11 +608,102 @@ fn prepare_system(store: &ConfigStore, id: &str, backend: &impl BuildBackend) ->
                 id,
                 "failed",
                 Some(error.to_string()),
-                plugin.as_ref(),
+                Some(&plugin),
             )?;
             Err(error)
         }
     }
+}
+
+/// Select declarations from the system's role and actual deferred inheritance request.
+/// 根据系统角色及实际的延后继承请求选择声明。
+fn validate_boot_capabilities(
+    id: &str,
+    runtime: &crate::config::RuntimeConfig,
+    inheritance: &crate::config::InheritanceConfig,
+    plugin: &LoadedPlugin,
+) -> Result<()> {
+    if runtime.main_system.as_deref() != Some(id) {
+        return Ok(());
+    }
+    if plugin.metadata.boot.is_none() {
+        return Err(Error::Invalid(format!(
+            "主系统 {id} 的插件 {} 未声明通用启动要求 [boot]",
+            plugin.metadata.id
+        )));
+    }
+    if inheritance.timing == crate::config::InheritanceTiming::Initramfs
+        && !inheritance.copy_on_write.is_empty()
+    {
+        if plugin.metadata.initramfs_inheritance.is_none() {
+            return Err(Error::Invalid(format!(
+                "主系统 {id} 启用启动时 CoW 继承，但插件 {} 未声明 [initramfs_inheritance] 要求",
+                plugin.metadata.id
+            )));
+        }
+        plugin.operation_path("prepare_inheritance_initramfs")?;
+    }
+    if plugin.metadata.package_plan.is_none() {
+        return Err(Error::Invalid(format!(
+            "主系统 {id} 的插件 {} 未声明 [package_plan]，无法收集目标软件包并检查启动要求",
+            plugin.metadata.id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_boot_packages(
+    id: &str,
+    runtime: &crate::config::RuntimeConfig,
+    inheritance: &crate::config::InheritanceConfig,
+    plugin: &LoadedPlugin,
+    packages: &[String],
+) -> Result<()> {
+    if runtime.main_system.as_deref() != Some(id) {
+        return Ok(());
+    }
+    require_planned_packages(
+        id,
+        "通用启动",
+        &plugin.metadata.boot.as_ref().unwrap().packages,
+        packages,
+    )?;
+    if inheritance.timing == crate::config::InheritanceTiming::Initramfs
+        && !inheritance.copy_on_write.is_empty()
+    {
+        require_planned_packages(
+            id,
+            "启动时 CoW 继承",
+            &plugin
+                .metadata
+                .initramfs_inheritance
+                .as_ref()
+                .unwrap()
+                .packages,
+            packages,
+        )?;
+    }
+    Ok(())
+}
+
+fn require_planned_packages(
+    id: &str,
+    flow: &str,
+    required: &[String],
+    planned: &[String],
+) -> Result<()> {
+    let missing: Vec<_> = required
+        .iter()
+        .filter(|name| !planned.contains(name))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(Error::Invalid(format!(
+            "系统 {id} 的{flow}要求未满足：展开软件组、基础包和运行依赖后的目标安装计划缺少 {}（由插件元数据声明）；请调整 Packages 后重新构建",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Run prepared stages and record completion, preserving earlier completed caches on failure.

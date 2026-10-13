@@ -14,8 +14,9 @@ mod validation;
 pub use discovery::{find, for_system};
 pub use loader::load;
 pub use model::{
-    CacheRequirements, ConfigRequirements, Error, LoadedPlugin, Metadata, Result, ToolRequirements,
-    ValueConstraint,
+    ActionRequirements, BootArtifact, BootArtifactKind, BootRequirements, CacheRequirements,
+    ConfigRequirements, Error, LoadedPlugin, Metadata, PackagePlanRequirements, Result,
+    ToolRequirements, ValueConstraint,
 };
 pub use persistent::PersistentDirectory;
 /// Operations shared by API 2 and 3, provided as <operation>.sh or <operation>.
@@ -35,14 +36,18 @@ pub const REQUIRED_OPERATIONS: &[&str] = &[
 /// API 3 operation initializing the stable identity of a freshly installed system.
 /// API 3 为全新安装系统初始化稳定身份的操作。
 pub const SYSTEM_OPERATIONS: &[&str] = &["system_init"];
-pub(crate) use validation::identifier as validate_identity;
+pub(crate) use validation::{identifier as validate_identity, validate_boot};
 
 /// Operations whose stdout carries records rather than build diagnostics.
 /// stdout 用于传输记录而非构建诊断的操作。
 pub(crate) fn is_query(operation: &str) -> bool {
     matches!(
         operation,
-        "query_packages" | "resolve_packages" | "list_orphans" | "query_package_files"
+        "query_packages"
+            | "resolve_packages"
+            | "collect_packages"
+            | "list_orphans"
+            | "query_package_files"
     )
 }
 use validation::{identifier, io_error};

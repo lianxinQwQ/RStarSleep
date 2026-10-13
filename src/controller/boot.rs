@@ -1,6 +1,6 @@
 //! Publish main-system Type #1 systemd-boot entries after successful root creation.
 //! 系统根创建成功后发布主系统的 systemd-boot Type #1 启动项。
-use super::{BuildOutcome, Error, Result, fs, mounts};
+use super::{BuildOutcome, Error, Result, fs, mounts, plugins};
 use crate::config::RuntimeConfig;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,6 +17,34 @@ pub(super) struct BootRecord {
     pub version: String,
     pub directory: PathBuf,
     pub entry: PathBuf,
+    /// Exact copied artifacts; older records use the legacy filename allowlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
+}
+
+/// Names are inserted into boot entries and must identify one plain child file.
+pub(super) fn artifact_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && !name.ends_with('.')
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+/// Read the checked declaration retained with this version, independently of plugin updates.
+fn boot_spec(outcome: &BuildOutcome) -> Result<plugins::BootRequirements> {
+    let path = outcome
+        .root
+        .parent()
+        .ok_or_else(|| Error::Invalid("启动根缺少版本目录".into()))?
+        .join("boot-spec.toml");
+    fs::checked(&path)?;
+    let text = disk::read_to_string(&path).map_err(|e| fs::io(&path, e))?;
+    let spec: plugins::BootRequirements =
+        toml::from_str(&text).map_err(|e| Error::Invalid(format!("启动产物声明无效: {e}")))?;
+    plugins::validate_boot(&spec)?;
+    Ok(spec)
 }
 
 /// Resolve the completed root mount and publish its kernel, initramfs and available microcode.
@@ -47,6 +75,7 @@ fn publish_at(
     uuid: &str,
     subvolume: &Path,
 ) -> Result<()> {
+    let spec = boot_spec(outcome)?;
     if uuid.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-') || uuid.is_empty() {
         return Err(Error::Invalid("无效 Btrfs UUID".into()));
     }
@@ -105,14 +134,12 @@ fn publish_at(
         .tempdir_in(&parent)
         .map_err(|e| fs::io(&parent, e))?;
     let mut initrds = String::new();
-    for (source, name, required) in [
-        ("boot/intel-ucode.img", "intel-ucode.img", false),
-        ("boot/amd-ucode.img", "amd-ucode.img", false),
-        ("boot/initramfs-linux.img", "initramfs-linux.img", true),
-        ("boot/vmlinuz-linux", "vmlinuz", true),
-    ] {
-        let source = outcome.root.join(source);
-        if !required && !fs::exists(&source)? {
+    let mut kernel = String::new();
+    let mut files = Vec::new();
+    for artifact in &spec.artifacts {
+        let name = &artifact.destination;
+        let source = outcome.root.join(&artifact.source);
+        if artifact.optional && !fs::exists(&source)? {
             continue;
         }
         fs::checked(&source)?;
@@ -130,8 +157,12 @@ fn publish_at(
         disk::File::open(&target)
             .and_then(|f| f.sync_all())
             .map_err(|e| fs::io(&target, e))?;
-        if name != "vmlinuz" {
-            initrds.push_str(&format!("initrd /RStarSleep/{}/{name}\n", outcome.version));
+        files.push(name.clone());
+        match artifact.kind {
+            plugins::BootArtifactKind::Initrd => {
+                initrds.push_str(&format!("initrd /RStarSleep/{}/{name}\n", outcome.version));
+            }
+            plugins::BootArtifactKind::Kernel => kernel.clone_from(name),
         }
     }
     let record = BootRecord {
@@ -139,6 +170,7 @@ fn publish_at(
         version: outcome.version.clone(),
         directory: directory.clone(),
         entry: entry.clone(),
+        files: Some(files),
     };
     // Persist ownership before external publication so interrupted attempts remain cleanable.
     // 外部发布前保存所有权，使中断的尝试仍可清理。
@@ -146,7 +178,7 @@ fn publish_at(
     disk::rename(staging.path(), &directory).map_err(|e| fs::io(&directory, e))?;
     fs::sync(&parent)?;
     let text = format!(
-        "title RStarSleep {} {}\nlinux /RStarSleep/{}/vmlinuz\n{initrds}options root=UUID={uuid} rootflags=subvol={} ro {}\n",
+        "title RStarSleep {} {}\nlinux /RStarSleep/{}/{kernel}\n{initrds}options root=UUID={uuid} rootflags=subvol={} ro {}\n",
         outcome.system_id,
         outcome.version,
         outcome.version,
@@ -213,6 +245,51 @@ pub(super) fn sync_executable(root: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn write_arch_spec(outcome: &BuildOutcome) {
+        let mut artifacts = Vec::new();
+        for (source, destination, kind, optional) in [
+            (
+                "boot/intel-ucode.img",
+                "intel-ucode.img",
+                plugins::BootArtifactKind::Initrd,
+                true,
+            ),
+            (
+                "boot/amd-ucode.img",
+                "amd-ucode.img",
+                plugins::BootArtifactKind::Initrd,
+                true,
+            ),
+            (
+                "boot/initramfs-linux.img",
+                "initramfs-linux.img",
+                plugins::BootArtifactKind::Initrd,
+                false,
+            ),
+            (
+                "boot/vmlinuz-linux",
+                "vmlinuz",
+                plugins::BootArtifactKind::Kernel,
+                false,
+            ),
+        ] {
+            artifacts.push(plugins::BootArtifact {
+                source: source.into(),
+                destination: destination.into(),
+                kind,
+                optional,
+            });
+        }
+        fs::write(
+            &outcome.root.parent().unwrap().join("boot-spec.toml"),
+            &plugins::BootRequirements {
+                packages: vec!["linux".into()],
+                artifacts,
+            },
+        )
+        .unwrap();
+    }
+
     #[test]
     fn publishes_available_microcode_before_the_main_initramfs() {
         let cases: &[&[&str]] = &[
@@ -235,6 +312,7 @@ mod tests {
                 version: "v00000001".into(),
                 root,
             };
+            write_arch_spec(&outcome);
             let config = RuntimeConfig {
                 schema_version: 1,
                 main_system: Some("desktop".into()),
@@ -295,6 +373,7 @@ mod tests {
             version: "v00000001".into(),
             root: prepared,
         };
+        write_arch_spec(&outcome);
         publish_at(
             &outcome,
             &config,
@@ -333,6 +412,7 @@ mod tests {
             version: "v00000001".into(),
             root: root.clone(),
         };
+        write_arch_spec(&outcome);
         let config = RuntimeConfig {
             schema_version: 1,
             main_system: Some("desktop".into()),
@@ -388,5 +468,125 @@ mod tests {
         );
         assert!(publish_at(&outcome, &config, "abc-123", Path::new("/root")).is_err());
         assert!(root.parent().unwrap().join("boot.toml").exists());
+    }
+
+    #[test]
+    fn publishes_declared_distribution_paths_and_retains_only_copied_artifacts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("versions/v00000001/root");
+        disk::create_dir_all(root.join("usr/lib/kernel")).unwrap();
+        disk::write(root.join("usr/lib/kernel/image"), "kernel").unwrap();
+        disk::write(root.join("usr/lib/kernel/early"), "early").unwrap();
+        disk::write(root.join("usr/lib/kernel/main"), "main").unwrap();
+        let outcome = BuildOutcome {
+            system_id: "desktop".into(),
+            version: "v00000001".into(),
+            root,
+        };
+        fs::write_text(
+            &outcome.root.parent().unwrap().join("boot-spec.toml"),
+            r#"packages = ["kernel-custom"]
+[[artifacts]]
+source = "usr/lib/kernel/early"
+destination = "early.img"
+kind = "initrd"
+optional = true
+[[artifacts]]
+source = "usr/lib/kernel/missing"
+destination = "optional.img"
+kind = "initrd"
+optional = true
+[[artifacts]]
+source = "usr/lib/kernel/image"
+destination = "custom-kernel"
+kind = "kernel"
+optional = false
+[[artifacts]]
+source = "usr/lib/kernel/main"
+destination = "custom-initrd"
+kind = "initrd"
+optional = false
+"#,
+        )
+        .unwrap();
+        let config = RuntimeConfig {
+            schema_version: 1,
+            main_system: Some("desktop".into()),
+            subsystems: vec![],
+            boot_dir: temporary.path().join("esp"),
+            kernel_options: vec![],
+        };
+        publish_at(&outcome, &config, "abc-123", Path::new("/root")).unwrap();
+        let entry = disk::read_to_string(
+            config
+                .boot_dir
+                .join("loader/entries/RStarSleep-desktop-v00000001.conf"),
+        )
+        .unwrap();
+        assert!(entry.contains("linux /RStarSleep/v00000001/custom-kernel\n"));
+        assert_eq!(
+            entry
+                .lines()
+                .filter(|line| line.starts_with("initrd "))
+                .collect::<Vec<_>>(),
+            [
+                "initrd /RStarSleep/v00000001/early.img",
+                "initrd /RStarSleep/v00000001/custom-initrd",
+            ]
+        );
+        let record: BootRecord = toml::from_str(
+            &disk::read_to_string(outcome.root.parent().unwrap().join("boot.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.files.unwrap(),
+            ["early.img", "custom-kernel", "custom-initrd"]
+        );
+        assert!(
+            !config
+                .boot_dir
+                .join("RStarSleep/v00000001/optional.img")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn rejects_tampered_retained_declarations_before_publication() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("versions/v00000001/root");
+        disk::create_dir_all(&root).unwrap();
+        let outcome = BuildOutcome {
+            system_id: "desktop".into(),
+            version: "v00000001".into(),
+            root,
+        };
+        write_arch_spec(&outcome);
+        let valid = boot_spec(&outcome).unwrap();
+        let config = RuntimeConfig {
+            schema_version: 1,
+            main_system: Some("desktop".into()),
+            subsystems: vec![],
+            boot_dir: temporary.path().join("esp"),
+            kernel_options: vec![],
+        };
+        for (source, destination) in [
+            ("../outside", "safe.img"),
+            ("boot/./image", "safe.img"),
+            ("boot//image", "safe.img"),
+            ("boot/image", "../outside"),
+            ("boot/image", "x\nlinux"),
+            ("boot/image", "VMLINUZ"),
+        ] {
+            let mut altered = valid.clone();
+            altered.artifacts[0].source = source.into();
+            altered.artifacts[0].destination = destination.into();
+            fs::write(
+                &outcome.root.parent().unwrap().join("boot-spec.toml"),
+                &altered,
+            )
+            .unwrap();
+            assert!(publish_at(&outcome, &config, "abc-123", Path::new("/root")).is_err());
+            assert!(!config.boot_dir.exists());
+        }
     }
 }

@@ -141,10 +141,8 @@ fn only_latest_attempt_is_considered_for_cache_reuse() {
     fixture.system("desktop", &["editor"]);
     let backend = SimulatedBackend::default();
     build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
-    let layout = fixture.store.system_layout("desktop").unwrap();
-    fs::write(layout.config.join("build/config.conf"), "malformed = [").unwrap();
+    *backend.fail_operation.borrow_mut() = Some("update");
     assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
-    fixture.packages("desktop", &["editor"]);
     backend.events.borrow_mut().clear();
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
