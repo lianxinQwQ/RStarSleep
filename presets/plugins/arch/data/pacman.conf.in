@@ -1,0 +1,30 @@
+# Plugin-owned repository configuration. Runtime paths are filled by common.sh.
+# 插件维护的仓库配置，运行时路径由 common.sh 填入。
+[options]
+HoldPkg = pacman glibc
+Architecture = auto
+CheckSpace
+ParallelDownloads = 5
+DownloadUser = alpm
+SigLevel = Required DatabaseOptional
+LocalFileSigLevel = Optional
+
+[core]
+Include = @MIRRORLIST@
+
+[extra]
+Include = @MIRRORLIST@
+
+# Uncomment to enable the official multilib repository.
+# 取消注释可启用官方 multilib 仓库。
+#[multilib]
+#Include = @MIRRORLIST@
+
+# Additional repositories belong here, or in an included plugin resource:
+# 额外仓库可写在这里，或通过 Include 引用插件资源：
+#Include = @PLUGIN_ROOT@/data/repositories.conf
+#
+# Example only: initialize the archlinuxcn signing keys before enabling this.
+# 仅作示例：启用前需在解析环境及目标系统初始化 archlinuxcn 签名密钥。
+#[archlinuxcn]
+#Server = https://repo.archlinuxcn.org/$arch

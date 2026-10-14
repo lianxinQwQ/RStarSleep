@@ -148,7 +148,7 @@ arch-plugin.tar.zst
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.10.1"
+version = "0.11.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -825,6 +825,12 @@ AUR 二进制写入共享包缓存，并由 repo-add 发布到标识为 `[rstars
 官方仓库保留原有签名策略。当前没有管理本地仓库签名密钥。
 所有 Arch 操作经同一个 pacman 包装函数使用共享缓存与本地仓库；目标系统消费准备好的
 官方元数据，预下载环境维护仍正常刷新仓库。基础 rootfs 获取不属于软件预下载接口。
+Arch 0.11.0 的仓库定义来自插件 `data/pacman.conf.in`。Bash 包装函数及 Python 解析器复用
+同一个生成函数，在各自临时工作目录生成 pacman 配置和镜像清单，以 `--config` 显式传入。
+模板的 `@MIRRORLIST@`、`@PLUGIN_ROOT@` 替换为当前环境内的绝对路径，pacman 的
+`$repo`、`$arch` 保留；镜像覆盖兼容统一参数及旧预下载变量。生成文件不写入目标
+`/etc/pacman.conf`，无共享缓存或本地 AUR 仓库时同样使用插件配置。
+第三方仓库可在模板中声明，信任密钥仍需在解析环境和目标环境初始化；仅改仓库段不自动授信。
 真实 Btrfs/nspawn、官方镜像与 AUR 构建链路需在具备相应运行条件的集成环境验证。
 
 

@@ -162,9 +162,12 @@ class Preparer:
         self.db = self.work / "db"
         (self.db / "local").mkdir(parents=True)
         self.actual_db = Path("/var/lib/pacman")
+        configuration_directory = self.work / "configuration"
+        run(["bash", "-c", 'source "$1"; write_pacman_configuration "$2"',
+             "rstarsleep-pacman-configuration", self.root / "lib/common.sh", configuration_directory], capture=True)
         # Resolve official targets independently of both installed and old AUR packages.
         lines, skip = [], False
-        for line in Path("/etc/pacman.conf").read_text().splitlines():
+        for line in (configuration_directory / "pacman.conf").read_text().splitlines():
             section = re.match(r"^\s*\[([^]]+)\]", line)
             if section:
                 skip = section[1] == REPO
@@ -187,6 +190,7 @@ class Preparer:
         for key, path in (("SRCDEST", self.distfiles), ("BUILDDIR", self.builds)):
             text += f"{key}={shlex.quote(str(path))}\n"
         self.makepkg_conf.write_text(text)
+        self.makepkg_conf.chmod(0o644)
         self.bases, self.states, self.artifacts = {}, {}, {}
         self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
@@ -649,7 +653,7 @@ def collect_main(arguments):
         requested = list(dict.fromkeys(arguments))
         if any(not NAME.fullmatch(name) for name in requested):
             raise PreparationError("invalid requested package")
-        with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-") as workspace:
+        with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
             preparer = Preparer(workspace)
             preparer.initialize(planning=True)
             packages = preparer.collect(requested)
@@ -707,7 +711,7 @@ def systems_main(argument):
             raise PreparationError("invalid system identity or configured package targets")
     previous_query_mode, QUERY_MODE = QUERY_MODE, True
     try:
-        with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-") as workspace:
+        with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
             preparer = Preparer(workspace)
             preparer.initialize()
             result = prepare_systems(preparer, request["systems"])
@@ -723,7 +727,7 @@ def main():
         raise PreparationError("invalid requested package")
     log(f"开始共享软件准备：{len(requested)} 项需求（含 base）",
         f"Start shared package preparation: {len(requested)} requirements (including base)")
-    with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-") as workspace:
+    with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
         preparer = Preparer(workspace)
         preparer.initialize()
         aur_targets = preparer.prefetch(requested)

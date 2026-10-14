@@ -23,6 +23,9 @@ impl Fixture {
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ['MAINTENANCE_TEST_ROOT'])
 args = sys.argv[1:]
+assert args[0] == '--config' and pathlib.Path(args[1]).is_file()
+assert pathlib.Path(args[1]).with_name('mirrorlist').is_file()
+args = args[2:]
 with (root / 'trace').open('a') as trace:
     trace.write(' '.join(args) + '\n')
 state_path = root / 'state.json'

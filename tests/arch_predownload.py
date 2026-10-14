@@ -33,6 +33,82 @@ provides = virtual-gui=1
 """
 
 
+class Configuration(unittest.TestCase):
+    def fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        plugin = root / "plugin with spaces & $literal"
+        for relative in ("lib", "data", "state/packages", "state/repository", "state/sources"):
+            (plugin / relative).mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(module_path.with_name("common.sh"), plugin / "lib/common.sh")
+        (plugin / "data/pacman.conf.in").write_text(
+            "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\n"
+            "[custom]\nInclude = @MIRRORLIST@\n"
+            "[rstarsleep]\nServer = file:///stale\n"
+            "[fixture]\nServer = file://@PLUGIN_ROOT@/fixtures/$repo\n")
+        (plugin / "data/mirrorlist").write_text("Server = https://default.invalid/$repo/os/$arch\n")
+        workspace = root / "workspace"
+        workspace.mkdir()
+        return plugin, workspace
+
+    def initialize(self, plugin, workspace, environment=None):
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == Path("/etc/pacman.conf"):
+                raise AssertionError("resolver must not read the system pacman configuration")
+            if path == Path("/etc/makepkg.conf"):
+                return "# isolated makepkg configuration\n"
+            return original_read_text(path, *args, **kwargs)
+
+        variables = {"RSTAR_PLUGIN_ROOT": str(plugin), "RSTAR_DISTRIBUTION_MIRROR": "", "RSTAR_MIRROR": ""}
+        variables.update(environment or {})
+        with patch.dict(os.environ, variables), \
+                patch.object(arch.os, "geteuid", return_value=0), \
+                patch.object(arch.os, "chown"), \
+                patch.object(arch.pwd, "getpwnam", return_value=Mock(pw_uid=12345, pw_gid=12345)), \
+                patch.object(Path, "read_text", read_text):
+            return arch.Preparer(workspace)
+
+    def test_preparer_uses_plugin_repositories_and_readable_runtime_configuration(self):
+        plugin, workspace = self.fixture()
+        previous_umask = os.umask(0o077)
+        try:
+            preparer = self.initialize(plugin, workspace)
+        finally:
+            os.umask(previous_umask)
+        configuration_directory = workspace / "configuration"
+        self.assertIn(f"Include = {configuration_directory}/mirrorlist\n", preparer.configuration)
+        self.assertIn(f"Server = file://{plugin}/fixtures/$repo\n", preparer.configuration)
+        self.assertIn("[custom]\n", preparer.configuration)
+        self.assertNotIn("[rstarsleep]", preparer.configuration)
+        self.assertNotIn("file:///stale", preparer.configuration)
+        self.assertEqual(preparer.official_conf.read_text(), preparer.configuration)
+        self.assertEqual(preparer.build_conf.read_text(), preparer.configuration)
+        self.assertEqual((configuration_directory / "mirrorlist").read_text(),
+                         "Server = https://default.invalid/$repo/os/$arch\n")
+        self.assertEqual(workspace.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(configuration_directory.stat().st_mode & 0o777, 0o755)
+        for path in (configuration_directory / "pacman.conf", configuration_directory / "mirrorlist", preparer.makepkg_conf):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+
+    def test_preparer_honors_both_mirror_parameter_interfaces(self):
+        for variable in ("RSTAR_DISTRIBUTION_MIRROR", "RSTAR_MIRROR"):
+            with self.subTest(variable=variable):
+                plugin, workspace = self.fixture()
+                mirror = "https://mirror.invalid/$repo/os/$arch"
+                self.initialize(plugin, workspace, {variable: mirror})
+                self.assertEqual((workspace / "configuration/mirrorlist").read_text(), f"Server = {mirror}\n")
+
+    def test_missing_plugin_template_fails_without_using_system_configuration(self):
+        plugin, workspace = self.fixture()
+        (plugin / "data/pacman.conf.in").unlink()
+        with self.assertRaisesRegex(arch.PreparationError, "command failed"):
+            self.initialize(plugin, workspace)
+        self.assertFalse((workspace / "makepkg.conf").exists())
+
+
 class Protocol(unittest.TestCase):
     def preparer(self, cache, packages):
         p = arch.Preparer.__new__(arch.Preparer)
@@ -562,6 +638,29 @@ class OfflinePacman(unittest.TestCase):
 
 
 class PackagePlans(unittest.TestCase):
+    def test_all_entry_points_create_workspaces_in_plugin_temporary_directory(self):
+        preparer = Mock()
+        preparer.collect.return_value = ["base"]
+        preparer.prefetch.return_value = []
+        workspaces = []
+        with tempfile.TemporaryDirectory() as temporary:
+            def initialize(workspace):
+                self.assertEqual(Path(workspace).parent, Path(temporary))
+                self.assertTrue(Path(workspace).is_dir())
+                workspaces.append(workspace)
+                return preparer
+
+            with patch.dict(os.environ, {"RSTAR_PLUGIN_TMP": temporary}), \
+                    patch.object(arch, "Preparer", side_effect=initialize), \
+                    patch.object(arch, "prepare_systems", return_value={}), \
+                    patch.object(arch.sys, "argv", ["predownload.py"]), \
+                    redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                arch.collect_main(["base"])
+                arch.systems_main(json.dumps({"schema_version": 1, "systems": {"minimal": []}}))
+                arch.main()
+            self.assertEqual(len(workspaces), 3)
+            self.assertTrue(all(not Path(workspace).exists() for workspace in workspaces))
+
     def test_system_preparation_keeps_download_diagnostics_out_of_json(self):
         preparer = Mock()
         preparer.initialize.side_effect = lambda: arch.run([sys.executable, "-c", "print('environment ready')"])

@@ -42,6 +42,8 @@ impl Fixture {
             &executable,
             r#"#!/usr/bin/env bash
 set -euo pipefail
+[[ $1 == --config && -r $2 && -r ${2%/*}/mirrorlist ]] || exit 91
+shift 2
 printf '%s\n' "$*" >> "$PACMAN_TRACE"
 case "$1" in
     -Ql)
@@ -781,6 +783,14 @@ fn shared_cache_options_precede_the_package_argument_delimiter() {
         resources.join("lib/common.sh"),
     )
     .unwrap();
+    fs::create_dir_all(resources.join("data")).unwrap();
+    for name in ["pacman.conf.in", "mirrorlist"] {
+        fs::copy(
+            source.join("data").join(name),
+            resources.join("data").join(name),
+        )
+        .unwrap();
+    }
     let mut paths = vec![fixture.temporary.path().to_path_buf()];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let output = Command::new("bash")
@@ -789,6 +799,7 @@ fn shared_cache_options_precede_the_package_argument_delimiter() {
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("PACMAN_TRACE", &fixture.trace)
         .env("RSTAR_PLUGIN_ROOT", &resources)
+        .env("RSTAR_PLUGIN_TMP", fixture.temporary.path())
         .output()
         .unwrap();
     assert!(
@@ -818,6 +829,14 @@ fn shared_cache_repairs_legacy_package_permissions_without_opening_private_state
         resources.join("lib/common.sh"),
     )
     .unwrap();
+    fs::create_dir_all(resources.join("data")).unwrap();
+    for name in ["pacman.conf.in", "mirrorlist"] {
+        fs::copy(
+            source.join("data").join(name),
+            resources.join("data").join(name),
+        )
+        .unwrap();
+    }
     let public = [
         cache.join("paru-2.1.0-2-x86_64.pkg.tar.zst"),
         repository.join("paru-2.1.0-2-x86_64.pkg.tar.zst"),

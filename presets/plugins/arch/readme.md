@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.10.1 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.11.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -56,6 +56,39 @@ software = []
 | Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用包内 `data/mirrorlist` |
 | AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
 | [Content] RootPassword | RSTAR_CONTENT_ROOTPASSWORD | 未配置或为空时不修改软件阶段输出中的密码 |
+
+### 软件源配置模板
+
+所有插件包操作使用 `data/pacman.conf.in`，不再读取环境自身的 `/etc/pacman.conf` 作为仓库定义。
+默认启用 core、extra；取消模板中 multilib 的注释即可启用该仓库。仓库顺序也由模板决定。
+模板在每次操作时通过公共函数 `write_pacman_configuration` 渲染到 `RSTAR_PLUGIN_TMP` 下的
+独立目录，Bash 安装、更新、查询、维护及 Python 依赖解析、下载、AUR 构建依赖安装均使用
+生成配置调用 `pacman --config`。操作完成后删除生成目录，不覆盖目标 `/etc/pacman.conf`。
+bootstrap 为普通系统 pacman 设置 `/etc/pacman.d/mirrorlist` 的原有行为保留。
+
+模板中的 `@MIRRORLIST@` 替换为本次生成镜像清单的绝对路径，`@PLUGIN_ROOT@` 替换为
+当前容器内插件资源的绝对路径。`$repo`、`$arch` 保留给 pacman 展开；其他 shell 环境变量
+不会自动展开。镜像清单优先取 `[Distribution] Mirror`，未设置时复制插件 `data/mirrorlist`；
+统一预下载接口的旧变量 `RSTAR_MIRROR` 也使用相同逻辑。Mirror 不接受换行。
+生成目录使用 0755、配置和镜像清单使用 0644，兼容下载用户及非 root 构建用户。
+
+要让整个插件使用额外仓库，可在模板内添加仓库段，例如：
+
+```ini
+[archlinuxcn]
+Server = https://repo.archlinuxcn.org/$arch
+```
+
+也可在模板中写 `Include = @PLUGIN_ROOT@/data/repositories.conf`，把仓库段保存为插件资源。
+路径占位符仅在 `pacman.conf.in` 中替换；引用文件如需继续 Include，应使用容器内可访问的
+绝对路径。不要引用宿主路径、假定相对路径相对于模板，或手工声明由插件管理的 `[rstarsleep]`。
+修改插件模板即可统一生效，无须新增系统 INI 字段；新增 INI 字段仍须登记到插件参数声明。
+
+额外仓库默认不启用，也不会自动导入其签名密钥。启用前须在独立解析环境和目标系统的包操作前
+初始化相应信任密钥；已有基础缓存也须补齐。当前插件继续使用系统默认的
+`/etc/pacman.d/gnupg`，仅更换配置文件位置不会改变钥环位置。
+预下载仍要求仓库元数据提供包摘要和签名并完成验证；`Keyring` 参数仅用于验证 bootstrap 归档。
+系统启动后直接执行 pacman 仍读取系统的 `/etc/pacman.conf`，插件临时配置不作为运行系统的持久配置。
 
 控制器把配置值直接放入进程环境，不作为位置参数或 shell 源码。
 单系统接口和预下载环境的初始化、维护使用上述名称。

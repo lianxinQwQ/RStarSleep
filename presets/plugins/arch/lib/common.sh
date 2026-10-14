@@ -91,18 +91,58 @@ prepare_shared_cache() {
     fi
 }
 
-# One configuration path for all operations; only locally produced packages use
-# the explicitly trusted rstarsleep repository. Official signature policy stays intact.
-pacman() {
-    local cache=${RSTAR_PLUGIN_ROOT:-}/state/packages
-    local repository=${RSTAR_PLUGIN_ROOT:-}/state/repository
-    local configuration status=0 cleanup_status=0
-    local -a args=("$@")
-    if [[ ! -d $cache ]]; then
-        command pacman "${args[@]}"
-        return
+# Generate readable runtime configuration without writing to the system /etc.
+# 生成可读的运行时配置，不写入系统 /etc。
+# Arguments: writable output directory; paths in Include must be absolute.
+# 参数：可写输出目录；Include 中的路径必须为绝对路径。
+write_pacman_configuration() {
+    local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line
+    [[ -n $resources ]] || { log 'Missing plugin resource directory'; return 64; }
+    resources=$(cd -- "$resources" && pwd -P) || return
+    [[ -f $resources/data/pacman.conf.in && -f $resources/data/mirrorlist ]] || {
+        log 'Missing plugin pacman template or mirrorlist'; return 1;
+    }
+    mirror=${RSTAR_DISTRIBUTION_MIRROR:-${RSTAR_MIRROR:-}}
+    if [[ $mirror == *$'\n'* || $mirror == *$'\r'* ]]; then
+        log 'Mirror must not contain line breaks'; return 64
     fi
-    prepare_shared_cache "$cache" "$repository" || return
+    mkdir -p -- "$directory" || return
+    directory=$(cd -- "$directory" && pwd -P) || return
+    if [[ $resources == *$'\n'* || $resources == *$'\r'* || $directory == *$'\n'* || $directory == *$'\r'* ]]; then
+        log 'Pacman configuration paths must not contain line breaks'; return 64
+    fi
+    if [[ -n $mirror ]]; then
+        printf 'Server = %s\n' "$mirror" >"$directory/mirrorlist" || return
+    else
+        cp -- "$resources/data/mirrorlist" "$directory/mirrorlist" || return
+    fi
+    # Quoted literal replacement keeps ampersands, backslashes and pacman's
+    # $repo/$arch variables intact; no configuration is evaluated as shell code.
+    # 按字面替换，保留路径及 pacman 的变量，不把配置作为 shell 代码执行。
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line//@MIRRORLIST@/"$directory/mirrorlist"}
+        line=${line//@PLUGIN_ROOT@/"$resources"}
+        printf '%s\n' "$line" || return
+    done <"$resources/data/pacman.conf.in" >"$directory/pacman.conf" || return
+    chmod 0755 -- "$directory" || return
+    chmod 0644 -- "$directory/pacman.conf" "$directory/mirrorlist"
+}
+
+# Execute a transaction with an already generated configuration. All failures
+# must propagate even when the caller uses an if/|| conditional.
+# 使用生成的配置执行事务，即使调用者处于 if/|| 条件中也传播全部失败。
+run_configured_pacman() {
+    local configuration=$1
+    shift
+    local resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}}
+    local cache=$resources/state/packages
+    local repository=$resources/state/repository
+    local -a args=("$@")
+    local -a cache_options=()
+    if [[ -d $cache ]]; then
+        prepare_shared_cache "$cache" "$repository" || return
+        cache_options=(--cachedir "$cache")
+    fi
     # Prepared official metadata is consumed by target builds. Preparation-environment
     # maintenance retains normal refresh semantics.
     if [[ ${RSTAR_SYSTEM_ID:-} != predownload && ( -f $repository/.prepared.json || -f $repository/.planned.json ) ]]; then
@@ -117,21 +157,24 @@ pacman() {
         if [[ ${args[0]:-} == -Syu ]]; then args[0]=-Su; fi
     fi
     if [[ -f $repository/rstarsleep.db.tar.gz ]]; then
-        configuration=$(mktemp "${RSTAR_PLUGIN_TMP:-/tmp}/pacman-conf.XXXXXXXX") || return
-        # This wrapper is also called in if/|| contexts, where Bash disables
-        # errexit. Explicitly stop when preparing repository metadata fails.
-        # 此函数也用于 if/|| 条件，此时 Bash 禁用 errexit，须显式传播准备失败。
-        if awk '/^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[rstarsleep\]/) } !skip { print }' /etc/pacman.conf >"$configuration" &&
-            printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration" &&
-            mkdir -p /var/lib/pacman/sync &&
-            cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db; then
-            command pacman --config "$configuration" --cachedir "$cache" "${args[@]}" || status=$?
-        else
-            status=$?
-        fi
-        rm -f -- "$configuration" || cleanup_status=$?
-        (( status )) || status=$cleanup_status
-        return "$status"
+        printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration" || return
+        mkdir -p /var/lib/pacman/sync || return
+        cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db || return
     fi
-    command pacman --cachedir "$cache" "${args[@]}"
+    command pacman --config "$configuration" "${cache_options[@]}" "${args[@]}"
+}
+
+# One configuration source for every operation, including calls without caches.
+# 所有操作使用同一配置来源，包括未挂载共享缓存时的调用。
+pacman() {
+    local directory status=0 cleanup_status=0
+    directory=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-pacman.XXXXXXXX") || return
+    if write_pacman_configuration "$directory" && run_configured_pacman "$directory/pacman.conf" "$@"; then
+        :
+    else
+        status=$?
+    fi
+    rm -rf -- "$directory" || cleanup_status=$?
+    (( status )) || status=$cleanup_status
+    return "$status"
 }
