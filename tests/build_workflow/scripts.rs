@@ -124,7 +124,7 @@ fn executes_mixed_script_inputs_after_software_with_private_writable_cwd() {
         record(&fixture.cache(&outcome.version, "script.toml"))["stage"].as_str(),
         Some("script")
     );
-    backend.check_subvolume(&outcome.root, true).unwrap();
+    backend.check_subvolume(&outcome.root, false).unwrap();
     fixture.cleaned(&outcome.version);
 }
 

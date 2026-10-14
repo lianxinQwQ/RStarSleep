@@ -238,7 +238,13 @@ pub fn finalize_inheritance_locked(
         Sha256::digest(fs::read(manifest_path).map_err(|e| disk::io(manifest_path, e))?)
     );
     if disk::exists(&final_root)? {
-        verify_commit(backend, directory, &final_root, &digest)?;
+        verify_commit(
+            backend,
+            directory,
+            &final_root,
+            &digest,
+            state.get("state").and_then(|v| v.as_str()) != Some("complete"),
+        )?;
         mark_complete(directory)?;
         super::progress::message(
             &manifest.system_id,
@@ -280,8 +286,8 @@ pub fn finalize_inheritance_locked(
     backend.snapshot_recursive(&prepared, &staging, false)?;
     let result = super::progress::run(
         &manifest.system_id,
-        "应用启动阶段继承并发布只读系统根",
-        "Apply boot-time inheritance and publish the read-only system root",
+        "应用启动阶段继承并发布可写系统根",
+        "Apply boot-time inheritance and publish the writable system root",
         || {
             for (source, path) in sources {
                 super::progress::message(
@@ -310,12 +316,6 @@ pub fn finalize_inheritance_locked(
                 children: identities,
             };
             disk::write(&directory.join("inheritance-commit.toml"), &receipt)?;
-            let mut children = backend.nested_subvolumes(&staging)?;
-            children.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-            for child in children {
-                backend.set_readonly(&staging.join(child), true)?;
-            }
-            backend.set_readonly(&staging, true)?;
             backend.sync_filesystem(&staging)?;
             fs::rename(&staging, &final_root).map_err(|e| disk::io(&final_root, e))?;
             disk::sync(directory)?;
@@ -342,25 +342,21 @@ fn verify_commit(
     directory: &Path,
     root: &Path,
     digest: &str,
+    verify_children: bool,
 ) -> Result<()> {
-    backend.check_subvolume(root, true)?;
+    backend.check_subvolume(root, false)?;
     let path = directory.join("inheritance-commit.toml");
     let text = fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?;
     let receipt: CommitReceipt =
         toml::from_str(&text).map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut actual = backend.nested_subvolumes(root)?;
-    actual.sort();
-    let mut expected: Vec<_> = receipt.children.iter().map(|(p, _)| p.clone()).collect();
-    expected.sort();
     if receipt.manifest_sha256 != digest
         || receipt.root_subvolume_id != backend.source_subvolume_id(root)?
-        || actual != expected
     {
         return Err(Error::Invalid(
             "最终根与继承提交记录不匹配，拒绝继续启动".into(),
         ));
     }
-    for (child, id) in receipt.children {
+    for (child, _) in &receipt.children {
         if child.as_os_str().is_empty()
             || child
                 .components()
@@ -368,7 +364,23 @@ fn verify_commit(
         {
             return Err(Error::Invalid("提交记录子卷路径无效".into()));
         }
-        backend.check_subvolume(&root.join(&child), true)?;
+    }
+    // Completed roots can change during normal use; recovery still verifies the full published tree.
+    // 已完成的根允许运行时修改；中断恢复仍核验完整发布子卷树。
+    if !verify_children {
+        return Ok(());
+    }
+    let mut actual = backend.nested_subvolumes(root)?;
+    actual.sort();
+    let mut expected: Vec<_> = receipt.children.iter().map(|(p, _)| p.clone()).collect();
+    expected.sort();
+    if actual != expected {
+        return Err(Error::Invalid(
+            "最终根与继承提交记录不匹配，拒绝继续启动".into(),
+        ));
+    }
+    for (child, id) in receipt.children {
+        backend.check_subvolume(&root.join(&child), false)?;
         if backend.source_subvolume_id(&root.join(child))? != id {
             return Err(Error::Invalid("最终根内部子卷身份已改变".into()));
         }

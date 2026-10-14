@@ -38,7 +38,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
         "first"
     );
     backend
-        .check_subvolume(&first.root.join(relative), true)
+        .check_subvolume(&first.root.join(relative), false)
         .unwrap();
     backend
         .check_subvolume(
@@ -47,6 +47,17 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
         )
         .unwrap();
     assert!(layout.persistent.read_dir().unwrap().next().is_none());
+    fs::write(first.root.join(relative).join("value"), "runtime-edited").unwrap();
+    assert_eq!(
+        fs::read_to_string(
+            fixture
+                .cache(&first.version, "inherit")
+                .join(relative)
+                .join("value")
+        )
+        .unwrap(),
+        "first"
+    );
     fs::write(source.join("value"), "second").unwrap();
     fs::write(&file, "file-second").unwrap();
     let second = build_with_backend(&fixture.store, Some("desktop"), &backend)
@@ -62,7 +73,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
     );
     assert_eq!(
         fs::read_to_string(first.root.join(relative).join("value")).unwrap(),
-        "first"
+        "runtime-edited"
     );
     assert!(!fixture.cache(&first.version, "inherit").exists());
     rstarsleep::controller::clean_with_backend(&fixture.store, "desktop", &first.version, &backend)

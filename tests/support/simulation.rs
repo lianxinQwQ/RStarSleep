@@ -273,7 +273,11 @@ impl BuildBackend for SimulatedBackend {
         outcome: &rstarsleep::controller::BuildOutcome,
         _config: &rstarsleep::config::RuntimeConfig,
     ) -> Result<()> {
-        self.check_subvolume(&outcome.root, true)?;
+        let prepared = outcome
+            .root
+            .file_name()
+            .is_some_and(|s| s == "prepared-root");
+        self.check_subvolume(&outcome.root, prepared)?;
         self.boot_publications.set(self.boot_publications.get() + 1);
         Ok(())
     }

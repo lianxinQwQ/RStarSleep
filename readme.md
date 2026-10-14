@@ -233,7 +233,8 @@ Mount=/etc/myapp.conf
 Btrfs UUID 相同。文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时
 直接递归快照。`DirectorySubvolume=no` 可让最外层目标保持普通目录，原有内部子卷仍保留。
 缓存保存、恢复和版本发布都会递归快照整个系统根中的子卷，包括脚本创建的子卷。
-缓存和最终版本根及其内部子卷均只读；需要持续写入的数据使用 Mount。
+阶段缓存及其内部子卷只读；最终版本根及其内部子卷可写，主系统以 `rw` 挂载根。
+直接写入版本根的修改随该版本保留；需要跨版本共享的数据使用 Mount。
 
 设置 `Timing=initramfs` 后，构建保存独立 `prepared-root` 和来源清单；首次选择启动该版本时，
 在正式根挂载前完成继承并发布最终根，失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
@@ -259,7 +260,7 @@ persistent；继承 `/etc` 时把最终 fstab 同步回新根。Arch 在专用�
 随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
 若版本的 `/boot` 中存在 `intel-ucode.img` 或 `amd-ucode.img`，一并复制到该版本的启动目录，
 并在启动项中将其 `initrd` 行放在主 initramfs 之前；微码镜像缺失时跳过，存在时必须为普通文件。
-通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
+通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`rw`。
 全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
 实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。

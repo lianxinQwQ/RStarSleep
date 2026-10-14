@@ -50,7 +50,7 @@ Btrfs 顶层/
             │       ├── prepared-root/  # 可选，首次启动继承前的独立只读根
             │       ├── inheritance-pending.toml # 可选，固定来源及目标身份
             │       ├── inheritance-commit.toml  # 可选，最终根及全部子卷提交记录
-            │       └── root/           # 只读系统父根及全部内部子卷
+            │       └── root/           # 可写系统父根及全部内部子卷
             ├── cache/
             │   └── <版本标识>/
             │       ├── base-system/    # 只读基础系统子卷快照
@@ -409,7 +409,7 @@ Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn �
 
 CopyOnWrite 默认在软件及 script 之后继承当前运行系统，按 Btrfs UUID 检查同一文件系统。
 目录默认子卷化，已有来源子卷直接递归快照；`DirectorySubvolume=no` 可关闭最外层子卷化。
-保存阶段缓存、恢复及发布根均显式处理全部内部子卷，并分别封存为只读。
+保存阶段缓存、恢复及发布根均显式处理全部内部子卷；缓存封存为只读，工作根与最终版本根可写。
 设置 `Timing=initramfs` 后，首次选择启动目标版本时才完成 CoW 继承；准备根与清单随版本
 保存，不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
 [首次启动继承](../../docs/initramfs-inheritance.md)。
@@ -434,7 +434,7 @@ Arch 用专用标记块保存生成行，重复调用替换该块并保留其他
 随后原子创建 `loader/entries/RStarSleep-<系统>-<版本>.conf`。
 若版本的 `/boot` 中存在 `intel-ucode.img` 或 `amd-ucode.img`，一并复制到该版本的启动目录，
 并在启动项中将其 `initrd` 行放在主 initramfs 之前；微码镜像缺失时跳过，存在时必须为普通文件。
-通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`ro`。
+通过 `findmnt` 自动读取该版本 Btrfs UUID 和顶层子卷路径，生成 `root=`、`rootflags=`、`rw`。
 全局可设置 `boot_dir="/boot"` 和 `kernel_options=["quiet"]`；启动目录应指向 systemd-boot
 实际读取的 ESP/XBOOTLDR。额外参数不能覆盖程序生成的根选项。
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。

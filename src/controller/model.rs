@@ -111,8 +111,8 @@ pub struct BuildOutcome {
     /// Monotonically allocated version identifier.
     /// 单调递增分配的版本标识。
     pub version: String,
-    /// Read-only root or independent prepared-root for a pending version.
-    /// 只读系统根，或待继承版本独立保存的 prepared-root。
+    /// Writable root or independent read-only prepared-root for a pending version.
+    /// 可写系统根，或待继承版本独立保存的只读 prepared-root。
     pub root: PathBuf,
 }
 

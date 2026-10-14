@@ -52,7 +52,8 @@ fn readonly_stage_snapshots_publish_successfully() {
         );
         assert_eq!(fs::metadata(root).unwrap().permissions().mode() & 0o222, 0);
     }
-    backend.check_subvolume(&outcome.root, true).unwrap();
+    backend.check_subvolume(&outcome.root, false).unwrap();
+    fs::write(outcome.root.join("runtime-only"), "writable root").unwrap();
     assert_eq!(
         fs::read_dir(fixture.cache(&outcome.version, ""))
             .unwrap()
@@ -306,7 +307,7 @@ fn batch_build_continues_after_one_system_has_malformed_config() {
         record(&good.join("state.toml"))["state"].as_str(),
         Some("complete")
     );
-    backend.check_subvolume(&good.join("root"), true).unwrap();
+    backend.check_subvolume(&good.join("root"), false).unwrap();
 }
 
 /// Verify lock contention allocates no version and executes no plugin.

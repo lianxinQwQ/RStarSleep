@@ -86,6 +86,7 @@ fn first_boot_captures_latest_data_once_and_survives_cache_invalidation() {
     let backend = SimulatedBackend::default();
     let first = pending(&fixture, &backend, &source, true);
     assert_eq!(first.root.file_name().unwrap(), "prepared-root");
+    backend.check_subvolume(&first.root, true).unwrap();
     assert_eq!(
         record(&first.root.parent().unwrap().join("state.toml"))["state"].as_str(),
         Some("pending-inheritance")
@@ -103,18 +104,20 @@ fn first_boot_captures_latest_data_once_and_survives_cache_invalidation() {
         fs::read_to_string(inherited.join("value")).unwrap(),
         "at-first-boot"
     );
-    backend.check_subvolume(&inherited, true).unwrap();
+    backend.check_subvolume(&root, false).unwrap();
+    backend.check_subvolume(&inherited, false).unwrap();
     assert_eq!(
         record(&root.parent().unwrap().join("state.toml"))["state"].as_str(),
         Some("complete")
     );
     fs::write(source.join("value"), "later").unwrap();
+    fs::write(inherited.join("value"), "runtime-edited").unwrap();
     let count = backend.snapshots.borrow().len();
     finalize(&first, &backend).unwrap();
     assert_eq!(backend.snapshots.borrow().len(), count);
     assert_eq!(
         fs::read_to_string(inherited.join("value")).unwrap(),
-        "at-first-boot"
+        "runtime-edited"
     );
     assert!(second.root.exists());
 }
@@ -170,8 +173,79 @@ fn published_root_can_repair_an_interrupted_status_update_but_not_a_mismatched_r
         record(&directory.join("state.toml"))["state"].as_str(),
         Some("complete")
     );
-    fs::write(directory.join("inheritance-commit.toml"), "wrong").unwrap();
+    let receipt_path = directory.join("inheritance-commit.toml");
+    let receipt = record(&receipt_path);
+    for field in ["manifest_sha256", "root_subvolume_id"] {
+        let mut mismatched = receipt.clone();
+        mismatched[field] = toml::Value::String("wrong".into());
+        fs::write(&receipt_path, toml::to_string(&mismatched).unwrap()).unwrap();
+        assert!(finalize(&outcome, &backend).is_err());
+    }
+    fs::write(&receipt_path, "wrong").unwrap();
     assert!(finalize(&outcome, &backend).is_err());
+}
+
+#[test]
+fn completed_writable_root_preserves_subvolume_changes_on_reboot() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let source = fixture.store.root().parent().unwrap().join("live-data");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("value"), "inherited").unwrap();
+    let backend = SimulatedBackend::default();
+    let outcome = pending(&fixture, &backend, &source, true);
+    finalize(&outcome, &backend).unwrap();
+    let root = outcome.root.parent().unwrap().join("root");
+    let inherited = root.join(source.strip_prefix("/").unwrap());
+    backend.delete_subvolume_recursive(&inherited).unwrap();
+    let runtime_data = root.join("runtime-data");
+    backend.create_subvolume(&runtime_data).unwrap();
+    fs::write(runtime_data.join("value"), "runtime change").unwrap();
+    fs::remove_dir_all(&source).unwrap();
+    let snapshots = backend.snapshots.borrow().len();
+
+    finalize(&outcome, &backend).unwrap();
+
+    assert_eq!(backend.snapshots.borrow().len(), snapshots);
+    assert!(!inherited.exists());
+    backend.check_subvolume(&root, false).unwrap();
+    backend.check_subvolume(&runtime_data, false).unwrap();
+    assert_eq!(
+        fs::read_to_string(runtime_data.join("value")).unwrap(),
+        "runtime change"
+    );
+}
+
+#[test]
+fn interrupted_publication_still_rejects_a_changed_subvolume_tree() {
+    for add_subvolume in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("live-data");
+        fs::create_dir(&source).unwrap();
+        let backend = SimulatedBackend::default();
+        let outcome = pending(&fixture, &backend, &source, true);
+        let directory = outcome.root.parent().unwrap();
+        let state = fs::read_to_string(directory.join("state.toml")).unwrap();
+        finalize(&outcome, &backend).unwrap();
+        fs::write(directory.join("state.toml"), state).unwrap();
+        let root = directory.join("root");
+        if add_subvolume {
+            backend.create_subvolume(&root.join("unexpected")).unwrap();
+        } else {
+            backend
+                .delete_subvolume_recursive(&root.join(source.strip_prefix("/").unwrap()))
+                .unwrap();
+        }
+
+        let error = finalize(&outcome, &backend).unwrap_err().to_string();
+
+        assert!(error.contains("最终根与继承提交记录不匹配"), "{error}");
+        assert_eq!(
+            record(&directory.join("state.toml"))["state"].as_str(),
+            Some("pending-inheritance")
+        );
+    }
 }
 
 #[test]
@@ -223,7 +297,7 @@ fn directory_subvolume_setting_and_recursive_existing_sources_are_honored() {
         &target.join("nested with spaces"),
         &target.join("nested with spaces/deep"),
     ] {
-        backend.check_subvolume(path, true).unwrap();
+        backend.check_subvolume(path, false).unwrap();
     }
     assert_eq!(
         fs::read_to_string(target.join("nested with spaces/deep/value")).unwrap(),
@@ -370,13 +444,15 @@ fn script_created_subvolumes_survive_cache_publication_and_first_boot_without_in
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
         .remove(0);
-    for root in [
-        fixture.cache(&outcome.version, "script"),
-        outcome.root.clone(),
+    for (root, readonly) in [
+        (fixture.cache(&outcome.version, "script"), true),
+        (outcome.root.clone(), false),
     ] {
-        backend.check_subvolume(&root.join("data"), true).unwrap();
         backend
-            .check_subvolume(&root.join("data/nested"), true)
+            .check_subvolume(&root.join("data"), readonly)
+            .unwrap();
+        backend
+            .check_subvolume(&root.join("data/nested"), readonly)
             .unwrap();
         assert_eq!(
             fs::read_to_string(root.join("data/nested/value")).unwrap(),
@@ -389,7 +465,7 @@ fn script_created_subvolumes_survive_cache_publication_and_first_boot_without_in
     finalize(&pending, &backend).unwrap();
     let root = pending.root.parent().unwrap().join("root");
     backend
-        .check_subvolume(&root.join("data/nested"), true)
+        .check_subvolume(&root.join("data/nested"), false)
         .unwrap();
     assert_eq!(
         fs::read_to_string(root.join("data/nested/value")).unwrap(),
@@ -416,7 +492,7 @@ fn ordinary_outer_directories_retain_internal_subvolumes_when_subvolume_creation
         .join(source.strip_prefix("/").unwrap());
     assert!(!target.join(MARKER).exists());
     backend
-        .check_subvolume(&target.join("inner"), true)
+        .check_subvolume(&target.join("inner"), false)
         .unwrap();
     assert_eq!(
         fs::read_to_string(target.join("inner/value")).unwrap(),

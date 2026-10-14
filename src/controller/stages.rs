@@ -410,9 +410,9 @@ impl<B: BuildBackend> Stages<'_, B> {
         let published = self.attempt.directory.join("root");
         progress::run(
             &self.context.system_id,
-            "发布最终只读系统根",
-            "Publish the final read-only system root",
-            || super::inheritance::snapshot_tree(self.backend, &cache, &published, true),
+            "发布最终可写系统根",
+            "Publish the final writable system root",
+            || super::inheritance::snapshot_tree(self.backend, &cache, &published, false),
         )?;
         Ok(BuildOutcome {
             system_id: self.context.system_id.clone(),
@@ -453,8 +453,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         )
     }
 
-    /// Publish the last committed step as the version's read-only root.
-    /// 将最后已提交步骤发布为版本只读根。
+    /// Publish the last committed step as the version's writable root.
+    /// 将最后已提交步骤发布为版本可写根。
     ///
     /// # Arguments
     ///
@@ -466,12 +466,12 @@ impl<B: BuildBackend> Stages<'_, B> {
         let root = self.attempt.directory.join("root");
         progress::run(
             &self.context.system_id,
-            "发布最终只读系统根",
-            "Publish the final read-only system root",
+            "发布最终可写系统根",
+            "Publish the final writable system root",
             || {
                 self.backend
-                    .snapshot_recursive(&completed.root, &root, true)?;
-                self.backend.check_subvolume(&root, true)
+                    .snapshot_recursive(&completed.root, &root, false)?;
+                self.backend.check_subvolume(&root, false)
             },
         )?;
         Ok(BuildOutcome {

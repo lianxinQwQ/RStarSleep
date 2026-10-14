@@ -178,7 +178,7 @@ fn publish_at(
     disk::rename(staging.path(), &directory).map_err(|e| fs::io(&directory, e))?;
     fs::sync(&parent)?;
     let text = format!(
-        "title RStarSleep {} {}\nlinux /RStarSleep/{}/{kernel}\n{initrds}options root=UUID={uuid} rootflags=subvol={} ro {}\n",
+        "title RStarSleep {} {}\nlinux /RStarSleep/{}/{kernel}\n{initrds}options root=UUID={uuid} rootflags=subvol={} rw {}\n",
         outcome.system_id,
         outcome.version,
         outcome.version,
@@ -389,7 +389,7 @@ mod tests {
         .unwrap();
         assert!(
             text.contains(
-                "rootflags=subvol=@RStarSleep/systems/desktop/versions/v00000001/root ro"
+                "rootflags=subvol=@RStarSleep/systems/desktop/versions/v00000001/root rw"
             )
         );
         assert!(text.contains("rstarsleep.storage=UUID=abc-123"));
@@ -461,7 +461,7 @@ mod tests {
         )
         .unwrap();
         let text = disk::read_to_string(&entry).unwrap();
-        assert!(text.contains("root=UUID=abc-123 rootflags=subvol=@RStarSleep/systems/desktop/versions/v00000001/root ro quiet"));
+        assert!(text.contains("root=UUID=abc-123 rootflags=subvol=@RStarSleep/systems/desktop/versions/v00000001/root rw quiet"));
         assert_eq!(
             disk::read(config.boot_dir.join("RStarSleep/v00000001/vmlinuz")).unwrap(),
             b"kernel"

@@ -48,13 +48,22 @@ fn cached_base_and_package_steps_both_maintain_and_preserve_dependencies() {
                 .destination
                 .ends_with("work/desktop/v00000001/root")
     }));
-    backend.check_subvolume(&first.root, true).unwrap();
+    backend.check_subvolume(&first.root, false).unwrap();
     backend
         .check_subvolume(&fixture.cache(&first.version, "base-system"), true)
         .unwrap();
     backend
         .check_subvolume(&fixture.cache(&first.version, "packages"), true)
         .unwrap();
+    fs::write(first.root.join("runtime-only"), "runtime change").unwrap();
+    for stage in ["base-system", "packages", "script"] {
+        assert!(
+            !fixture
+                .cache(&first.version, stage)
+                .join("runtime-only")
+                .exists()
+        );
+    }
     let old_inventory = SimulatedBackend::inventory(&first.root);
     assert!(
         record(&fixture.cache(&first.version, "base-system.toml"))
@@ -110,7 +119,9 @@ fn cached_base_and_package_steps_both_maintain_and_preserve_dependencies() {
         record(&fixture.cache(&second.version, "packages.toml"))["source_version"].as_str(),
         Some("v00000001")
     );
-    backend.check_subvolume(&second.root, true).unwrap();
+    backend.check_subvolume(&second.root, false).unwrap();
+    assert!(first.root.join("runtime-only").exists());
+    assert!(!second.root.join("runtime-only").exists());
     fixture.cleaned(&second.version);
 }
 

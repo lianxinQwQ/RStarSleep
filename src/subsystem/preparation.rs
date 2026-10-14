@@ -281,7 +281,7 @@ pub fn prepare_with_backend(
     }
     let source = version_directory.join("root");
     checked(&source)?;
-    backend.check_subvolume(&source, true)?;
+    backend.check_subvolume(&source, false)?;
     #[derive(Serialize)]
     struct BootPolicy<'a> {
         mounts: &'a [RuntimeMount],
