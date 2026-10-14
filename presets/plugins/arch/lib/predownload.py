@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Prepare shared official package closures and a locally built AUR repository."""
-import base64
 import hashlib
 import importlib.util
 import json
@@ -28,6 +27,12 @@ CACHE_FORMAT = 1
 _cache_spec = importlib.util.spec_from_file_location("rstarsleep_aur_cache", Path(__file__).with_name("aur_cache.py"))
 aur_cache = importlib.util.module_from_spec(_cache_spec)
 _cache_spec.loader.exec_module(aur_cache)
+_metadata_spec = importlib.util.spec_from_file_location("rstarsleep_package_metadata", Path(__file__).with_name("package_metadata.py"))
+package_metadata = importlib.util.module_from_spec(_metadata_spec)
+_metadata_spec.loader.exec_module(package_metadata)
+_verification_spec = importlib.util.spec_from_file_location("rstarsleep_official_cache", Path(__file__).with_name("official_cache.py"))
+official_cache = importlib.util.module_from_spec(_verification_spec)
+_verification_spec.loader.exec_module(official_cache)
 
 
 class PreparationError(Exception):
@@ -237,6 +242,7 @@ class Preparer:
         self.bases, self.states, self.artifacts = {}, {}, {}
         self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
+        self.verification = official_cache.OfficialPackageCache(self.repo, self.arch, self.official_conf, run, self.file_digest)
         self.planned_transactions = {}
         self.aur_devel, self.aur_rebuild = self.cache_options()
         self.cache_records = None
@@ -301,6 +307,7 @@ class Preparer:
                     if fields.get("FILENAME"):
                         fields["RSTAR_REPOSITORY"] = [database.name.removesuffix(".db")]
                         self.official_metadata.setdefault(fields["FILENAME"][0], fields)
+        self.metadata = package_metadata.MetadataIndex(self.official_metadata, self.root / "state/sources", report=log)
         self.refresh_repo()
         if planning:
             return
@@ -332,6 +339,13 @@ class Preparer:
     def official_target(self, requirement):
         """Classify targets from loaded metadata without resolving each closure."""
         source, _ = target_parts(requirement)
+        if source == "aur":
+            return False
+        if hasattr(self, "metadata"):
+            found = self.metadata.official_target(requirement, satisfies_version)
+            if source is not None and not found:
+                raise PreparationError(f"target unavailable in selected repository: {requirement}")
+            return found
         if source is not None:
             return self.official(requirement) is not None
         name = spec(requirement)[0]
@@ -352,7 +366,8 @@ class Preparer:
         selected, visited, pending = {}, set(), []
 
         def select(requirement):
-            official = self.official_target(requirement) if prepare else self.official(requirement) is not None
+            official = (self.official_target(requirement) if prepare or hasattr(self, "metadata")
+                        else self.official(requirement) is not None)
             if official:
                 return
             base = self.aur(requirement)
@@ -438,9 +453,22 @@ class Preparer:
                 self.official_conf = original_configuration
                 database.unlink(missing_ok=True)
 
-    def fetch(self, filenames):
+    def fetch(self, filenames, force=False):
         filenames = set(filenames)
-        pending = filenames - self.files
+        pending = filenames if force else filenames - self.files
+        if not pending:
+            return
+        try:
+            self.verification.activate()
+            reused = {name for name in pending if not force and self.verification.reusable(
+                name, self.official_metadata[name], self.cache / name)}
+        except official_cache.VerificationError as error:
+            raise PreparationError(str(error)) from error
+        pending -= reused
+        self.files.update(reused)
+        if reused:
+            log(f"按摘要复用已验签官方包：{len(reused)} 个文件",
+                f"Reuse verified official packages by checksum: {len(reused)} files")
         batches = []
         for filename in sorted(pending):
             metadata = self.official_metadata.get(filename, {})
@@ -473,6 +501,11 @@ class Preparer:
         for name in filenames:
             if not (self.cache / name).is_file():
                 raise PreparationError(f"missing downloaded package: {name}")
+        try:
+            for name in pending:
+                self.verification.verified(name, self.official_metadata[name], self.cache / name)
+        except official_cache.VerificationError as error:
+            raise PreparationError(str(error)) from error
         self.files.update(filenames)
         if batches:
             log(f"本阶段官方包准备完成：{len(pending)} 个新校验文件",
@@ -533,6 +566,19 @@ class Preparer:
 
     def aur(self, requirement):
         name = spec(requirement)[0]
+        if hasattr(self, "metadata"):
+            candidates = self.metadata.aur_candidates(name)
+            if candidates is not None:
+                matches = set()
+                for candidate in candidates:
+                    base = self.load_base(candidate)
+                    if any(self.artifact_satisfies(dict(name=package, version=base["version"],
+                                                       provides=base["provides"][package]), requirement)
+                           for package in base["packages"]):
+                        matches.add(base["name"])
+                if len(matches) != 1:
+                    raise PreparationError(f"missing or ambiguous AUR provider for {requirement}: {sorted(matches)}")
+                return self.load_base(matches.pop())
         info = self.rpc("info", name)
         if info:
             return self.load_base(info[0]["PackageBase"])
@@ -888,8 +934,20 @@ class Preparer:
         log(f"AUR 构建汇总：复用 {counts['reused']}，重建 {counts['built']} 个 pkgbase",
             f"AUR build summary: reused {counts['reused']}, rebuilt {counts['built']} pkgbases")
         files = self.files | {p["filename"] for values in self.artifacts.values() for p in values}
-        log(f"最终校验软件包摘要和官方签名：{len(files)} 个文件",
-            f"Final package checksum and official signature verification (files: {len(files)})")
+        if self.files:
+            try:
+                context = self.verification.read_context()
+                if context != self.verification.context:
+                    self.verification.context = context
+                    self.fetch(self.files, force=True)
+                else:
+                    expired = {name for name in self.files if self.verification.expired(name)}
+                    if expired:
+                        self.fetch(expired, force=True)
+            except official_cache.VerificationError as error:
+                raise PreparationError(str(error)) from error
+        log(f"最终校验软件包摘要：{len(files)} 个文件",
+            f"Final package checksum verification (files: {len(files)})")
         hashes = {}
         for index, name in enumerate(sorted(files), 1):
             digest = hashlib.sha256()
@@ -901,23 +959,14 @@ class Preparer:
                 metadata = self.official_metadata.get(name)
                 if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
                     raise PreparationError(f"official package checksum mismatch: {name}")
-                signatures = metadata.get("PGPSIG", [])
-                if signatures:
-                    if len(signatures) != 1:
-                        raise PreparationError(f"ambiguous official package signature: {name}")
-                    signature = self.work / "verify.sig"
-                    signature.write_bytes(base64.b64decode(signatures[0], validate=True))
-                else:
-                    # Repositories such as archlinuxcn publish detached signatures.
-                    # Pacman downloads and retains them alongside the package.
-                    signature = self.cache / f"{name}.sig"
-                    if not signature.is_file() or not signature.stat().st_size:
-                        raise PreparationError(f"official package signature missing: {name}")
-                run(["pacman-key", "--config", self.official_conf, "--verify", signature, self.cache / name])
             if index % 25 == 0 or index == len(files):
                 log(f"最终校验进度：{index}/{len(files)}", f"Final verification progress: {index}/{len(files)}")
         log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
+        if self.files and (self.verification.read_context() != self.verification.context
+                           or any(self.verification.expired(name) for name in self.files)):
+            raise PreparationError("Signing trust changed during package verification; retry preparation")
         self.save_sync()
+        atomic_json(self.verification.path, self.verification.value())
         atomic_json(self.repo / ".prepared.json", dict(format=1, architecture=self.arch, requested=requested, packages=hashes, aur=self.artifacts))
         log(f"预下载及 AUR 准备完成：{len(files)} 个软件包文件", f"Predownload and AUR preparation complete: {len(files)} package files")
 

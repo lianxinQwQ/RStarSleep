@@ -50,6 +50,8 @@ class Incremental(unittest.TestCase):
         p.user = Mock(side_effect=AssertionError("unexpected source command"))
         p.makepkg = Mock(side_effect=lambda checkout, args: self.compile(p, args))
         p.files, p.official_metadata = set(), {}
+        p.verification = arch.official_cache.OfficialPackageCache(
+            p.repo, p.arch, p.work / "official.conf", arch.run, p.file_digest)
         p.save_sync = Mock()
         for key, value in options.items():
             setattr(p, key, value)

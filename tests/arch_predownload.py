@@ -149,6 +149,7 @@ class Protocol(unittest.TestCase):
         p.cache = Path(cache)
         p.keyring_targets = []
         p.files, p.resolutions = set(), {}
+        p.verification = Mock(reusable=Mock(return_value=False))
         p.official_metadata = {
             filename: {"NAME": [name], "VERSION": [version]}
             for filename, name, version in packages
@@ -441,6 +442,8 @@ class Protocol(unittest.TestCase):
             p = arch.Preparer.__new__(arch.Preparer)
             p.cache = p.repo = p.work = Path(temporary)
             p.files, p.artifacts = {"pkg"}, {}
+            p.verification = Mock(context={"fingerprint": "fixture", "expires": 0}, expired=Mock(return_value=False))
+            p.verification.read_context.return_value = p.verification.context
             (p.cache / "pkg").write_text("corrupted")
             p.official_metadata = {"pkg": {"SHA256SUM": ["0" * 64]}}
             with self.assertRaisesRegex(arch.PreparationError, "checksum mismatch"):
@@ -622,6 +625,7 @@ class OfflinePacman(unittest.TestCase):
                 path.mkdir(parents=True)
             p = arch.Preparer.__new__(arch.Preparer)
             p.cache, p.files, p.resolutions, p.official_metadata = cache, set(), {}, {}
+            p.verification = Mock(reusable=Mock(return_value=False))
             config = "[options]\nArchitecture = x86_64\nSigLevel = Never\n"
             repositories = {
                 "primary": [
@@ -843,6 +847,8 @@ class PackagePlans(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             preparer = arch.Preparer.__new__(arch.Preparer)
             preparer.keyring_targets = []
+            preparer.root = Path(temporary) / "plugin"
+            preparer.official_metadata = {}
             preparer.db = Path(temporary) / "db"
             (preparer.db / "sync").mkdir(parents=True)
             preparer.actual_db = Path(temporary) / "actual"
@@ -864,6 +870,7 @@ class PackagePlans(unittest.TestCase):
             preparer.root = Path(temporary) / "plugin"
             preparer.official_conf = Path(temporary) / "official.conf"
             preparer.keyring_targets = ["custom/custom-keyring"]
+            preparer.official_metadata = {}
             preparer.db = Path(temporary) / "db"
             preparer.actual_db = Path(temporary) / "actual"
             (preparer.actual_db / "sync").mkdir(parents=True)
@@ -881,109 +888,6 @@ class PackagePlans(unittest.TestCase):
             self.assertIn("prepare_repository_keyrings", run.call_args.args[0][2])
 
 
-class FinalRepositorySignatures(unittest.TestCase):
-    """Repositories may publish detached signatures instead of embedding PGPSIG."""
-
-    def fixture(self, embedded=None, detached=None):
-        temporary = tempfile.TemporaryDirectory(prefix="arch final signature ")
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        preparer = arch.Preparer.__new__(arch.Preparer)
-        preparer.work, preparer.cache, preparer.repo = [root / name for name in ("work", "cache", "repository")]
-        for directory in (preparer.work, preparer.cache, preparer.repo):
-            directory.mkdir()
-        preparer.arch, preparer.artifacts = "x86_64", {}
-        preparer.official_conf = root / "official.conf"
-        preparer.official_conf.write_text("[options]\nSigLevel = Required DatabaseOptional\n")
-        filename = "fixture-1-1-any.pkg.tar.zst"
-        package = preparer.cache / filename
-        package.write_bytes(b"signed repository package fixture\n")
-        metadata = {"SHA256SUM": [hashlib.sha256(package.read_bytes()).hexdigest()]}
-        if embedded is not None:
-            metadata["PGPSIG"] = [arch.base64.b64encode(embedded).decode()]
-        if detached is not None:
-            (preparer.cache / f"{filename}.sig").write_bytes(detached)
-        preparer.files, preparer.official_metadata = {filename}, {filename: metadata}
-        preparer.save_sync = Mock()
-        return preparer, package
-
-    def assert_not_published(self, preparer):
-        preparer.save_sync.assert_not_called()
-        self.assertFalse((preparer.repo / ".prepared.json").exists())
-
-    def test_embedded_signature_is_verified_with_the_official_configuration(self):
-        preparer, package = self.fixture(embedded=b"embedded signature", detached=b"unused detached signature")
-        with patch.object(arch, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-            preparer.finish(["fixture"])
-        signature = preparer.work / "verify.sig"
-        self.assertEqual(signature.read_bytes(), b"embedded signature")
-        run.assert_called_once_with(["pacman-key", "--config", preparer.official_conf,
-                                     "--verify", signature, package])
-        self.assertTrue((preparer.repo / ".prepared.json").is_file())
-
-    def test_detached_cached_signature_is_verified_when_pgpsig_is_absent(self):
-        preparer, package = self.fixture(detached=b"detached signature")
-        signature = package.with_name(f"{package.name}.sig")
-        with patch.object(arch, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-            preparer.finish(["fixture"])
-        run.assert_called_once_with(["pacman-key", "--config", preparer.official_conf,
-                                     "--verify", signature, package])
-        self.assertEqual(signature.read_bytes(), b"detached signature")
-        self.assertTrue((preparer.repo / ".prepared.json").is_file())
-
-    def test_missing_embedded_and_detached_signature_fails_without_publishing(self):
-        preparer, _ = self.fixture()
-        with patch.object(arch, "run") as run:
-            with self.assertRaisesRegex(arch.PreparationError, "signature missing"):
-                preparer.finish(["fixture"])
-        run.assert_not_called()
-        self.assert_not_published(preparer)
-
-    def test_signature_verifier_failure_fails_without_publishing(self):
-        preparer, _ = self.fixture(detached=b"invalid signature")
-        with patch.object(arch, "run", side_effect=arch.PreparationError("invalid signature")):
-            with self.assertRaisesRegex(arch.PreparationError, "invalid signature"):
-                preparer.finish(["fixture"])
-        self.assert_not_published(preparer)
-
-    @unittest.skipUnless(shutil.which("gpg") and shutil.which("gpgv"), "GnuPG is unavailable")
-    def test_real_detached_signature_and_corrupt_signature_with_matching_package_checksum(self):
-        preparer, package = self.fixture()
-        home = preparer.work / "gnupg"
-        home.mkdir(mode=0o700)
-        gpg = [shutil.which("gpg"), "--no-options", "--homedir", str(home), "--batch",
-               "--pinentry-mode", "loopback", "--passphrase", ""]
-        result = subprocess.run([*gpg, "--quick-generate-key", "Repository fixture <fixture@example.invalid>",
-                                 "ed25519", "sign", "1d"], text=True, capture_output=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        if shutil.which("gpgconf"):
-            self.addCleanup(subprocess.run, [shutil.which("gpgconf"), "--homedir", str(home), "--kill", "gpg-agent"],
-                            text=True, capture_output=True, timeout=10)
-        signature = package.with_name(f"{package.name}.sig")
-        subprocess.run([*gpg, "--output", str(signature), "--detach-sign", str(package)],
-                       text=True, capture_output=True, check=True, timeout=10)
-        keyring = preparer.work / "public.gpg"
-        keyring.write_bytes(subprocess.run([*gpg, "--export"], capture_output=True, check=True).stdout)
-
-        def verify(argv):
-            self.assertEqual(argv[:4], ["pacman-key", "--config", preparer.official_conf, "--verify"])
-            result = subprocess.run([shutil.which("gpgv"), "--homedir", str(home), "--keyring", str(keyring),
-                                     *map(str, argv[-2:])], text=True, capture_output=True, timeout=10)
-            if result.returncode:
-                raise arch.PreparationError(f"invalid signature: {result.stderr}")
-            return result
-
-        with patch.object(arch, "run", side_effect=verify):
-            preparer.finish(["fixture"])
-        self.assertTrue((preparer.repo / ".prepared.json").is_file())
-        (preparer.repo / ".prepared.json").unlink()
-        preparer.save_sync.reset_mock()
-        contents = signature.read_bytes()
-        signature.write_bytes(contents[:-1] + bytes([contents[-1] ^ 1]))
-        with patch.object(arch, "run", side_effect=verify):
-            with self.assertRaisesRegex(arch.PreparationError, "invalid signature"):
-                preparer.finish(["fixture"])
-        self.assert_not_published(preparer)
 
 
 if __name__ == "__main__":

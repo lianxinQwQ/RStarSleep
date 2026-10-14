@@ -776,6 +776,8 @@ fn identity_operations_reject_invalid_inputs_and_directory_links() {
 fn arch_preparation_protocol_handles_dependencies_providers_and_corruption() {
     for script in [
         "arch_predownload.py",
+        "arch_official_cache.py",
+        "arch_package_metadata.py",
         "arch_aur_cache.py",
         "arch_keyrings.py",
     ] {
