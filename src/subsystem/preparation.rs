@@ -413,6 +413,7 @@ fn mount_arguments(
                 source.display()
             )));
         }
+        crate::config::validate_inheritance_type(&target, fs::metadata(&source)?.is_dir())?;
         mounts.push(RuntimeMount {
             source,
             target,

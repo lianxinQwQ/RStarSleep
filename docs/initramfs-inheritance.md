@@ -8,12 +8,16 @@
 Timing=initramfs
 DirectorySubvolume=yes
 CopyOnWrite=/etc/hostname
-CopyOnWrite=/home/alice
-CopyOnWrite=/var/lib/myapp
+CopyOnWrite=/home/alice/
+CopyOnWrite=/var/lib/myapp/
 ```
 
 `Timing` 只接受 `build`、`initramfs`，默认 `build`；`DirectorySubvolume` 只接受
 `yes`、`no`，默认 `yes`。两项均为单次赋值，不支持通过重复赋值覆盖。
+
+继承路径必须以 `/` 开头；目录必须以 `/` 结尾，普通文件不能以 `/` 结尾。末尾 `/`
+声明路径类型，构建准备清单和首次启动时均核验，内部挂载的目录映射也保留此标记。
+`Mount` 首次初始化时核验来源，复用时核验持久对象，不要求当前来源仍存在。
 
 继承不设置 `/boot`、`/usr`、内核模块或包数据库等路径黑名单。CLI 在构建开始前
 展示继承路径及策略，给出 3 秒 Ctrl+C 取消时间，之后才同步管理器、分配版本或清理缓存。

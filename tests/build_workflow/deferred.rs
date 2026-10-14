@@ -13,9 +13,10 @@ fn pending(
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nTiming=initramfs\nDirectorySubvolume={}\nCopyOnWrite={}\n",
+            "[Inheritance]\nTiming=initramfs\nDirectorySubvolume={}\nCopyOnWrite={}{}\n",
             if subvolumes { "yes" } else { "no" },
-            source.display()
+            source.display(),
+            if source.is_dir() { "/" } else { "" }
         ),
     )
     .unwrap();
@@ -37,6 +38,42 @@ fn finalize(
         Path::new("/"),
         backend,
     )
+}
+
+#[test]
+fn first_boot_rejects_manifest_target_with_mismatched_type_marker() {
+    for directory in [true, false] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("live-source");
+        if directory {
+            fs::create_dir(&source).unwrap();
+        } else {
+            fs::write(&source, "file").unwrap();
+        }
+        let backend = SimulatedBackend::default();
+        let outcome = pending(&fixture, &backend, &source, true);
+        let version = outcome.root.parent().unwrap();
+        let path = version.join("inheritance-pending.toml");
+        let mut manifest = record(&path);
+        manifest["sources"][0]["target"] = toml::Value::String(format!(
+            "{}{}",
+            source.display(),
+            if directory { "" } else { "/" },
+        ));
+        fs::write(&path, toml::to_string(&manifest).unwrap()).unwrap();
+        let error = finalize(&outcome, &backend).unwrap_err().to_string();
+        assert!(
+            error.contains(if directory {
+                "继承目录路径必须以 / 结尾"
+            } else {
+                "继承文件路径不能以 / 结尾"
+            }),
+            "{error}"
+        );
+        assert!(!version.join("root").exists());
+        assert!(!version.join("inheritance-staging").exists());
+    }
 }
 
 #[test]
@@ -288,7 +325,7 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
-        "[Inheritance]\nTiming=initramfs\nCopyOnWrite=/boot\nCopyOnWrite=/usr/lib/modules\n",
+        "[Inheritance]\nTiming=initramfs\nCopyOnWrite=/boot/\nCopyOnWrite=/usr/lib/modules/\n",
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))

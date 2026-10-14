@@ -244,7 +244,7 @@ impl ConfigStore {
             write_default(&layout.config.join(BUILD_CONFIG_PATH), BUILD_DEFAULT)?;
             write_default(
                 &layout.config.join("build/inherit.conf"),
-                "# Inherit data from the running system after scripts.\n# 脚本后从运行系统继承数据。\n[Inheritance]\n# Timing=build\n# DirectorySubvolume=yes\n# CopyOnWrite=/absolute/path\n# Mount=/absolute/path\n",
+                "# Inherit data from the running system after scripts.\n# 脚本后从运行系统继承数据。\n[Inheritance]\n# Timing=build\n# DirectorySubvolume=yes\n# Directory paths must end with /; file paths must not.\n# 目录路径必须以 / 结尾，文件路径不能以 / 结尾。\n# CopyOnWrite=/absolute/directory/\n# CopyOnWrite=/absolute/file\n# Mount=/absolute/directory/\n# Mount=/absolute/file\n",
             )?;
         }
         write_default(

@@ -212,16 +212,18 @@ DirectorySubvolume=yes
 # 每次从当前运行系统复制到新版本。
 CopyOnWrite=/etc/hostname
 CopyOnWrite=
-    /home/alice
-    /var/lib/myapp
+    /home/alice/
+    /var/lib/myapp/
 # Initialize once in this system's persistent storage, then reuse it.
 # 在本系统 persistent 中首次初始化，之后复用。
-Mount=/srv/data
+Mount=/srv/data/
 Mount=/etc/myapp.conf
 ```
 
-每行登记一个规范绝对路径，支持重复赋值和多行值；路径不能为 `/`、重复、相互包含，
-或在 `/` 全部替换成 `-` 后发生名称冲突。
+每行登记一个规范绝对路径，支持重复赋值和多行值。路径必须以 `/` 开头：目录必须以 `/`
+结尾，普通文件不能以 `/` 结尾；执行继承时校验实际类型。路径不能为 `/`，不能包含
+`//`、`.` 或 `..` 路径段，也不能重复、相互包含，或去掉目录末尾 `/` 后将其余 `/`
+替换成 `-` 时发生名称冲突。
 
 `CopyOnWrite` 默认在软件和 script 之后从当前运行系统继承，要求来源与构建目录的
 Btrfs UUID 相同。文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时
@@ -235,7 +237,8 @@ Btrfs UUID 相同。文件强制 reflink；目录默认在目标位置创建独�
 可按 Ctrl+C 取消。内核和 initramfs 固定使用构建时产物，继承后的兼容性由用户负责。
 配置、依赖、提交恢复及验证范围见 [首次启动继承说明](docs/initramfs-inheritance.md)。
 
-`Mount` 使用本系统 `persistent/<编码路径>`，例如 `/home/alice` 对应 `-home-alice`。
+`Mount` 使用本系统 `persistent/<编码路径>`，编码前去掉目录末尾 `/`，例如 `/home/alice/`
+对应 `-home-alice`。复用时按持久对象校验路径类型，不要求当前来源仍存在。
 项目不存在时从当前系统完整复制，存在时直接复用，即使当前来源已不存在也不重新复制。
 允许来源跨分区、包含挂载点或子卷，并输出 Warning；跨分区首次复制允许普通复制。
 目录保存为可写 Btrfs 子卷，文件保存为普通文件。新根的底层目录内容保留到实际挂载，

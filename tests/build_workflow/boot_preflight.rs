@@ -186,7 +186,7 @@ fn build_time_cow_empty_cow_and_mount_only_skip_initramfs_requirements() {
             fs::write(
                 &path,
                 format!(
-                    "[Inheritance]\nTiming=initramfs\nMount={}\n",
+                    "[Inheritance]\nTiming=initramfs\nMount={}/\n",
                     source.display()
                 ),
             )

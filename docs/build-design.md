@@ -587,13 +587,14 @@ script 只消费本次软件输出，inherit 只消费本次 script 输出，两
 [Inheritance]
 CopyOnWrite=/etc/hostname
 CopyOnWrite=
-    /home/alice
-    /var/lib/myapp
-Mount=/srv/data
+    /home/alice/
+    /var/lib/myapp/
+Mount=/srv/data/
 Mount=/etc/myapp.conf
 ```
 
-重复赋值和多行值均支持，每行一个规范绝对路径。不接受 `/`、重复、相互包含、
+重复赋值和多行值均支持，每行一个规范绝对路径，必须以 `/` 开头，目录必须以 `/`
+结尾，普通文件不能以 `/` 结尾；继承时核验实际类型。不接受 `/`、`//`、`.` 路径段、重复、相互包含、
 控制字符、父级跳转或编码名称冲突；来源不能包含目标管理存储，顶层来源解析为普通文件或目录。
 Mount 还不能遮盖 `/rstarsleep`、`/run/rstarsleep`，路径不得包含 nspawn 绑定分隔字符 `:`、`\`。
 
@@ -611,9 +612,9 @@ initramfs 模式完成软件、脚本及 Mount 配置后，主系统由核心打
 路径不设黑名单，构建前提供 3 秒 Ctrl+C 取消时间；启动内核及 initramfs 保持构建时产物，
 兼容性由用户负责。详细协议见 [首次启动继承](initramfs-inheritance.md)。
 
-Mount 的路径把所有 `/` 替换为 `-`，包括开头斜杠，例如 `/home/alice` 对应
+Mount 的路径先去掉声明目录的末尾 `/`，再把其余 `/` 替换为 `-`，包括开头斜杠，例如 `/home/alice/` 对应
 `systems/<系统>/persistent/-home-alice`。不存在时从当前运行系统首次复制；存在时直接复用，
-即使当前来源已经不存在也不复制。来源可以跨分区、包含内部挂载点或子卷，输出 Warning，
+即使当前来源已经不存在也不复制；复用时按持久对象核验路径类型。来源可以跨分区、包含内部挂载点或子卷，输出 Warning，
 首次复制允许普通复制。目录初始化为可写 Btrfs 子卷，文件为普通文件，不随版本清理删除。
 新根保留挂载点的底层内容，确保 `/usr` 等路径仍能提供工具。在挂载插件和包查询期间，
 这些持久项目绑定到目标系统；继承 `/etc` 时把最终 fstab 同步到新根。

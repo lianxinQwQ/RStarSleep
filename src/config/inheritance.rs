@@ -57,8 +57,8 @@ fn scalar<'a>(key: &str, values: &'a [String]) -> Result<&'a str> {
     }
 }
 
-/// Encode every slash, including the leading one, in persistent object names.
-/// 对持久对象名称中的全部斜杠编码，包括开头的斜杠。
+/// Encode slashes after removing the directory type marker from persistent object names.
+/// 去掉声明目录的末尾斜杠后，对其余斜杠编码，包括开头的斜杠。
 /// # Arguments
 /// - `path`: Normalized absolute inheritance source. 规范绝对继承来源。
 /// # Errors
@@ -68,7 +68,7 @@ pub fn inheritance_name(path: &Path) -> Result<String> {
     let text = path
         .to_str()
         .ok_or_else(|| Error::Invalid("继承路径必须为 UTF-8".into()))?;
-    if !path.is_absolute()
+    if !text.starts_with('/')
         || path == Path::new("/")
         || text.chars().any(char::is_control)
         || path
@@ -77,13 +77,31 @@ pub fn inheritance_name(path: &Path) -> Result<String> {
         || text.contains("//")
         || text.contains("/./")
         || text.ends_with("/.")
-        || text.ends_with('/')
     {
         return Err(Error::Invalid(format!(
             "继承项目必须为规范绝对路径且不能为 /: {text:?}"
         )));
     }
-    Ok(text.replace('/', "-"))
+    Ok(text.trim_end_matches('/').replace('/', "-"))
+}
+
+/// Check the configured directory marker against the object used for inheritance.
+/// 按继承时实际使用的对象类型核验配置中的目录标记，不访问文件系统。
+pub(crate) fn validate_inheritance_type(path: &Path, directory: bool) -> Result<()> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| Error::Invalid("继承路径必须为 UTF-8".into()))?;
+    if directory != text.ends_with('/') {
+        return Err(Error::Invalid(format!(
+            "{}: {text:?}",
+            if directory {
+                "继承目录路径必须以 / 结尾"
+            } else {
+                "继承文件路径不能以 / 结尾"
+            }
+        )));
+    }
+    Ok(())
 }
 
 impl InheritanceConfig {
@@ -176,6 +194,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn directory_markers_preserve_names_and_require_matching_types() {
+        for (text, directory, name) in [
+            ("/home/alice/", true, "-home-alice"),
+            ("/etc/hostname", false, "-etc-hostname"),
+        ] {
+            let path = Path::new(text);
+            assert_eq!(inheritance_name(path).unwrap(), name);
+            assert!(validate_inheritance_type(path, directory).is_ok());
+            assert!(validate_inheritance_type(path, !directory).is_err());
+        }
+        for text in [
+            "relative/",
+            "/",
+            "//",
+            "/home//alice/",
+            "/home/./alice/",
+            "/home/alice/./",
+            "/home/alice/.",
+            "/home/../alice/",
+            "/home/alice\n/",
+        ] {
+            assert!(
+                inheritance_name(Path::new(text)).is_err(),
+                "accepted {text:?}"
+            );
+        }
+        assert_eq!(
+            inheritance_name(Path::new("/home/alice/")).unwrap(),
+            inheritance_name(Path::new("/home/alice")).unwrap(),
+        );
+    }
+
+    #[test]
     fn timing_and_directory_options_are_scalar_and_allow_kernel_paths() {
         let default = InheritanceConfig::read(&PluginParameters::default()).unwrap();
         assert_eq!(default.timing, InheritanceTiming::Build);
@@ -190,7 +241,7 @@ mod tests {
         );
         parameters.lists.insert(
             "RSTAR_INHERITANCE_COPYONWRITE".into(),
-            vec!["/boot".into(), "/usr/lib/modules".into()],
+            vec!["/boot/".into(), "/usr/lib/modules/".into()],
         );
         let parsed = InheritanceConfig::read(&parameters).unwrap();
         assert_eq!(parsed.timing, InheritanceTiming::Initramfs);
@@ -219,8 +270,9 @@ mod tests {
             vec!["relative"],
             vec!["/"],
             vec!["/home/./user"],
-            vec!["/home", "/home/user"],
-            vec!["/a-b/c", "/a/b-c"],
+            vec!["/home/", "/home/user/"],
+            vec!["/home/user/", "/home/user"],
+            vec!["/a-b/c/", "/a/b-c/"],
             vec!["/run"],
             vec!["/rstarsleep"],
             vec!["/srv/data:other"],
@@ -240,13 +292,13 @@ mod tests {
         let parameters = PluginParameters {
             lists: BTreeMap::from([(
                 "RSTAR_INHERITANCE_COPYONWRITE".into(),
-                vec!["\n/home/user\n/etc/hostname".into()],
+                vec!["\n/home/user/\n/etc/hostname".into()],
             )]),
             ..Default::default()
         };
         assert_eq!(
             InheritanceConfig::read(&parameters).unwrap().copy_on_write,
-            [PathBuf::from("/home/user"), PathBuf::from("/etc/hostname")]
+            [PathBuf::from("/home/user/"), PathBuf::from("/etc/hostname")]
         );
     }
 }

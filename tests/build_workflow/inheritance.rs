@@ -21,7 +21,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nCopyOnWrite={}\nCopyOnWrite={}\n",
+            "[Inheritance]\nCopyOnWrite={}/\nCopyOnWrite={}\n",
             source.display(),
             file.display()
         ),
@@ -88,7 +88,7 @@ fn mount_data_is_seeded_once_and_reused_without_overwriting_changes() {
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nMount={}\nMount={}\n",
+            "[Inheritance]\nMount={}/\nMount={}\n",
             source.display(),
             file.display()
         ),
@@ -147,7 +147,7 @@ fn failed_inheritance_keeps_completed_software_and_script_caches() {
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
-        format!("[Inheritance]\nCopyOnWrite={}\n", source.display()),
+        format!("[Inheritance]\nCopyOnWrite={}/\n", source.display()),
     )
     .unwrap();
     let backend = SimulatedBackend::default();
@@ -163,4 +163,108 @@ fn failed_inheritance_keeps_completed_software_and_script_caches() {
             .join(format!("inherit-{}", inheritance_name(&source).unwrap()))
             .exists()
     );
+}
+
+#[test]
+fn inheritance_rejects_mismatched_directory_markers_before_publication() {
+    for (key, timing) in [
+        ("CopyOnWrite", "build"),
+        ("CopyOnWrite", "initramfs"),
+        ("Mount", "build"),
+    ] {
+        for directory in [true, false] {
+            let fixture = Fixture::new();
+            fixture.system("desktop", &[]);
+            let source = fixture.store.root().parent().unwrap().join("source");
+            if directory {
+                fs::create_dir(&source).unwrap();
+            } else {
+                fs::write(&source, "file").unwrap();
+            }
+            let layout = fixture.store.system_layout("desktop").unwrap();
+            fs::write(
+                layout.config.join("build/inherit.conf"),
+                format!(
+                    "[Inheritance]\nTiming={timing}\n{key}={}{}\n",
+                    source.display(),
+                    if directory { "" } else { "/" },
+                ),
+            )
+            .unwrap();
+            let backend = SimulatedBackend::default();
+            let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(if directory {
+                    "继承目录路径必须以 / 结尾"
+                } else {
+                    "继承文件路径不能以 / 结尾"
+                }),
+                "{key} {timing}: {error}"
+            );
+            assert!(!layout.versions.join("v00000001/root").exists());
+        }
+    }
+}
+
+#[test]
+fn reused_mount_checks_persistent_type_even_when_original_source_is_missing() {
+    for directory in [true, false] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("mount-source");
+        if directory {
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("value"), "kept").unwrap();
+        } else {
+            fs::write(&source, "kept").unwrap();
+        }
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        let config = layout.config.join("build/inherit.conf");
+        fs::write(
+            &config,
+            format!(
+                "[Inheritance]\nMount={}{}\n",
+                source.display(),
+                if directory { "/" } else { "" },
+            ),
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+        let persistent = layout.persistent.join(inheritance_name(&source).unwrap());
+        if directory {
+            fs::remove_dir_all(&source).unwrap();
+        } else {
+            fs::remove_file(&source).unwrap();
+        }
+        fs::write(
+            &config,
+            format!(
+                "[Inheritance]\nMount={}{}\n",
+                source.display(),
+                if directory { "" } else { "/" },
+            ),
+        )
+        .unwrap();
+        let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(if directory {
+                "继承目录路径必须以 / 结尾"
+            } else {
+                "继承文件路径不能以 / 结尾"
+            }),
+            "{error}"
+        );
+        let data = if directory {
+            persistent.join("value")
+        } else {
+            persistent
+        };
+        assert_eq!(fs::read_to_string(data).unwrap(), "kept");
+        assert!(!layout.versions.join("v00000002/root").exists());
+    }
 }

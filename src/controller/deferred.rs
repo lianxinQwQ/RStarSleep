@@ -1,6 +1,6 @@
 //! Durable first-boot inheritance, independent of mutable build caches and plugins.
 use super::{BuildBackend, BuildContext, Error, Result, fs as disk};
-use crate::config::InheritanceConfig;
+use crate::config::{InheritanceConfig, validate_inheritance_type};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -51,7 +51,10 @@ pub(super) fn prepare(
     let _pins_lock = super::records::lock_inheritance(manager)?;
     let mut sources = Vec::new();
     for source in &config.copy_on_write {
-        let physical = fs::canonicalize(source).map_err(|e| disk::io(source, e))?;
+        let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+        let physical = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
+        let info = fs::symlink_metadata(&physical).map_err(|e| disk::io(&physical, e))?;
+        validate_inheritance_type(source, info.is_dir())?;
         let mut paths = vec![physical.clone()];
         paths.extend(super::mounts::descendant_mounts(&physical)?);
         paths.sort_by_key(|p| (p.components().count(), p.clone()));
@@ -75,18 +78,23 @@ pub(super) fn prepare(
             if location.starts_with(&final_root) || final_root.starts_with(&location) {
                 return Err(Error::Invalid("继承来源与候选版本存储重叠".into()));
             }
+            let mut target = {
+                let relative = path
+                    .strip_prefix(&physical)
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                if relative.as_os_str().is_empty() {
+                    source.clone()
+                } else {
+                    source.join(relative)
+                }
+            };
+            // Generated mappings for descendant mounts carry the same type syntax.
+            if info.is_dir() {
+                target.push("");
+            }
             sources.push(InheritanceSource {
                 path: location,
-                target: {
-                    let relative = path
-                        .strip_prefix(&physical)
-                        .map_err(|e| Error::Invalid(e.to_string()))?;
-                    if relative.as_os_str().is_empty() {
-                        source.clone()
-                    } else {
-                        source.join(relative)
-                    }
-                },
+                target,
                 subvolume_id: backend.source_subvolume_id(&path)?,
                 directory: info.is_dir(),
             });
@@ -251,6 +259,7 @@ pub fn finalize_inheritance_locked(
     let mut sources = Vec::new();
     for source in &manifest.sources {
         crate::config::inheritance_name(&source.target)?;
+        validate_inheritance_type(&source.target, source.directory)?;
         let path = top_path(filesystem_root, &source.path)?;
         if path.starts_with(directory) || directory.starts_with(&path) {
             return Err(Error::Invalid("继承来源与候选版本存储重叠".into()));

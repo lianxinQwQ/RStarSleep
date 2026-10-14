@@ -393,17 +393,18 @@ script 及后续阶段快照只用于调试和备份，不作为下次构建的�
 # 要求每次从当前运行系统以 CoW 复制到新版本。
 CopyOnWrite=/etc/hostname
 CopyOnWrite=
-    /home/alice
-    /var/lib/myapp
+    /home/alice/
+    /var/lib/myapp/
 # Seed once in this system's persistent directory, then reuse it.
 # 在本系统 persistent 中首次初始化，之后复用。
-Mount=/srv/data
+Mount=/srv/data/
 Mount=/etc/myapp.conf
 ```
 
 控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWrite、Mount、Timing、DirectorySubvolume，
-不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，不接受 `/`、
-重复、相互包含或持久名称冲突；来源还不能包含目标管理存储。
+不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，必须以 `/` 开头，
+目录必须以 `/` 结尾，普通文件不能以 `/` 结尾；执行继承时核验类型。不接受 `/`、
+`//`、`.` 或 `..` 路径段、重复、相互包含或持久名称冲突；来源还不能包含目标管理存储。
 Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn 绑定分隔字符 `:`、`\`。
 
 CopyOnWrite 默认在软件及 script 之后继承当前运行系统，按 Btrfs UUID 检查同一文件系统。
@@ -413,9 +414,9 @@ CopyOnWrite 默认在软件及 script 之后继承当前运行系统，按 Btrfs
 保存，不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
 [首次启动继承](../../docs/initramfs-inheritance.md)。
 
-Mount 将绝对路径中的所有 `/` 替换为 `-`，包括开头斜杠：`/home/alice` 保存为
+Mount 先去掉目录路径末尾的 `/`，再将其余 `/` 替换为 `-`，包括开头斜杠：`/home/alice/` 保存为
 本系统 `persistent/-home-alice`。不存在时首次复制当前运行系统的数据；已存在时复用，
-不再读取或覆盖当前来源。允许跨分区、嵌套挂载及子卷，并报告 Warning；首次复制
+不再读取或覆盖当前来源，按持久对象校验路径类型。允许跨分区、嵌套挂载及子卷，并报告 Warning；首次复制
 允许普通复制。目录为可写 Btrfs 子卷，文件为普通文件，`clean` 保留这些数据。
 新根保留挂载点底层内容以便系统工具可用；插件调用和查询期间绑定 persistent，
 继承 `/etc` 时将生成的 fstab 同步到新根。

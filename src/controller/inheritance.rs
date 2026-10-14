@@ -3,7 +3,9 @@
 use super::{
     BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin, progress,
 };
-use crate::config::{DEFAULT_MOUNT_POINT, InheritanceConfig, inheritance_name};
+use crate::config::{
+    DEFAULT_MOUNT_POINT, InheritanceConfig, inheritance_name, validate_inheritance_type,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -43,8 +45,10 @@ pub(super) fn apply(
                 format!("继承写时复制路径：{}", source.display()),
                 format!("Inherit copy-on-write path: {}", source.display()),
             );
-            let resolved = fs::canonicalize(source).map_err(|e| disk::io(source, e))?;
-            check_source(&resolved, system)?;
+            let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+            let resolved = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
+            let directory = check_source(&resolved, system)?;
+            validate_inheritance_type(source, directory)?;
             backend.check_cow_source(&resolved, scratch)?;
             inherit_path(
                 backend,
@@ -71,24 +75,29 @@ pub(super) fn apply(
             format!("Prepare persistent inherited mount: {}", source.display()),
         );
         if !disk::exists(&persistent)? {
-            check_source(source, system)?;
-            if backend.check_subvolume(source, false).is_ok()
-                || backend.check_subvolume(source, true).is_ok()
+            // Remove the marker before inspecting a file so a mismatched trailing slash
+            // produces a type error instead of ENOTDIR, and links remain rejected.
+            let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+            let directory = check_source(unmarked, system)?;
+            validate_inheritance_type(source, directory)?;
+            if backend.check_subvolume(unmarked, false).is_ok()
+                || backend.check_subvolume(unmarked, true).is_ok()
             {
                 eprintln!(
                     "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
                     source.display(),
                 );
             }
-            if let Err(error) = backend.check_cow_source(source, &pool) {
+            if let Err(error) = backend.check_cow_source(unmarked, &pool) {
                 eprintln!(
                     "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
                     source.display()
                 );
             }
-            seed_persistent(backend, source, &persistent, &pool)?;
+            seed_persistent(backend, unmarked, &persistent, &pool)?;
         }
         let info = fs::symlink_metadata(&persistent).map_err(|e| disk::io(&persistent, e))?;
+        validate_inheritance_type(source, info.is_dir())?;
         let relative = source
             .strip_prefix("/")
             .map_err(|e| Error::Invalid(e.to_string()))?;
@@ -236,7 +245,7 @@ fn subvolume_options(subvolume: &Path, readonly: bool) -> Result<String> {
 /// # Arguments
 /// - `source`: Current-running-system source. 当前运行系统来源。
 /// - `system`: Owning system directory. 所属系统目录。
-fn check_source(source: &Path, system: &Path) -> Result<()> {
+fn check_source(source: &Path, system: &Path) -> Result<bool> {
     disk::checked(source)?;
     let manager = system
         .parent()
@@ -249,7 +258,7 @@ fn check_source(source: &Path, system: &Path) -> Result<()> {
     if !info.is_dir() && !info.is_file() {
         return Err(Error::Invalid("继承来源必须为普通文件或目录".into()));
     }
-    Ok(())
+    Ok(info.is_dir())
 }
 
 /// Replace a target only after checking paths and descendant storage.

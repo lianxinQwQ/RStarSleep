@@ -74,7 +74,7 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}\n",
+            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}/\n",
             source.display()
         ),
     )
@@ -279,7 +279,7 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
     fs::write(
         consumer.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}\n",
+            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}/\n",
             source.display()
         ),
     )
