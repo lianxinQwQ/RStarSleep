@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.12.0"
+version = "0.13.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -17,7 +17,10 @@ package_maintenance = true
 post_maintenance = true
 mount_inheritance = true
 query_package_files = true
+# Seed missing data files from default-data without replacing user configuration.
+# 使用前从 default-data 补齐 data 中缺失的文件，保留已有配置。
 persistent_dirs = [
+    "arch-data:data",
     "arch-bootstrap:state/bootstrap",
     "arch-packages:state/packages",
     "arch-repository:state/repository",
@@ -111,7 +114,7 @@ base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_DISTRIB
 software = []
 
 [tools]
-host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum"]
+host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum", "chmod"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
 system = ["bash", "pacman", "pacman-key", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]

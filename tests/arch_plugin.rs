@@ -26,6 +26,20 @@ impl Fixture {
     /// 无参数。
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
+        let preset = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+        let plugin = temporary.path().join("plugin");
+        fs::create_dir_all(plugin.join("data")).unwrap();
+        fs::create_dir(plugin.join("lib")).unwrap();
+        for name in ["common.sh", "maintenance.sh"] {
+            fs::copy(preset.join("lib").join(name), plugin.join("lib").join(name)).unwrap();
+        }
+        fs::copy(
+            preset.join("resolve_packages.sh"),
+            plugin.join("resolve_packages.sh"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(preset.join("default-data"), plugin.join("default-data"))
+            .unwrap();
         for directory in [
             "etc/pacman.d",
             "etc/ssh",
@@ -160,6 +174,7 @@ esac
             .env("PACMAN_TRACE", &self.trace)
             .env("PACMAN_MOCK_CASE", case)
             .env("RSTAR_PLUGIN_TMP", self.temporary.path())
+            .env("RSTAR_PLUGIN_ROOT", self.temporary.path().join("plugin"))
             .env("RSTAR_ROOT", self.temporary.path().join("root"))
             .envs(environment.iter().copied())
             .output()
@@ -792,7 +807,7 @@ fn shared_cache_options_precede_the_package_argument_delimiter() {
     fs::create_dir_all(resources.join("data")).unwrap();
     for name in ["pacman.conf.in", "mirrorlist"] {
         fs::copy(
-            source.join("data").join(name),
+            source.join("default-data").join(name),
             resources.join("data").join(name),
         )
         .unwrap();
@@ -838,7 +853,7 @@ fn shared_cache_repairs_legacy_package_permissions_without_opening_private_state
     fs::create_dir_all(resources.join("data")).unwrap();
     for name in ["pacman.conf.in", "mirrorlist"] {
         fs::copy(
-            source.join("data").join(name),
+            source.join("default-data").join(name),
             resources.join("data").join(name),
         )
         .unwrap();

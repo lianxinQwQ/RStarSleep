@@ -175,6 +175,93 @@ fn common_script() -> PathBuf {
 }
 
 #[test]
+fn mounted_data_is_initialized_from_defaults_and_existing_content_is_preserved() {
+    let fixture = Fixture::with_cache(None, false, false);
+    let plugin = fixture.temporary.path().join("plugin with spaces");
+    let data = plugin.join("data");
+    let defaults = plugin.join("default-data");
+    fs::rename(&data, &defaults).unwrap();
+    fs::create_dir(&data).unwrap();
+    fs::create_dir(defaults.join("nested")).unwrap();
+    fs::write(defaults.join("nested/extra.conf"), "new default\n").unwrap();
+    fs::write(defaults.join(".extra.conf"), "hidden default\n").unwrap();
+    let output = fixture.generate(&[]);
+    assert!(output.status.success(), "{output:?}");
+    for name in [
+        "pacman.conf.in",
+        "mirrorlist",
+        "thirdparty.conf",
+        "nested/extra.conf",
+        ".extra.conf",
+    ] {
+        assert_eq!(
+            fs::read(data.join(name)).unwrap(),
+            fs::read(defaults.join(name)).unwrap()
+        );
+    }
+    fs::write(
+        data.join("mirrorlist"),
+        "Server = https://custom.example/$repo/os/$arch\n",
+    )
+    .unwrap();
+    fs::write(data.join("nested/extra.conf"), "custom nested\n").unwrap();
+    fs::write(data.join("user-only.conf"), "user file\n").unwrap();
+    fs::write(
+        defaults.join("pacman.conf.in"),
+        "must not replace the existing template\n",
+    )
+    .unwrap();
+    fs::write(defaults.join("added.conf"), "new file after upgrade\n").unwrap();
+    let output = fixture.generate(&[]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        fs::read_to_string(data.join("pacman.conf.in"))
+            .unwrap()
+            .contains("[core]")
+    );
+    assert_eq!(
+        fs::read_to_string(data.join("mirrorlist")).unwrap(),
+        "Server = https://custom.example/$repo/os/$arch\n"
+    );
+    assert_eq!(
+        fs::read_to_string(data.join("nested/extra.conf")).unwrap(),
+        "custom nested\n"
+    );
+    assert_eq!(
+        fs::read_to_string(data.join("user-only.conf")).unwrap(),
+        "user file\n"
+    );
+    assert_eq!(
+        fs::read_to_string(data.join("added.conf")).unwrap(),
+        "new file after upgrade\n"
+    );
+}
+
+#[test]
+fn default_data_copy_failures_stop_configuration_even_in_a_conditional() {
+    let fixture = Fixture::with_cache(None, false, false);
+    let defaults = fixture
+        .temporary
+        .path()
+        .join("plugin with spaces/default-data");
+    fs::create_dir(&defaults).unwrap();
+    fs::write(defaults.join("missing.conf"), "default\n").unwrap();
+    let output = fixture.command()
+        .args(["-c", "source \"$1\"; cp() { return 73; }; if write_pacman_configuration \"$COMMON_TEST_ROOT/generated\"; then exit 91; else exit $?; fi", "arch-data-copy-test"])
+        .arg(common_script())
+        .output().unwrap();
+    assert_eq!(output.status.code(), Some(73), "{output:?}");
+    assert!(
+        !fixture
+            .temporary
+            .path()
+            .join("generated/pacman.conf")
+            .exists()
+    );
+    assert!(fixture.trace().is_empty());
+}
+
+#[test]
 fn frozen_database_failures_stop_before_pacman_even_in_a_conditional() {
     for marker in [".planned.json", ".prepared.json"] {
         for (failure, status) in [("mkdir", 71), ("cp", 72)] {

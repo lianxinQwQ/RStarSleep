@@ -136,7 +136,8 @@ arch-plugin.tar.zst
 ├── clean_orphans.sh            # Arch 额外提供的操作
 ├── lib/common.sh            # 可选公共函数
 ├── bin/                     # 可选辅助二进制，可以按架构组织
-└── data/                    # 配置模板、软件源和其他资源
+├── default-data/            # Arch 的默认配置模板、软件源
+└── data/                    # Arch 的空持久挂载点，使用前补齐缺失默认文件
 ```
 
 元数据包含格式版本、插件身份和版本、支持的目标架构及缓存
@@ -779,6 +780,7 @@ persistent_dirs = [
     "packages",                  # 全局直属子卷 → 插件工作目录同名文件夹
     "sources:state/sources",     # 全局直属子卷 → 指定相对目标文件夹
     "repository:state/repo",
+    "arch-data:data",           # 配置目录也使用同一挂载机制
 ]
 
 [tools]
@@ -836,7 +838,12 @@ AUR 二进制写入共享包缓存，并由 repo-add 发布到标识为 `[rstars
 官方仓库保留原有签名策略。当前没有管理本地仓库签名密钥。
 所有 Arch 操作经同一个 pacman 包装函数使用共享缓存与本地仓库；目标系统消费准备好的
 官方元数据，预下载环境维护仍正常刷新仓库。基础 rootfs 获取不属于软件预下载接口。
-Arch 0.11.0 的仓库定义来自插件 `data/pacman.conf.in`。Bash 包装函数及 Python 解析器复用
+Arch 0.13.0 在 `persistent_dirs` 中声明 `"arch-data:data"`，将全局
+`persistent/arch-data/` 的事务副本挂到插件空的 `data/` 目录。包内默认配置改放在
+`default-data/`，插件使用配置前递归补齐缺失文件，保留持久目录中的已有内容。
+首次使用自动补齐配置，不要求手动初始化；调用成功提交、失败回滚均沿用原有持久事务。
+`pacman.conf.in`、`mirrorlist` 及额外 Include 文件均从挂载的 `data/` 读取。
+Bash 包装函数及 Python 解析器复用
 同一个生成函数，在各自临时工作目录生成 pacman 配置和镜像清单，以 `--config` 显式传入。
 模板的 `@MIRRORLIST@`、`@PLUGIN_ROOT@` 替换为当前环境内的绝对路径，pacman 的
 `$repo`、`$arch` 保留；镜像覆盖兼容统一参数及旧预下载变量。生成文件不写入目标

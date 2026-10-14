@@ -11,6 +11,10 @@ source "$plugin_root/lib/common.sh"
 # 参数：无；已声明的 [Distribution] 设置通过 RSTAR_ 变量提供。
 bootstrap() {
     local architecture url signature_url keyring keyring_header path cache_key cache
+    prepare_plugin_data "$plugin_root" || return
+    [[ -f $plugin_root/data/pacman.conf.in && -f $plugin_root/data/mirrorlist ]] || {
+        log 'Missing plugin pacman template or mirrorlist'; return 1;
+    }
     architecture=${RSTAR_DISTRIBUTION_ARCHITECTURE:-x86_64}
     [[ $architecture == x86_64 ]] || { log "Unsupported architecture: $architecture"; return 64; }
     [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {

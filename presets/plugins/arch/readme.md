@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.12.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.13.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -57,7 +57,7 @@ software = []
 | BootstrapUrl | RSTAR_DISTRIBUTION_BOOTSTRAPURL | 官方 latest bootstrap |
 | BootstrapSignatureUrl | RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL | BootstrapUrl 加 `.sig` |
 | Keyring | RSTAR_DISTRIBUTION_KEYRING | `/usr/share/pacman/keyrings/archlinux.gpg` |
-| Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用包内 `data/mirrorlist` |
+| Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用全局 `persistent/arch-data/mirrorlist` 的工作副本 |
 | AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
 | AurDevel | RSTAR_DISTRIBUTION_AURDEVEL | `true`，检查 Git 源码更新 |
 | AurRebuild | RSTAR_DISTRIBUTION_AURREBUILD | `none`，按记录增量复用；可设 `all` 或 pkgbase 列表 |
@@ -65,8 +65,17 @@ software = []
 
 ### 软件源配置模板
 
-所有插件包操作使用 `data/pacman.conf.in`，不再读取环境自身的 `/etc/pacman.conf` 作为仓库定义。
-默认启用 core、extra；取消模板中 multilib 的注释即可启用该仓库。仓库顺序也由模板决定。
+Arch 0.13.0 使用既有 `persistent_dirs` 中的 `"arch-data:data"`，将
+`<管理根>/persistent/arch-data/` 的事务副本挂载到插件工作目录的 `data/`。
+包内默认配置保存在 `default-data/`，`data/` 仅用作挂载点，可以为空或由控制器创建。
+bootstrap 和软件包配置生成前，插件递归复制 `default-data/` 中缺失的文件到 `data/`，
+保留已有模板、镜像清单及额外文件；不会覆盖用户内容。首次使用自动创建持久子卷并补齐默认配置，
+无需手动初始化。调用成功后沿用原有事务提交，失败则回滚，包括本次补入的默认文件。
+
+要自定义配置，修改全局 `persistent/arch-data/pacman.conf.in`、`mirrorlist` 或添加仓库文件。
+子目录应可遍历（0755），配置文件应可读（0644），供 pacman 下载用户及非 root 构建用户访问。
+所有插件包操作使用挂载的 `data/pacman.conf.in`，不读取环境自身的 `/etc/pacman.conf` 作为仓库定义。
+默认启用 core、extra；取消持久模板中 multilib 的注释即可启用该仓库。仓库顺序也由模板决定。
 模板在每次操作时通过公共函数 `write_pacman_configuration` 渲染到 `RSTAR_PLUGIN_TMP` 下的
 独立目录，Bash 安装、更新、查询、维护及 Python 依赖解析、下载、AUR 构建依赖安装均使用
 生成配置调用 `pacman --config`。操作完成后删除生成目录，不覆盖目标 `/etc/pacman.conf`。
@@ -85,10 +94,12 @@ bootstrap 为普通系统 pacman 设置 `/etc/pacman.d/mirrorlist` 的原有行�
 Server = https://repo.archlinuxcn.org/$arch
 ```
 
-也可在模板中写 `Include = @PLUGIN_ROOT@/data/repositories.conf`，把仓库段保存为插件资源。
+也可在模板中写 `Include = @PLUGIN_ROOT@/data/repositories.conf`，把仓库段保存为
+`persistent/arch-data/repositories.conf`，通过同一挂载访问。
 路径占位符仅在 `pacman.conf.in` 中替换；引用文件如需继续 Include，应使用容器内可访问的
 绝对路径。不要引用宿主路径、假定相对路径相对于模板，或手工声明由插件管理的 `[rstarsleep]`。
-修改插件模板即可统一生效，无须新增系统 INI 字段；新增 INI 字段仍须登记到插件参数声明。
+修改全局持久目录中的模板会在后续调用统一生效，无须重打包插件或新增系统 INI 字段；
+新增 INI 字段仍须登记到插件参数声明。
 
 额外仓库默认不启用，也不会自动导入其签名密钥。启用前须在独立解析环境和目标系统的包操作前
 初始化相应信任密钥；已有基础缓存也须补齐。当前插件继续使用系统默认的

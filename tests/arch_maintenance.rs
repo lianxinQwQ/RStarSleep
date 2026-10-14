@@ -11,6 +11,17 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
+        let preset = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+        let plugin = temporary.path().join("plugin");
+        fs::create_dir_all(plugin.join("data")).unwrap();
+        std::os::unix::fs::symlink(preset.join("lib"), plugin.join("lib")).unwrap();
+        fs::copy(
+            preset.join("resolve_packages.sh"),
+            plugin.join("resolve_packages.sh"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(preset.join("default-data"), plugin.join("default-data"))
+            .unwrap();
         fs::write(
             temporary.path().join("state.json"),
             r#"{"installed":{"base":true,"core":false,"vim":true,"legacy-lib":false,"stale":true},"upgraded":false}"#,
@@ -98,6 +109,7 @@ state_path.write_text(json.dumps(state))
             .args(arguments)
             .env("PATH", std::env::join_paths(paths).unwrap())
             .env("RSTAR_PLUGIN_TMP", self.temporary.path())
+            .env("RSTAR_PLUGIN_ROOT", self.temporary.path().join("plugin"))
             .env("MAINTENANCE_TEST_ROOT", self.temporary.path())
             .env("MAINTENANCE_TEST_CASE", case)
             .output()

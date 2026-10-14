@@ -16,6 +16,25 @@ fn executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+#[test]
+fn missing_data_mount_fails_before_host_tools_or_downloads() {
+    let temporary = tempfile::tempdir().unwrap();
+    let plugin = temporary.path().join("plugin");
+    fs::create_dir_all(plugin.join("lib")).unwrap();
+    let preset = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
+    for name in ["bootstrap.sh", "lib/common.sh"] {
+        fs::copy(preset.join(name), plugin.join(name)).unwrap();
+    }
+    let output = Command::new("/bin/bash")
+        .arg(plugin.join("bootstrap.sh"))
+        .env("PATH", "/nonexistent")
+        .env("RSTAR_PLUGIN_ROOT", &plugin)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Missing persistent data mount"));
+}
+
 /// Mirror mkarchiso's root filesystem, package list and version-file layout.
 /// 对应 mkarchiso 的根文件系统、软件包清单及版本文件布局。
 fn bootstrap_archive(extra_path: Option<&str>) -> Vec<u8> {
@@ -51,11 +70,23 @@ fn retains_and_revalidates_installation_archive_without_sharing_system_roots() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path();
     let plugin = path.join("plugin");
-    for directory in ["lib", "data", "state/bootstrap", "tmp", "bin"] {
+    for directory in [
+        "lib",
+        "data",
+        "default-data",
+        "state/bootstrap",
+        "tmp",
+        "bin",
+    ] {
         fs::create_dir_all(plugin.join(directory)).unwrap();
     }
     let preset = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
-    for name in ["bootstrap.sh", "lib/common.sh", "data/mirrorlist"] {
+    for name in [
+        "bootstrap.sh",
+        "lib/common.sh",
+        "default-data/mirrorlist",
+        "default-data/pacman.conf.in",
+    ] {
         fs::copy(preset.join(name), plugin.join(name)).unwrap();
     }
     let bytes = bootstrap_archive(None);
@@ -239,11 +270,23 @@ fn verifies_armored_binary_and_keybox_keyrings_with_real_gpg() {
             .unwrap(),
     );
     let plugin = path.join("plugin with spaces");
-    for directory in ["lib", "data", "state/bootstrap", "tmp", "bin"] {
+    for directory in [
+        "lib",
+        "data",
+        "default-data",
+        "state/bootstrap",
+        "tmp",
+        "bin",
+    ] {
         fs::create_dir_all(plugin.join(directory)).unwrap();
     }
     let preset = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
-    for name in ["bootstrap.sh", "lib/common.sh", "data/mirrorlist"] {
+    for name in [
+        "bootstrap.sh",
+        "lib/common.sh",
+        "default-data/mirrorlist",
+        "default-data/pacman.conf.in",
+    ] {
         fs::copy(preset.join(name), plugin.join(name)).unwrap();
     }
     let source = path.join("source.tar");

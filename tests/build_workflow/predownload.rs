@@ -1,5 +1,6 @@
 //! Verify optional batch preparation and disposable environment/persistent roots.
 use super::*;
+use std::path::Path;
 
 /// Different AUR policies remain separate even when the requested packages match.
 /// 即使包目标相同，不同 AUR 策略仍分别准备，避免丢失强制重建要求。
@@ -139,12 +140,18 @@ fn one_batch_union_is_prepared_before_any_target_and_environment_is_reused() {
             .iter()
             .all(|e| e.system_id == "predownload" || e.operation == "collect_packages")
     );
-    assert_eq!(events[pre].persistent_mounts.len(), 4);
+    assert_eq!(events[pre].persistent_mounts.len(), 5);
+    assert!(
+        events[pre]
+            .persistent_mounts
+            .iter()
+            .any(|mount| mount.target == Path::new("data"))
+    );
     assert!(
         events
             .iter()
             .filter(|e| e.operation == "bootstrap")
-            .all(|e| e.persistent_mounts.len() == 4)
+            .all(|e| e.persistent_mounts.len() == 5)
     );
     let hash = fs::read_dir(fixture.store.predownload_path())
         .unwrap()

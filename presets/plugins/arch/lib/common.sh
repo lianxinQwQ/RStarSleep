@@ -112,6 +112,17 @@ prepare_shared_cache() {
     fi
 }
 
+# Fill the mounted data directory without replacing existing configuration.
+# 将默认文件补入挂载的 data 目录，保留已有配置。
+prepare_plugin_data() {
+    local resources=${1:-${RSTAR_PLUGIN_ROOT:-${plugin_root:-}}}
+    [[ -d $resources/data ]] || { log 'Missing persistent data mount'; return 1; }
+    if [[ -d $resources/default-data ]]; then
+        cp -r --preserve=mode --update=none -- "$resources/default-data/." "$resources/data/" || return
+        chmod 0755 -- "$resources/data" || return
+    fi
+}
+
 # Generate readable runtime configuration without writing to the system /etc.
 # 生成可读的运行时配置，不写入系统 /etc。
 # Arguments: writable output directory; paths in Include must be absolute.
@@ -120,6 +131,7 @@ write_pacman_configuration() {
     local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line
     [[ -n $resources ]] || { log 'Missing plugin resource directory'; return 64; }
     resources=$(cd -- "$resources" && pwd -P) || return
+    prepare_plugin_data "$resources" || return
     [[ -f $resources/data/pacman.conf.in && -f $resources/data/mirrorlist ]] || {
         log 'Missing plugin pacman template or mirrorlist'; return 1;
     }
