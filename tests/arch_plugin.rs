@@ -30,7 +30,7 @@ impl Fixture {
         let plugin = temporary.path().join("plugin");
         fs::create_dir_all(plugin.join("data")).unwrap();
         fs::create_dir(plugin.join("lib")).unwrap();
-        for name in ["common.sh", "maintenance.sh"] {
+        for name in ["common.sh", "keyrings.sh", "maintenance.sh"] {
             fs::copy(preset.join("lib").join(name), plugin.join("lib").join(name)).unwrap();
         }
         fs::copy(
@@ -774,7 +774,11 @@ fn identity_operations_reject_invalid_inputs_and_directory_links() {
 
 #[test]
 fn arch_preparation_protocol_handles_dependencies_providers_and_corruption() {
-    for script in ["arch_predownload.py", "arch_aur_cache.py"] {
+    for script in [
+        "arch_predownload.py",
+        "arch_aur_cache.py",
+        "arch_keyrings.py",
+    ] {
         let output = Command::new("python3")
             .arg(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -802,6 +806,11 @@ fn shared_cache_options_precede_the_package_argument_delimiter() {
     fs::copy(
         source.join("lib/common.sh"),
         resources.join("lib/common.sh"),
+    )
+    .unwrap();
+    fs::copy(
+        source.join("lib/keyrings.sh"),
+        resources.join("lib/keyrings.sh"),
     )
     .unwrap();
     fs::create_dir_all(resources.join("data")).unwrap();
@@ -848,6 +857,11 @@ fn shared_cache_repairs_legacy_package_permissions_without_opening_private_state
     fs::copy(
         source.join("lib/common.sh"),
         resources.join("lib/common.sh"),
+    )
+    .unwrap();
+    fs::copy(
+        source.join("lib/keyrings.sh"),
+        resources.join("lib/keyrings.sh"),
     )
     .unwrap();
     fs::create_dir_all(resources.join("data")).unwrap();

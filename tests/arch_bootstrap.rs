@@ -22,7 +22,7 @@ fn missing_data_mount_fails_before_host_tools_or_downloads() {
     let plugin = temporary.path().join("plugin");
     fs::create_dir_all(plugin.join("lib")).unwrap();
     let preset = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets/plugins/arch");
-    for name in ["bootstrap.sh", "lib/common.sh"] {
+    for name in ["bootstrap.sh", "lib/common.sh", "lib/keyrings.sh"] {
         fs::copy(preset.join(name), plugin.join(name)).unwrap();
     }
     let output = Command::new("/bin/bash")
@@ -84,6 +84,7 @@ fn retains_and_revalidates_installation_archive_without_sharing_system_roots() {
     for name in [
         "bootstrap.sh",
         "lib/common.sh",
+        "lib/keyrings.sh",
         "default-data/mirrorlist",
         "default-data/pacman.conf.in",
     ] {
@@ -284,6 +285,7 @@ fn verifies_armored_binary_and_keybox_keyrings_with_real_gpg() {
     for name in [
         "bootstrap.sh",
         "lib/common.sh",
+        "lib/keyrings.sh",
         "default-data/mirrorlist",
         "default-data/pacman.conf.in",
     ] {

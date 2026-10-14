@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.13.0"
+version = "0.14.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -31,7 +31,7 @@ persistent_dirs = [
 # 分配目标构建版本前收集的目标安装闭包。
 [package_plan]
 base_packages = ["base"]
-tools = ["python3", "pacman", "git", "makepkg", "vercmp", "runuser"]
+tools = ["python3", "pacman", "pacman-key", "pacman-conf", "gpg", "timeout", "git", "makepkg", "vercmp", "runuser"]
 
 # Main-system boot requirements and ordered artifacts, relative to the target root.
 # 主系统启动依赖及有序启动产物；source 相对于目标系统根。
@@ -117,6 +117,6 @@ software = []
 host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum", "chmod"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
-system = ["bash", "pacman", "pacman-key", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]
+system = ["bash", "pacman", "pacman-key", "pacman-conf", "gpg", "timeout", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod"]
 
 predownload = ["python3", "git", "makepkg", "repo-add", "repo-remove", "bsdtar", "vercmp", "runuser", "gpg"]

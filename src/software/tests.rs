@@ -6,6 +6,25 @@ use super::{
     test_support::{Fixture, PackageBackend, previous},
 };
 
+/// Identify missing or nonexplicit protected packages when inspecting cached roots.
+/// 检查缓存根时，明确报告缺失或未显式安装的受保护包。
+///
+/// # Arguments
+///
+/// No parameters.
+/// 无参数。
+#[test]
+fn capture_identifies_missing_or_nonexplicit_protected_packages() {
+    for installed in [vec![], vec![("base", false)]] {
+        let fixture = Fixture::new(PackageBackend::new(&installed, &[]));
+        let error = fixture.session().capture(Vec::new()).unwrap_err();
+        assert!(
+            error.to_string().contains("阶段根缺少显式基础目标: base"),
+            "{error}"
+        );
+    }
+}
+
 /// Keep a removed configured target when another retained target still needs it.
 /// 另一保留目标仍需要已移除配置目标时保留该包。
 ///

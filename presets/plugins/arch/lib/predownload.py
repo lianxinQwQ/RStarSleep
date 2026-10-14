@@ -210,6 +210,11 @@ class Preparer:
         self.configuration = "\n".join(lines) + "\n"
         self.official_conf, self.build_conf = self.work / "official.conf", self.work / "build.conf"
         self.official_conf.write_text(self.configuration)
+        self.keyring_targets = run([
+            "bash", "-c", 'source "$1"; repository_keyring_targets "$2" "$3"',
+            "rstarsleep-keyring-targets", self.root / "lib/common.sh",
+            self.root / "data/repository-keyrings.conf", self.official_conf,
+        ], capture=True).stdout.splitlines()
         self.checkouts, self.distfiles, self.keys = [self.sources / n for n in ("aur", "distfiles", "gnupg")]
         self.outputs, self.builds = self.work / "packages", self.work / "build"
         for path in (self.checkouts, self.distfiles, self.keys, self.outputs, self.builds):
@@ -265,6 +270,11 @@ class Preparer:
         self.build_conf.write_text(config)
 
     def initialize(self, planning=False):
+        # Runs for restored environments as well, before baseline capture or
+        # package verification. Keyring roots are retained by every target plan.
+        if self.keyring_targets:
+            run(["bash", "-c", 'source "$1"; prepare_repository_keyrings "$2" reuse',
+                 "rstarsleep-repository-keyrings", self.root / "lib/common.sh", self.official_conf], capture=planning)
         log("复用独立环境已更新的仓库数据库", "Reuse the updated resolver repository databases")
         if not planning and not getattr(self, "aur_devel", True):
             log("Git 开发源码更新检查已关闭，仍检查配方变化", "Git development source checks disabled; recipe changes are still checked")
@@ -892,11 +902,18 @@ class Preparer:
                 if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
                     raise PreparationError(f"official package checksum mismatch: {name}")
                 signatures = metadata.get("PGPSIG", [])
-                if len(signatures) != 1:
-                    raise PreparationError(f"official package signature missing: {name}")
-                signature = self.work / "verify.sig"
-                signature.write_bytes(base64.b64decode(signatures[0], validate=True))
-                run(["pacman-key", "--verify", signature, self.cache / name])
+                if signatures:
+                    if len(signatures) != 1:
+                        raise PreparationError(f"ambiguous official package signature: {name}")
+                    signature = self.work / "verify.sig"
+                    signature.write_bytes(base64.b64decode(signatures[0], validate=True))
+                else:
+                    # Repositories such as archlinuxcn publish detached signatures.
+                    # Pacman downloads and retains them alongside the package.
+                    signature = self.cache / f"{name}.sig"
+                    if not signature.is_file() or not signature.stat().st_size:
+                        raise PreparationError(f"official package signature missing: {name}")
+                run(["pacman-key", "--config", self.official_conf, "--verify", signature, self.cache / name])
             if index % 25 == 0 or index == len(files):
                 log(f"最终校验进度：{index}/{len(files)}", f"Final verification progress: {index}/{len(files)}")
         log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
@@ -924,6 +941,7 @@ def collect_main(arguments):
         with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
             preparer = Preparer(workspace)
             preparer.initialize(planning=True)
+            requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
             packages = preparer.collect(requested)
             preparer.save_sync()
     finally:
@@ -936,7 +954,7 @@ def prepare_systems(preparer, systems):
     """Plan each installation separately, then download their shared file union."""
     plans, requests, official_files, aur_targets = {}, {}, set(), set()
     for system_id, targets in systems.items():
-        requested = list(dict.fromkeys(["base", *targets]))
+        requested = list(dict.fromkeys(["base", *targets, *getattr(preparer, "keyring_targets", ())]))
         requests[system_id] = requested
         try:
             log(f"解析系统 {system_id} 的 {len(requested)} 项需求及完整依赖",
@@ -999,6 +1017,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
         preparer = Preparer(workspace)
         preparer.initialize()
+        requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
         aur_targets = preparer.prefetch(requested)
         if aur_targets:
             log(f"解析并构建 AUR 软件：{len(aur_targets)} 项需求", f"Resolve and build AUR packages (requirements: {len(aur_targets)})")

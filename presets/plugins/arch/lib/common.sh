@@ -12,6 +12,8 @@ log() {
     printf '%s\n' "$*" >&2
 }
 
+source "${BASH_SOURCE[0]%/*}/keyrings.sh"
+
 # Validate concrete package names before passing them to pacman.
 # 将具体包名传入 pacman 前进行校验。
 # Arguments: each argument is one concrete package name.
@@ -161,6 +163,20 @@ write_pacman_configuration() {
     chmod 0644 -- "$directory/pacman.conf" "$directory/mirrorlist"
 }
 
+# Resolve only configured, enabled repository keyring roots; no trust changes.
+configured_repository_keyring_targets() {
+    local resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} directory status=0
+    [[ -s $resources/data/repository-keyrings.conf ]] || return 0
+    directory=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-keyring-config.XXXXXXXX") || return
+    if write_pacman_configuration "$directory" && repository_keyring_targets "$resources/data/repository-keyrings.conf" "$directory/pacman.conf"; then
+        :
+    else
+        status=$?
+    fi
+    rm -rf -- "$directory" || return
+    return "$status"
+}
+
 # Execute a transaction with an already generated configuration. All failures
 # must propagate even when the caller uses an if/|| conditional.
 # 使用生成的配置执行事务，即使调用者处于 if/|| 条件中也传播全部失败。
@@ -172,6 +188,7 @@ run_configured_pacman() {
     local repository=$resources/state/repository
     local -a args=("$@")
     local -a cache_options=()
+    local repository_keyrings_refreshed=0 keyring_mode=reuse
     if [[ -d $cache ]]; then
         prepare_shared_cache "$cache" "$repository" || return
         cache_options=(--cachedir "$cache")
@@ -194,6 +211,13 @@ run_configured_pacman() {
         mkdir -p /var/lib/pacman/sync || return
         cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db || return
     fi
+    case ${args[0]:-} in
+        -S|-Su|-Syu|-Sy|-Syyu|-Syy|-Sw)
+            [[ ${args[0]} != *y* ]] || keyring_mode=refresh
+            prepare_repository_keyrings "$configuration" "$keyring_mode" || return
+            if (( repository_keyrings_refreshed )); then args[0]=${args[0]//y/}; fi
+            ;;
+    esac
     command pacman --config "$configuration" "${cache_options[@]}" "${args[@]}"
 }
 

@@ -93,13 +93,21 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         };
         state.validate()?;
         let protected = self.resolve(&self.plugin.metadata.protected_packages)?;
-        if protected.iter().any(|name| {
-            !state
-                .installed
-                .iter()
-                .any(|package| &package.name == name && package.explicit)
-        }) {
-            return Err(Error::Invalid("阶段根缺少显式基础目标".into()));
+        let missing: Vec<_> = protected
+            .iter()
+            .filter(|name| {
+                !state
+                    .installed
+                    .iter()
+                    .any(|package| &package.name == *name && package.explicit)
+            })
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::Invalid(format!(
+                "阶段根缺少显式基础目标: {}",
+                missing.join(", ")
+            )));
         }
         Ok(state)
     }

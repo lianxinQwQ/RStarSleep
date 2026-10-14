@@ -6,19 +6,27 @@ plugin_root=${RSTAR_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && 
 source "$plugin_root/lib/common.sh"
 
 base_install() {
-    local output package
-    local -a dependencies=()
+    local output package keyring_output target
+    local -a dependencies=() protected=(base)
+    local -A keyring_names=()
     pacman-key --init
     pacman-key --populate archlinux
     pacman -Syu --needed --asexplicit --noconfirm -- base
+    keyring_output=$(configured_repository_keyring_targets)
+    while IFS= read -r target; do
+        [[ -n $target ]] || continue
+        package=${target#*/}
+        keyring_names[$package]=1
+        protected+=("$package")
+    done <<<"$keyring_output"
     output=$(pacman -Qq)
     while IFS= read -r package; do
-        [[ $package == base ]] || dependencies+=("$package")
+        [[ $package == base || -n ${keyring_names[$package]:-} ]] || dependencies+=("$package")
     done <<<"$output"
     if (( ${#dependencies[@]} )); then
         pacman -D --asdeps -- "${dependencies[@]}"
     fi
-    pacman -D --asexplicit -- base
+    pacman -D --asexplicit -- "${protected[@]}"
     clean_orphan_dependencies
 }
 

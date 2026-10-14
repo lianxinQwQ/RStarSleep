@@ -35,9 +35,17 @@ maintenance_prune() {
 }
 
 maintain_packages() {
-    local package output separator explicit
-    local -a plan=() targets=() roots=() requested=() dependencies=() installed=()
+    local package output separator explicit requested_output
+    local -a plan=() targets=() roots=() requested=() dependencies=() installed=() keyring_targets=()
     local -A plan_names=() root_names=() actual_names=() explicit_names=()
+    local -A requested_names=()
+    local keyring_output keyring_target
+
+    keyring_output=$(configured_repository_keyring_targets) || return
+    while IFS= read -r keyring_target; do
+        [[ -n $keyring_target ]] || continue
+        keyring_targets+=("$keyring_target")
+    done <<<"$keyring_output"
 
     [[ ${1:-} == --plan ]] || { log 'Expected --plan PACKAGES --targets TARGETS'; return 64; }
     shift
@@ -56,7 +64,18 @@ maintain_packages() {
     # The preparation stage supplies matching repository metadata even when
     # downloads are disabled. Do not refresh it and invalidate the frozen plan.
     # 准备阶段即使关闭预下载也提供对应仓库元数据，不在此刷新已冻结计划。
-    output=$(bash "$plugin_root/resolve_packages.sh" base "${targets[@]}") || return
+    # Repository keyrings are retained by this operation without changing what
+    # the controller's base target means when inspecting an older stage cache.
+    requested_output=$(bash "$plugin_root/resolve_packages.sh" base "${targets[@]}") || return
+    output=$requested_output
+    while IFS= read -r package; do
+        validate_packages "$package" || return
+        [[ $package == base ]] || requested_names[$package]=1
+    done <<<"$requested_output"
+    if (( ${#keyring_targets[@]} )); then
+        keyring_output=$(bash "$plugin_root/resolve_packages.sh" "${keyring_targets[@]}") || return
+        output+=$'\n'$keyring_output
+    fi
     [[ -n $output ]] || { log 'No protected base target resolved'; return 1; }
     while IFS= read -r package; do
         validate_packages "$package" || return
@@ -64,7 +83,7 @@ maintain_packages() {
         [[ -z ${root_names[$package]:-} ]] || continue
         root_names["$package"]=1
         roots+=("$package")
-        [[ $package == base ]] || requested+=("$package")
+        [[ -z ${requested_names[$package]:-} ]] || requested+=("$package")
     done <<<"$output"
     [[ -n ${root_names[base]:-} ]] || { log 'Protected base target did not resolve to base'; return 1; }
     for package in "${plan[@]}"; do
@@ -73,7 +92,7 @@ maintain_packages() {
 
     local -a install_plan=("${plan[@]}") install_options=(--needed)
     local target name index
-    for target in "${targets[@]}"; do
+    for target in "${targets[@]}" "${keyring_targets[@]}"; do
         [[ $target == */* ]] || continue
         install_options=()
         name=${target#*/}

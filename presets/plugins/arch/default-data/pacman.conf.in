@@ -24,7 +24,7 @@ Include = @MIRRORLIST@
 # 额外仓库可写在这里，或通过 Include 引用插件资源：
 #Include = @PLUGIN_ROOT@/data/repositories.conf
 #
-# Example only: initialize the archlinuxcn signing keys before enabling this.
-# 仅作示例：启用前需在解析环境及目标系统初始化 archlinuxcn 签名密钥。
+# Example only: configure explicit trust in repository-keyrings.conf before enabling.
+# 仅作示例：启用前在 repository-keyrings.conf 中配置显式初始信任。
 #[archlinuxcn]
 #Server = https://repo.archlinuxcn.org/$arch

@@ -101,10 +101,47 @@ Server = https://repo.archlinuxcn.org/$arch
 修改全局持久目录中的模板会在后续调用统一生效，无须重打包插件或新增系统 INI 字段；
 新增 INI 字段仍须登记到插件参数声明。
 
-额外仓库默认不启用，也不会自动导入其签名密钥。启用前须在独立解析环境和目标系统的包操作前
-初始化相应信任密钥；已有基础缓存也须补齐。当前插件继续使用系统默认的
-`/etc/pacman.d/gnupg`，仅更换配置文件位置不会改变钥环位置。
-预下载仍要求仓库元数据提供包摘要和签名并完成验证；`Keyring` 参数仅用于验证 bootstrap 归档。
+额外仓库默认不启用，也不默认信任其密钥。无人值守初始化通过
+`persistent/arch-data/repository-keyrings.conf` 显式配置，例如：
+
+```ini
+[archlinuxcn]
+keyring_package = archlinuxcn-keyring
+bootstrap_keys = 完整的钥环包签名主密钥指纹
+# 可选，默认使用以下 HKPS 服务器
+keyserver = hkps://keyserver.ubuntu.com
+```
+
+这是独立的 INI 文件，不要把这些字段写入 `pacman.conf.in`。值不加引号；
+`bootstrap_keys` 接受经可信渠道确认的 40 或 64 位十六进制主密钥指纹，多个指纹用空格分隔。
+示例中的中文占位必须替换，报错中的 16 位短 key ID 不能使用。仓库仍须在
+`pacman.conf.in` 或其 Include 中启用；未启用的仓库不会初始化或进入包计划。
+所有仓库都使用同一机制，没有 archlinuxcn 专用默认信任。
+archlinuxcn 公布的完整主密钥指纹可见其官方
+[master-keyids](https://github.com/archlinuxcn/archlinuxcn-keyring/blob/master/master-keyids)。
+应选当前钥环包的签名者，不能仅按其他软件包报错中的签名者选择。
+
+首次包操作先按完整指纹取得公钥，核对主密钥指纹并拒绝已撤销、过期或禁用的密钥，再作本地签署；
+每次联网取钥限制为 60 秒。随后保持原有签名策略，从指定仓库安装 `keyring_package`，
+按该包实际拥有的 `/usr/share/pacman/keyrings/*.gpg` 调用 `pacman-key --populate`。
+安装失败、签名失败或钥环初始化失败均终止操作，不等待人工输入，也不降级签名检查。
+钥环包所在仓库必须启用 `PackageRequired` 和 `PackageTrustedOnly`（默认的 `Required` 已满足）；
+若配置了 `Never`、`PackageOptional` 或 `TrustAll`，初始信任流程会明确拒绝执行。
+初始指纹应能验证钥环包（及需要验证的数据库），不应随意填写普通软件包的签名者。
+
+预下载环境及目标系统在包操作前执行这一流程，复用旧缓存也补齐初始化。
+钥环包和依赖进入完整下载计划，钥环包保持显式安装，不作为临时 AUR 依赖或孤儿删除；
+检查旧基础缓存时，基础目标仍为 `base`，缺少的钥环包在软件维护阶段补装。
+以后随包版本更新加载新的仓库钥环及撤销信息。
+公钥缓存保存在 `persistent/arch-repository/bootstrap-keys/`，供后续目标构建复用，
+其中只有公钥，没有预下载环境的私钥。目标构建使用已准备的仓库数据库及包缓存，不另行刷新仓库。
+新增初始密钥首次仍需联网，失败可重试；手工删去配置不会撤销环境中已经建立的信任。
+如需撤销初始信任，应撤销对应钥匙或重建环境。
+
+信任操作只在独立解析环境和目标系统的有效 `GPGDir` 中进行，不修改宿主钥环；
+未配置 `GPGDir` 时仍使用系统默认的 `/etc/pacman.d/gnupg`。
+预下载要求仓库元数据提供包摘要，并验证数据库内嵌的包签名或 pacman 下载到缓存的独立 `.sig`；
+缺少签名或验证失败均不生成准备完成记录。`Keyring` 参数仅用于验证 bootstrap 归档。
 系统启动后直接执行 pacman 仍读取系统的 `/etc/pacman.conf`，插件临时配置不作为运行系统的持久配置。
 
 控制器把配置值直接放入进程环境，不作为位置参数或 shell 源码。
