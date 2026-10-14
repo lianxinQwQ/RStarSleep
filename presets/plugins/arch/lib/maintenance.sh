@@ -27,16 +27,50 @@ maintenance_prune() {
         [[ -n ${plan_names[$package]:-} ]] || obsolete+=("$package")
     done
     if (( ${#obsolete[@]} )); then
-        # Keep packages still required by installed old versions. A second pass
-        # after upgrading the complete plan removes those obsolete dependencies.
-        # 保留旧版本仍需的包；完整计划更新后再清理失去用途的旧依赖。
+        # Remove optional dependencies and cycles missed by orphan cleanup, but
+        # keep packages still required by retained installed versions.
+        # 删除孤儿清理遗漏的可选依赖和依赖环，保留当前版本仍需要的包。
         pacman -R --unneeded --noconfirm -- "${obsolete[@]}" >&2 || return
+    fi
+}
+
+# Normalize only changed reasons before cleanup. Newly installed dependencies
+# and system upgrades retain pacman's natural installation reasons.
+# 清理前仅修改发生变化的安装原因；新依赖及系统升级沿用 pacman 的自然标记。
+maintenance_reasons() {
+    local package output
+    local -a promote=() demote=()
+    local -A current_names=() current_explicit=()
+    maintenance_inventory || return
+    for package in "${installed[@]}"; do current_names[$package]=1; done
+    output=$(filtered_query -Qqe) || return
+    if [[ -n $output ]]; then
+        while IFS= read -r package; do
+            validate_packages "$package" || return
+            [[ -n ${current_names[$package]:-} && -z ${current_explicit[$package]:-} ]] || {
+                log "Invalid explicit package query result: $package"; return 1;
+            }
+            current_explicit[$package]=1
+        done <<<"$output"
+    fi
+    for package in "${installed[@]}"; do
+        if [[ -n ${root_names[$package]:-} ]]; then
+            [[ -n ${current_explicit[$package]:-} ]] || promote+=("$package")
+        elif [[ -n ${current_explicit[$package]:-} ]]; then
+            demote+=("$package")
+        fi
+    done
+    if (( ${#promote[@]} )); then
+        pacman -D --asexplicit -- "${promote[@]}" >&2 || return
+    fi
+    if (( ${#demote[@]} )); then
+        pacman -D --asdeps -- "${demote[@]}" >&2 || return
     fi
 }
 
 maintain_packages() {
     local package output separator explicit requested_output
-    local -a plan=() targets=() roots=() requested=() dependencies=() installed=() keyring_targets=()
+    local -a plan=() targets=() roots=() requested=() installed=() keyring_targets=()
     local -A plan_names=() root_names=() actual_names=() explicit_names=()
     local -A requested_names=()
     local keyring_output keyring_target
@@ -86,30 +120,39 @@ maintain_packages() {
         [[ -z ${requested_names[$package]:-} ]] || requested+=("$package")
     done <<<"$output"
     [[ -n ${root_names[base]:-} ]] || { log 'Protected base target did not resolve to base'; return 1; }
-    for package in "${plan[@]}"; do
-        [[ -n ${root_names[$package]:-} ]] || dependencies+=("$package")
-    done
 
-    local -a install_plan=("${plan[@]}") install_options=(--needed)
-    local target name index
+    local -a install_targets=() install_options=(--needed)
+    local -A source_targets=() installed_names=()
+    local target name
     for target in "${targets[@]}" "${keyring_targets[@]}"; do
         [[ $target == */* ]] || continue
         install_options=()
         name=${target#*/}
-        for index in "${!install_plan[@]}"; do
-            [[ ${install_plan[$index]##*/} != "$name" ]] || install_plan[$index]=$(source_target "$target")
-        done
+        source_targets[$name]=$(source_target "$target") || return
     done
+    maintenance_reasons || return
+    clean_orphan_dependencies >&2 || return
     maintenance_prune || return
-    # Every retained package is an explicit transaction target, so old unrelated
-    # packages are never upgraded merely because they remain installed.
-    # 将所有保留包纳入更新事务，避免顺带升级尚未删除的无关旧软件。
-    pacman -S "${install_options[@]}" --noconfirm --ask=4 -- "${install_plan[@]}" >&2 || return
-    maintenance_prune || return
-    pacman -D --asexplicit -- "${roots[@]}" >&2 || return
-    if (( ${#dependencies[@]} )); then
-        pacman -D --asdeps -- "${dependencies[@]}" >&2 || return
+    # Compare after cleanup, since an orphan needed by a new root may have been
+    # removed. Reinstall source-qualified roots even at the same version.
+    # 清理后再比较；新目标所需的孤儿允许重装，限定来源仍支持同版本切换。
+    for package in "${installed[@]}"; do installed_names[$package]=1; done
+    for package in "${roots[@]}"; do
+        if [[ -n ${source_targets[$package]:-} ]]; then
+            install_targets+=("${source_targets[$package]}")
+        elif [[ -z ${installed_names[$package]:-} ]]; then
+            install_targets+=("$package")
+        fi
+    done
+    if (( ${#install_targets[@]} )); then
+        pacman -S "${install_options[@]}" --noconfirm --ask=4 -- "${install_targets[@]}" >&2 || return
     fi
+    # The wrapper reuses prepared repository databases without refreshing them.
+    # Sysupgrade preserves dependency reasons; do not pass --asexplicit here.
+    # 包装函数复用已准备的仓库数据库；集体升级保留依赖原因，不传 --asexplicit。
+    pacman -Syu --noconfirm --ask=4 >&2 || return
+    clean_orphan_dependencies >&2 || return
+    maintenance_prune || return
 
     maintenance_inventory || return
     for package in "${installed[@]}"; do

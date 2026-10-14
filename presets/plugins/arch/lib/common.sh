@@ -73,10 +73,10 @@ filtered_query() {
 clean_orphan_dependencies() {
     local output
     local -a packages=()
-    output=$(filtered_query -Qdtq)
+    output=$(filtered_query -Qdtq) || return
     if [[ -n $output ]]; then
         mapfile -t packages <<<"$output"
-        pacman -Rns --noconfirm -- "${packages[@]}"
+        pacman -Rns --noconfirm -- "${packages[@]}" || return
     fi
 }
 

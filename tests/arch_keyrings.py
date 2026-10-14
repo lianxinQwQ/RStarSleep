@@ -106,7 +106,7 @@ elif name == "pacman":
         inventory_path.write_text(json.dumps(inventory))
     elif "-Sy" in args and os.environ.get("KEYRING_TEST_SYNC_FAILURE") == "1":
         sys.exit(84)
-    elif any(value in args for value in ("-S", "-Sy", "-Syu")) and os.environ.get("KEYRING_TEST_PACKAGE_FAILURE") == "1":
+    elif any(value in args for value in ("-S", "-Sy", "-Su", "-Syu")) and os.environ.get("KEYRING_TEST_PACKAGE_FAILURE") == "1":
         sys.exit(85)
     elif any(value in args for value in ("-S", "-Sy", "-Su", "-Syu")) and inventory is not None:
         for target in targets:
@@ -376,10 +376,13 @@ class RepositoryKeyrings(unittest.TestCase):
         self.assertEqual(state["requested"], [])
         self.assertEqual({item["name"]: item["explicit"] for item in state["installed"]},
                          {"base": True, "custom-keyring": True, "keyring-dependency": False})
-        transactions = [arguments for _, arguments in self.operations("pacman", "-S") if "base" in arguments]
+        transactions = [arguments for _, arguments in self.operations("pacman", "-S") if "--ask=4" in arguments]
         self.assertEqual(len(transactions), 1)
         self.assertIn("custom/custom-keyring", transactions[0])
         self.assertNotIn("custom-keyring", transactions[0])
+        self.assertNotIn("base", transactions[0])
+        upgrade, = self.operations("pacman", "-Su")
+        self.assertNotIn("--", upgrade[1])
         self.assertFalse(self.operations("pacman", "-R"))
 
     def test_legacy_base_capture_resolves_only_base_and_does_not_bootstrap_keys(self):
@@ -411,12 +414,16 @@ class RepositoryKeyrings(unittest.TestCase):
         self.assertEqual({item["name"]: item["explicit"] for item in state["installed"]},
                          {"base": True, "base-dependency": False, "desktop": True,
                           "custom-keyring": True, "keyring-dependency": False})
-        populate, = self.operations("pacman-key", "--populate")
+        populates = self.operations("pacman-key", "--populate")
+        self.assertEqual(len(populates), 2)
         transactions = [(index, arguments) for index, arguments in self.operations("pacman", "-S")
                         if "desktop" in arguments]
         self.assertEqual(len(transactions), 1)
-        self.assertLess(populate[0], transactions[0][0])
+        self.assertLess(populates[0][0], transactions[0][0])
         self.assertIn("custom/custom-keyring", transactions[0][1])
+        upgrade, = self.operations("pacman", "-Su")
+        self.assertLess(transactions[0][0], populates[1][0])
+        self.assertLess(populates[1][0], upgrade[0])
 
     def test_explicit_user_keyring_target_remains_requested(self):
         self.inventory()
