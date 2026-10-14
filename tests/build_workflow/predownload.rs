@@ -1,6 +1,35 @@
 //! Verify optional batch preparation and disposable environment/persistent roots.
 use super::*;
 
+/// Different AUR policies remain separate even when the requested packages match.
+/// 即使包目标相同，不同 AUR 策略仍分别准备，避免丢失强制重建要求。
+#[test]
+fn different_aur_policies_keep_preparation_groups_separate() {
+    let fixture = Fixture::with_predownload(true);
+    for (id, rebuild) in [("desktop", "none"), ("server", "all")] {
+        fixture.system(id, &["editor"]);
+        let directory = fixture.store.system_layout(id).unwrap().config;
+        fs::write(
+            directory.join("build/aur.conf"),
+            format!("[Distribution]\nAurDevel=true\nAurRebuild={rebuild}\n"),
+        )
+        .unwrap();
+    }
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, None, &backend).unwrap();
+    let events = backend.events.borrow();
+    let downloads: Vec<_> = events
+        .iter()
+        .filter(|event| event.operation == "predownload")
+        .collect();
+    assert_eq!(downloads.len(), 2);
+    let policies: std::collections::BTreeSet<_> = downloads
+        .iter()
+        .map(|event| event.distribution_options["AurRebuild"].as_str())
+        .collect();
+    assert_eq!(policies, std::collections::BTreeSet::from(["all", "none"]));
+}
+
 /// Prevent one system's proxy from being used for a different download batch.
 /// 避免一个系统的代理被用于另一下载批次。
 /// # Arguments

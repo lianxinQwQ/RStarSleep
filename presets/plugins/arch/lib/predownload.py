@@ -2,6 +2,7 @@
 """Prepare shared official package closures and a locally built AUR repository."""
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import pwd
@@ -22,6 +23,11 @@ NAME = re.compile(r"^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$")
 SPEC = re.compile(r"^([A-Za-z0-9@_+][A-Za-z0-9@._+-]*)(?:(>=|<=|=|>|<)([^\s]+))?$")
 REPO = "rstarsleep"
 QUERY_MODE = False
+CACHE_FORMAT = 1
+# Also support importing this entrypoint by filename in protocol tests.
+_cache_spec = importlib.util.spec_from_file_location("rstarsleep_aur_cache", Path(__file__).with_name("aur_cache.py"))
+aur_cache = importlib.util.module_from_spec(_cache_spec)
+_cache_spec.loader.exec_module(aur_cache)
 
 
 class PreparationError(Exception):
@@ -101,7 +107,17 @@ def srcinfo(text, architecture):
     version = "{}-{}".format(base.get("pkgver", [""])[0], base.get("pkgrel", [""])[0])
     if base.get("epoch", ["0"])[0] != "0":
         version = base["epoch"][0] + ":" + version
+    sources = values(base, "source")
+    unchecked = set()
+    for suffix in ("", f"_{architecture}"):
+        entries = base.get("source" + suffix, [])
+        checksums = [base[key + suffix] for key in ("md5sums", "sha1sums", "sha224sums", "sha256sums", "sha384sums", "sha512sums", "b2sums")
+                     if key + suffix in base]
+        for index, source in enumerate(entries):
+            if not any(index < len(sums) and sums[index] != "SKIP" for sums in checksums):
+                unchecked.add(source)
     return dict(name=name, packages=packages, version=version, runtime_by_package=runtime_by_package,
+                sources=sources, unchecked_sources=sorted(unchecked),
                 runtime=list(dict.fromkeys(runtime)),
                 build=list(dict.fromkeys(build)), build_runtime=[v for v in values(base, "depends") if v], provides=provides, conflicts=conflicts, keys=base.get("validpgpkeys", []))
 
@@ -156,7 +172,7 @@ class Preparer:
         for path in (self.cache, self.repo, self.sources):
             if not path.is_dir():
                 raise PreparationError(f"missing persistent mount: {path}")
-        self.arch = os.environ.get("RSTAR_ARCHITECTURE", os.uname().machine)
+        self.arch = os.environ.get("RSTAR_DISTRIBUTION_ARCHITECTURE", os.environ.get("RSTAR_ARCHITECTURE", os.uname().machine))
         self.work = Path(workspace)
         self.work.chmod(0o755)
         self.db = self.work / "db"
@@ -187,6 +203,10 @@ class Preparer:
         self.keys.chmod(0o700)
         self.makepkg_conf = self.work / "makepkg.conf"
         text = Path("/etc/makepkg.conf").read_text() + "\n"
+        # --config points to our scratch copy, so makepkg would otherwise miss
+        # /etc/makepkg.conf.d. Preserve the configured build settings explicitly.
+        text += "\n".join(path.read_text() for path in sorted(Path("/etc/makepkg.conf.d").glob("*.conf"))) + "\n"
+        self.config_sha256 = self.configuration_fingerprint(text)
         for key, path in (("SRCDEST", self.distfiles), ("BUILDDIR", self.builds)):
             text += f"{key}={shlex.quote(str(path))}\n"
         self.makepkg_conf.write_text(text)
@@ -195,6 +215,9 @@ class Preparer:
         self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
         self.planned_transactions = {}
+        self.aur_devel, self.aur_rebuild = self.cache_options()
+        self.cache_records = None
+        self.cache_counts = dict(reused=0, built=0)
         self.refresh_repo()
 
     def user(self, argv, capture=False):
@@ -202,7 +225,8 @@ class Preparer:
                     f"HOME={self.builder.pw_dir}", f"GNUPGHOME={self.keys}", *argv], capture=capture)
 
     def makepkg(self, checkout, argv, capture=False):
-        return self.user(["bash", "-c", 'cd -- "$1"; shift; exec makepkg "$@"',
+        return self.user(["env", "-u", "PKGDEST", "-u", "SRCDEST", "-u", "BUILDDIR", "-u", "CARCH",
+                          "bash", "-c", 'cd -- "$1"; shift; exec makepkg "$@"',
                           "rstarsleep-makepkg", str(checkout), "--config", str(self.makepkg_conf), *argv], capture=capture)
 
     def pacman(self, argv, isolated=False, capture=False, allowed=(0,)):
@@ -224,6 +248,8 @@ class Preparer:
 
     def initialize(self, planning=False):
         log("复用独立环境已更新的仓库数据库", "Reuse the updated resolver repository databases")
+        if not planning and not getattr(self, "aur_devel", True):
+            log("Git 开发源码更新检查已关闭，仍检查配方变化", "Git development source checks disabled; recipe changes are still checked")
         sync = self.actual_db / "sync"
         isolated_sync = self.db / "sync"
         isolated_sync.mkdir(parents=True, exist_ok=True)
@@ -501,15 +527,220 @@ class Preparer:
         if install and self.pacman(["-T", requirement], capture=True, allowed=(0, 127)).returncode:
             raise PreparationError(f"unsatisfied build dependency: {requirement}")
 
+    @staticmethod
+    def cache_options():
+        def option(name, default):
+            return os.environ.get("RSTAR_DISTRIBUTION_" + name, os.environ.get("RSTAR_" + name, default)).strip()
+        devel = option("AURDEVEL", "true").lower()
+        if devel not in ("true", "false"):
+            raise PreparationError("AurDevel must be true or false")
+        rebuild = set(option("AURREBUILD", "none").split())
+        if (any(not NAME.fullmatch(name) for name in rebuild)
+                or (rebuild & {"none", "all"} and len(rebuild) != 1)):
+            raise PreparationError("AurRebuild must be none, all, or pkgbase names")
+        return devel == "true", rebuild - {"none"}
+
+    @staticmethod
+    def configuration_fingerprint(configuration):
+        # Exclude per-call SRCDEST/BUILDDIR/PKGDEST and unrelated mirror/target options.
+        inputs = {"semantics": CACHE_FORMAT, "makepkg.conf": configuration,
+                  "environment": {key: os.environ[key] for key in
+                                  ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS", "RUSTFLAGS", "SOURCE_DATE_EPOCH", "PACKAGER", "PKGEXT", "GPGKEY")
+                                  if key in os.environ}}
+        inputs["dropins"] = {str(path): path.read_text() for path in sorted(Path("/etc/makepkg.conf.d").glob("*.conf"))}
+        return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+    def load_cache(self):
+        if getattr(self, "cache_records", None) is not None:
+            return self.cache_records
+        path = self.repo / ".aur-builds.json"
+        self.cache_index = dict(format=CACHE_FORMAT, architectures={})
+        if path.is_symlink():
+            raise PreparationError("AUR build index must not be a symlink")
+        if path.exists():
+            try:
+                index = json.loads(path.read_text())
+                if (not isinstance(index, dict) or index.get("format") != CACHE_FORMAT
+                        or not isinstance(index.get("architectures"), dict)
+                        or any(not isinstance(entries, dict) for entries in index["architectures"].values())):
+                    raise ValueError("unsupported build index")
+                self.cache_index = index
+            except (ValueError, OSError) as error:
+                log(f"AUR 构建记录无效，按需重建：{error}", f"Invalid AUR build index; rebuild on demand: {error}")
+        self.cache_records = self.cache_index["architectures"].setdefault(self.arch, {})
+        return self.cache_records
+
+    def source_state(self, base):
+        specs, reason = aur_cache.source_specs(base.get("sources", []), base.get("unchecked_sources", []))
+        if reason:
+            return specs, None, reason
+        if not self.aur_devel:
+            return specs, None, None
+        try:
+            revisions = aur_cache.remote_revisions(self.user, specs)
+        except ValueError as error:
+            raise PreparationError(str(error)) from error
+        return specs, revisions, None
+
+    def inspect_artifact(self, package, base):
+        fields = package_info(run(["bsdtar", "-xOf", package, ".PKGINFO"], capture=True).stdout)
+        if (any(len(fields.get(key, [])) != 1 for key in ("pkgname", "pkgver", "arch"))
+                or not NAME.fullmatch(fields["pkgname"][0])
+                or fields["arch"][0] not in ("any", self.arch)):
+            raise PreparationError("invalid binary package metadata or architecture")
+        artifact = dict(name=fields["pkgname"][0], version=fields["pkgver"][0],
+                        architecture=fields["arch"][0], provides=fields.get("provides", []),
+                        dependencies=fields.get("depend", []), conflicts=fields.get("conflict", []),
+                        filename=package.name, pkgbase=base["name"], commit=base["commit"],
+                        sha256=self.file_digest(package))
+        for value in artifact["dependencies"] + artifact["provides"] + artifact["conflicts"]:
+            spec(value)
+        return artifact
+
+    @staticmethod
+    def file_digest(path):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def cached_artifacts(self, base, revisions, visiting=()):
+        name = base["name"]
+        if name in visiting:
+            return None, "dependency cache cycle"
+        entry = self.load_cache().get(name)
+        if not isinstance(entry, dict):
+            return None, "no build record"
+        if entry.get("commit") != base["commit"]:
+            return None, "recipe changed"
+        if entry.get("configuration") != self.config_sha256:
+            return None, "build configuration changed"
+        if (not isinstance(entry.get("sources"), dict)
+                or any(not isinstance(source, str) or not isinstance(revision, str)
+                       or not aur_cache.REVISION.fullmatch(revision) for source, revision in entry["sources"].items())):
+            return None, "invalid source records"
+        if revisions is not None and entry.get("sources") != revisions:
+            return None, "Git source changed"
+        artifacts = entry.get("artifacts")
+        if (not isinstance(artifacts, list) or not artifacts
+                or any(not isinstance(p, dict) for p in artifacts)):
+            return None, "invalid artifact inventory"
+        # Never derive a path from unvalidated persistent metadata.
+        for artifact in artifacts:
+            filename = artifact.get("filename")
+            if (not isinstance(filename, str) or Path(filename).name != filename or filename in (".", "..")
+                    or not isinstance(artifact.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])):
+                return None, "invalid artifact identity"
+            copies = [directory / filename for directory in (self.repo, self.cache)]
+            good = next((path for path in copies if path.is_file() and not path.is_symlink()
+                         and self.file_digest(path) == artifact["sha256"]), None)
+            if good is None:
+                return None, "artifact missing or checksum changed"
+            try:
+                if self.inspect_artifact(good, base) != artifact:
+                    return None, "binary metadata changed"
+            except (PreparationError, OSError, ValueError):
+                return None, "invalid cached binary metadata"
+            for path in copies:
+                if path != good and (path.is_symlink() or not path.is_file() or self.file_digest(path) != artifact["sha256"]):
+                    atomic_copy(good, path)
+        names = [p["name"] for p in artifacts]
+        if len(set(names)) != len(names) or set(base["packages"]) - set(names):
+            return None, "incomplete split-package outputs"
+        dependencies = entry.get("aur_dependencies")
+        if not isinstance(dependencies, list):
+            return None, "invalid dependency records"
+        dependency_artifacts = []
+        for dependency in dependencies:
+            if (not isinstance(dependency, dict) or not isinstance(dependency.get("requirement"), str)
+                    or not isinstance(dependency.get("pkgbase"), str)):
+                return None, "invalid dependency identity"
+            requirement = dependency["requirement"]
+            if not SPEC.fullmatch(requirement) or not NAME.fullmatch(dependency["pkgbase"]):
+                return None, "invalid dependency identity"
+            if self.official(requirement) is not None:
+                return None, "AUR build dependency provider changed"
+            recipe = self.aur(requirement)
+            if recipe["name"] != dependency["pkgbase"]:
+                return None, "AUR build dependency provider changed"
+            _, source_revisions, reason = self.source_state(recipe)
+            cached, _ = (None, reason) if reason else self.cached_artifacts(recipe, source_revisions, (*visiting, name))
+            if (cached is None or [{key: p[key] for key in ("name", "sha256")} for p in cached] != dependency.get("artifacts")
+                    or recipe["name"] in self.aur_rebuild or "all" in self.aur_rebuild):
+                return None, "AUR build dependency changed"
+            dependency_artifacts.extend(cached)
+        # Versioned SONAME requirements may stop resolving after an official ABI transition.
+        for artifact in artifacts:
+            for requirement in artifact["dependencies"]:
+                depname, operator, _ = spec(requirement)
+                if ".so" in depname and operator and self.official(requirement) is None:
+                    candidates = artifacts + dependency_artifacts + [p for values in self.artifacts.values() for p in values]
+                    if not any(self.artifact_satisfies(p, requirement) for p in candidates):
+                        return None, "shared-library dependency changed"
+        return artifacts, None
+
+    def remember_build(self, base, artifacts, revisions, dependencies):
+        references = []
+        for requirement in dependencies:
+            if self.official(requirement) is not None:
+                continue
+            recipe = self.aur(requirement)
+            entry = self.load_cache().get(recipe["name"])
+            if not isinstance(entry, dict):
+                # Unverifiable dependencies also prevent safe parent reuse.
+                self.load_cache().pop(base["name"], None)
+                atomic_json(self.repo / ".aur-builds.json", self.cache_index)
+                return
+            references.append(dict(requirement=requirement, pkgbase=recipe["name"],
+                                   artifacts=[{key: p[key] for key in ("name", "sha256")} for p in entry["artifacts"]]))
+        self.load_cache()[base["name"]] = dict(commit=base["commit"], configuration=self.config_sha256,
+                                              sources=revisions, artifacts=artifacts, aur_dependencies=references)
+        atomic_json(self.repo / ".aur-builds.json", self.cache_index)
+
+    def complete_artifacts(self, base, artifacts):
+        """Rebuilt and reused packages use the same actual binary runtime metadata."""
+        name = base["name"]
+        self.artifacts[name] = artifacts
+        base["version"] = artifacts[0]["version"]
+        for artifact in artifacts:
+            base["runtime_by_package"][artifact["name"]] = artifact["dependencies"]
+            base["provides"][artifact["name"]] = artifact["provides"]
+            base["conflicts"][artifact["name"]] = artifact["conflicts"]
+        self.publish(base, artifacts)
+        self.states[name] = "built"
+        dependencies = list(dict.fromkeys(dependency for artifact in artifacts for dependency in artifact["dependencies"]
+                                          if not any(self.artifact_satisfies(p, dependency) for p in artifacts)))
+        log(f"准备 {name} 的二进制运行依赖：{len(dependencies)} 项",
+            f"Prepare binary runtime dependencies: {name} ({len(dependencies)} requirements)")
+        self.prefetch(dependencies)
+        for dependency in dependencies:
+            self.ensure(dependency)
+        self.states[name] = "complete"
+        self.stack.pop()
+
     def build(self, base):
         name = base["name"]
         if self.states.get(name) in ("built", "complete"):
             return
         if self.states.get(name) == "building":
             raise PreparationError("AUR dependency cycle: " + " -> ".join(self.stack + [name]))
-        log(f"开始准备 AUR 构建：{name}", f"Prepare AUR build: {name}")
+        specs, revisions, reason = self.source_state(base)
+        if "all" in self.aur_rebuild or name in self.aur_rebuild:
+            artifacts, reason = None, "forced rebuild"
+        elif reason:
+            artifacts = None
+        else:
+            artifacts, reason = self.cached_artifacts(base, revisions)
         self.states[name] = "building"
         self.stack.append(name)
+        if artifacts is not None:
+            log(f"复用 AUR 构建产物：{name}", f"Reuse AUR build artifacts: {name}")
+            self.complete_artifacts(base, artifacts)
+            self.cache_counts["reused"] += 1
+            return
+        log(f"重建 AUR 软件包：{name}（{reason}）", f"Rebuild AUR package: {name} ({reason})")
         provided = set(base["packages"]) | {spec(p)[0] for values in base["provides"].values() for p in values}
         dependencies = list(dict.fromkeys(base["build"] + [dependency for dependency in base["build_runtime"]
                                                             if spec(dependency)[0] not in provided]))
@@ -532,8 +763,22 @@ class Preparer:
         self.makepkg_conf.write_text(self.makepkg_conf.read_text() + f"\nPKGDEST={shlex.quote(str(output))}\n")
         log(f"下载并校验 {name} 的源码", f"Download and verify sources for {name}")
         self.makepkg(base["checkout"], ["--verifysource", "--noconfirm"])
+        cacheable = aur_cache.source_specs(base.get("sources", []), base.get("unchecked_sources", []))[1] is None
+        actual = {}
+        if cacheable and specs:
+            try:
+                if self.aur_devel:
+                    # makepkg can warn and retain an old mirror on fetch failure.
+                    revisions = aur_cache.remote_revisions(self.user, specs)
+                actual = aur_cache.actual_revisions(self.user, specs, self.distfiles, base["checkout"])
+                if self.aur_devel and actual != revisions:
+                    raise PreparationError(f"downloaded Git source is stale or changed during fetch: {name}; retry preparation")
+            except ValueError as error:
+                raise PreparationError(str(error)) from error
         log(f"编译 AUR 软件包：{name}", f"Compile AUR package: {name}")
-        self.makepkg(base["checkout"], ["--force", "--cleanbuild", "--clean", "--nodeps", "--noconfirm"])
+        # prepare() may create commits or remove .git. Record the downloaded
+        # source identity above and prevent a second fetch during compilation.
+        self.makepkg(base["checkout"], ["--force", "--cleanbuild", "--clean", "--holdver", "--nodeps", "--noconfirm"])
         log(f"收集并检查 {name} 的构建产物", f"Collect and inspect build artifacts for {name}")
         artifacts = []
         for package in sorted(output.glob("*.pkg.tar.*")):
@@ -541,39 +786,19 @@ class Preparer:
                 continue
             if not package.is_file() or package.is_symlink():
                 raise PreparationError(f"missing or unexpected build artifact: {package}")
-            fields = package_info(run(["bsdtar", "-xOf", package, ".PKGINFO"], capture=True).stdout)
-            if len(fields.get("pkgname", [])) != 1 or len(fields.get("pkgver", [])) != 1:
-                raise PreparationError("invalid binary package metadata")
-            artifact = dict(name=fields["pkgname"][0], version=fields["pkgver"][0],
-                            provides=fields.get("provides", []), dependencies=fields.get("depend", []),
-                            conflicts=fields.get("conflict", []),
-                            filename=package.name, pkgbase=name, commit=base["commit"])
-            if not NAME.fullmatch(artifact["name"]):
-                raise PreparationError("invalid binary package name")
+            artifact = self.inspect_artifact(package, base)
             for destination in (self.cache, self.repo):
                 atomic_copy(package, destination / package.name)
             artifacts.append(artifact)
         if not artifacts or set(base["packages"]) - {p["name"] for p in artifacts}:
             raise PreparationError(f"incomplete split-package outputs: {name}")
-        self.artifacts[name] = artifacts
-        # VCS recipes and generated metadata may differ from .SRCINFO. The final
-        # runtime plan must use the actual binaries, excluding build-only deps.
-        base["version"] = artifacts[0]["version"]
-        for artifact in artifacts:
-            base["runtime_by_package"][artifact["name"]] = artifact["dependencies"]
-            base["provides"][artifact["name"]] = artifact["provides"]
-            base["conflicts"][artifact["name"]] = artifact["conflicts"]
-        self.publish(base, artifacts)
-        self.states[name] = "built"
-        dependencies = list(dict.fromkeys(dependency for artifact in artifacts for dependency in artifact["dependencies"]
-                                          if not any(self.artifact_satisfies(p, dependency) for p in artifacts)))
-        log(f"准备 {name} 的二进制运行依赖：{len(dependencies)} 项",
-            f"Prepare binary runtime dependencies for {name} (requirements: {len(dependencies)})")
-        self.prefetch(dependencies)
-        for dependency in dependencies:
-            self.ensure(dependency)
-        self.states[name] = "complete"
-        self.stack.pop()
+        self.complete_artifacts(base, artifacts)
+        if cacheable:
+            self.remember_build(base, artifacts, actual, dependencies)
+        else:
+            self.load_cache().pop(name, None)
+            atomic_json(self.repo / ".aur-builds.json", self.cache_index)
+        self.cache_counts["built"] += 1
         log(f"AUR 软件包准备完成：{name}，共 {len(artifacts)} 个产物",
             f"AUR package ready: {name}, {len(artifacts)} artifacts")
 
@@ -609,6 +834,9 @@ class Preparer:
             raise PreparationError("AUR dependency cleanup changed environment baseline")
 
     def finish(self, requested):
+        counts = getattr(self, "cache_counts", dict(reused=0, built=0))
+        log(f"AUR 构建汇总：复用 {counts['reused']}，重建 {counts['built']} 个 pkgbase",
+            f"AUR build summary: reused {counts['reused']}, rebuilt {counts['built']} pkgbases")
         files = self.files | {p["filename"] for values in self.artifacts.values() for p in values}
         log(f"最终校验软件包摘要和官方签名：{len(files)} 个文件",
             f"Final package checksum and official signature verification (files: {len(files)})")

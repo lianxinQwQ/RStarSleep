@@ -759,16 +759,22 @@ fn identity_operations_reject_invalid_inputs_and_directory_links() {
 
 #[test]
 fn arch_preparation_protocol_handles_dependencies_providers_and_corruption() {
-    let output = Command::new("python3")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/arch_predownload.py"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for script in ["arch_predownload.py", "arch_aur_cache.py"] {
+        let output = Command::new("python3")
+            .arg(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join(script),
+            )
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{script}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

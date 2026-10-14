@@ -3,6 +3,38 @@
 
 use super::*;
 
+/// AUR query/rebuild policies affect preparation, without discarding target stage caches.
+/// AUR 查询/重建策略影响准备流程，不丢弃目标阶段缓存。
+#[test]
+fn aur_policy_changes_preserve_base_and_package_caches() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let path = layout.config.join("build/aur.conf");
+    fs::write(&path, "[Distribution]\nAurDevel=true\nAurRebuild=none\n").unwrap();
+    let backend = SimulatedBackend::default();
+    let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    fs::write(&path, "[Distribution]\nAurDevel=false\nAurRebuild=all\n").unwrap();
+    backend.events.borrow_mut().clear();
+    let second = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("system_init"), 0);
+    for stage in ["base-system.toml", "packages.toml"] {
+        assert_eq!(
+            record(&fixture.cache(&second.version, stage))["source_version"].as_str(),
+            Some(first.version.as_str())
+        );
+    }
+    assert!(backend.events.borrow().iter().all(|event| {
+        event.parameters["RSTAR_DISTRIBUTION_AURDEVEL"] == "false"
+            && event.parameters["RSTAR_DISTRIBUTION_AURREBUILD"] == "all"
+    }));
+}
+
 /// Freeze environment assignments from merged INI files before execution.
 /// 在执行前冻结合并 INI 文件中的环境赋值。
 /// # Arguments
@@ -154,10 +186,7 @@ fn multiline_ini_freezes_and_preserves_cache_compatibility() {
                 "\"RSTAR_CONTENT_PACKAGES\",",
                 "\"RSTAR_CONTENT_PACKAGES\", \"RSTAR_CUSTOM_ENABLED\",",
             )
-            .replace(
-                "base_system = [\"RSTAR_CONFIG\", \"RSTAR_DISTRIBUTION\"]",
-                "base_system = [\"RSTAR_CONFIG\", \"RSTAR_DISTRIBUTION\", \"RSTAR_CUSTOM\"]",
-            )
+            .replace("base_system = [", "base_system = [\"RSTAR_CUSTOM\", ")
             .as_bytes(),
     );
     let layout = fixture.store.system_layout("desktop").unwrap();

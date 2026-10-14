@@ -557,6 +557,8 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
         distribution_options: std::collections::BTreeMap::from([
             ("Architecture".into(), "x86_64".into()),
             ("AurKeyserver".into(), "hkps://example.invalid".into()),
+            ("AurDevel".into(), "false".into()),
+            ("AurRebuild".into(), "sample\nother".into()),
         ]),
         config: root.clone(),
         persistent_mounts: Vec::new(),
@@ -577,6 +579,8 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
     let fields: Vec<_> = trace.split(|byte| *byte == 0).collect();
     assert!(fields.contains(&b"--setenv=RSTAR_ARCHITECTURE".as_slice()));
     assert!(fields.contains(&b"--setenv=RSTAR_AURKEYSERVER".as_slice()));
+    assert!(fields.contains(&b"--setenv=RSTAR_AURDEVEL".as_slice()));
+    assert!(fields.contains(&b"--setenv=RSTAR_AURREBUILD".as_slice()));
     assert!(
         !fields
             .iter()

@@ -1,7 +1,7 @@
 # Arch Linux 预设插件
 
 此目录在 Cargo 构建时打包并嵌入程序，`init` 将其写入管理目录的
-`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.11.0 需主动替换旧插件包。
+`plugins/arch.tar.gz`。已有同名普通文件保持不变，升级到 0.12.0 需主动替换旧插件包。
 插件 API 为 3，元数据 schema 为 1，当前支持官方 Arch 的 `x86_64`。
 
 系统通过 `[Distribution] Distribution=arch` 自动选择插件，例如：
@@ -17,6 +17,8 @@ Architecture=x86_64
 # Keyring=/usr/share/pacman/keyrings/archlinux.gpg
 # Mirror=https://geo.mirror.pkgbuild.com/$repo/os/$arch
 # AurKeyserver=hkps://keyserver.ubuntu.com
+# AurDevel=true
+# AurRebuild=none
 ```
 
 元数据必须显式声明全部统一参数，以及基础和软件缓存检测字段：
@@ -30,12 +32,13 @@ optional = [
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
     "RSTAR_CONTENT_ROOTPASSWORD",
+    "RSTAR_DISTRIBUTION_AURDEVEL", "RSTAR_DISTRIBUTION_AURREBUILD",
 ]
 
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
 # 基础变化使后续缓存失效；软件目标在维护中协调。
 [cache]
-base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
+base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL", "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING", "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER"]
 software = []
 ```
 
@@ -43,7 +46,8 @@ software = []
 必选参数缺失或为空、出现未声明参数时均报错，不执行插件操作。
 控制器独立读取的 `[Inheritance]` 不要求在插件配置中声明。
 声明使用规范大写名称，重复赋值按原始列表保留；四个列表都必须提供，适用时显式使用空列表。
-基础缓存检测 Config、Distribution 整节；Packages 变化由软件维护处理，不使缓存失效。
+基础缓存检测 Config 节及上述 Distribution 字段；AurDevel/AurRebuild 只影响软件准备，
+不使基础或软件阶段缓存失效。Packages 变化由软件维护处理，不使缓存失效。
 新增自定义参数时须登记到 required 或 optional，并按需加入缓存列表。
 缓存可选择裸参数、整节或 `RSTAR_*节名_参数名`，规则见 [构建设计](../../../docs/build-design.md)。
 
@@ -55,6 +59,8 @@ software = []
 | Keyring | RSTAR_DISTRIBUTION_KEYRING | `/usr/share/pacman/keyrings/archlinux.gpg` |
 | Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用包内 `data/mirrorlist` |
 | AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
+| AurDevel | RSTAR_DISTRIBUTION_AURDEVEL | `true`，检查 Git 源码更新 |
+| AurRebuild | RSTAR_DISTRIBUTION_AURREBUILD | `none`，按记录增量复用；可设 `all` 或 pkgbase 列表 |
 | [Content] RootPassword | RSTAR_CONTENT_ROOTPASSWORD | 未配置或为空时不修改软件阶段输出中的密码 |
 
 ### 软件源配置模板
@@ -282,6 +288,46 @@ AUR 构建完成后使用实际二进制运行依赖复核该系统计划，编�
 
 AUR 编译以非 root 的 rstar-build 用户执行；仓库包优先从官方源解析，其他包使用 AUR RPC，
 拆分包按 pkgbase 构建。提供者不明确、循环依赖或不满足版本约束均报错。
+
+### AUR 增量构建
+
+0.12.0 起，配方 commit、架构、构建配置与源码状态一致时复用已校验二进制，
+不重复验证源码、编译或安装临时构建依赖。拆分包整组校验；运行依赖仍使用实际
+二进制元数据处理。`.aur-builds.json` 在 repository 持久卷按架构/pkgbase 保留记录，
+与本次 `.prepared.json` 清单独立，移出目标后再次加入也能复用。
+升级前的缓存缺少完整记录，首次按需重建一次，随后增量复用。
+
+普通归档有固定校验和时按配方身份复用，配方改动即使未涨版本也重建。
+默认检查 source 中的 Git HEAD、branch、tag 或固定完整 commit；不靠包名后缀识别。
+动态 pkgver 不单独触发重建。先下载/验证并记录本地源码快照，再用 `--holdver` 编译，
+避免 prepare() 新增提交被误当作上游更新。查询失败中止并回滚，不宣称已是最新。
+其他 VCS、无法识别的 Git 引用及无固定校验和的远程来源保守重建。
+固定校验和的归档按配方复用，无法发现维护者未修改配方的远端文件替换。
+
+在 `[Distribution]` 中可配置：
+
+```ini
+AurDevel=true
+AurRebuild=none
+```
+
+`AurDevel=false` 关闭 Git 上游检查，仍检查配方和产物。
+`AurRebuild=all` 强制构建本批全部 AUR；也可用多行/重复赋值列出 pkgbase：
+
+```ini
+AurRebuild=sample
+AurRebuild=other
+```
+
+`all`、`none` 必须单独使用。配置会持续生效，完成强制重建后应恢复 `none`。
+统一下载入口兼容旧变量 `RSTAR_AURDEVEL`、`RSTAR_AURREBUILD`。
+日志报告复用/重建数量及每个重建原因。
+
+记录的 AUR 构建依赖产物变化会传递失效；已声明的版本化共享库依赖无法再从当前源
+满足时也会重建。没有声明 SONAME 的普通依赖不能完整反映 ABI 变化，必要时使用
+AurRebuild；不会因为所有官方依赖的小版本更新就重编全部 AUR。
+自定义构建配置引入外部动态输入、配方函数额外下载源码时也需手动重建。
+
 持久子卷 arch-packages、arch-repository、arch-sources 映射为
 state/packages、state/repository、state/sources，保留包、仓库和源码缓存。
 每次插件调用使用事务 CoW 副本，失败回滚，成功发布。本地仓库使用 Optional TrustAll，
@@ -292,7 +338,8 @@ state/packages、state/repository、state/sources，保留包、仓库和源码�
 禁用下载可设置 `predownload = false`，仍收集软件维护所需计划并保存同步元数据，持久映射仍独立生效。
 未声明两个新能力的旧插件仍使用原有预下载参数和核心软件协调流程。
 
-流程已通过模拟存储、模拟工具和真实 Bash 测试；真实 Btrfs/nspawn 完整安装链路待集成验证。
+流程已通过模拟存储、模拟工具和真实 Bash 测试；增量构建另有真实本地 Git/makepkg
+离线验证。真实 Btrfs/nspawn 完整安装链路待集成验证。
 完整协议见 [构建设计](../../../docs/build-design.md)。
 
 

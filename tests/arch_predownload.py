@@ -357,6 +357,8 @@ class Protocol(unittest.TestCase):
             root = Path(temporary)
             p = arch.Preparer.__new__(arch.Preparer)
             p.states, p.stack, p.artifacts = {}, [], {}
+            p.arch, p.aur_devel, p.aur_rebuild = "x86_64", True, set()
+            p.config_sha256, p.cache_counts = "fixture", dict(reused=0, built=0)
             p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
             p.outputs, p.repo, p.cache = root / "outputs", root / "repo", root / "cache"
             for directory in (p.outputs, p.repo, p.cache):
@@ -364,6 +366,7 @@ class Protocol(unittest.TestCase):
             p.makepkg_conf = root / "makepkg.conf"
             p.makepkg_conf.write_text("# configuration\n")
             p.ensure, p.publish, p.prefetch = Mock(), Mock(), Mock()
+            p.official = Mock(return_value=[])
             calls = []
 
             def makepkg(checkout, arguments):
@@ -375,7 +378,7 @@ class Protocol(unittest.TestCase):
             def inspect(command, **kwargs):
                 package = Path(command[2]).name.split("-dynamic")[0]
                 return subprocess.CompletedProcess(command, 0,
-                    f"pkgname = {package}\npkgver = 2.r15-1\ndepend = generated-runtime\n"
+                    f"pkgname = {package}\npkgver = 2.r15-1\narch = x86_64\ndepend = generated-runtime\n"
                     "provides = generated-provider=2\nconflict = obsolete-provider\n", "")
 
             p.makepkg = makepkg
@@ -389,7 +392,7 @@ class Protocol(unittest.TestCase):
             self.assertEqual(base["runtime_by_package"]["sample-cli"], ["generated-runtime"])
             self.assertEqual(base["provides"]["sample-cli"], ["generated-provider=2"])
             self.assertEqual(base["conflicts"]["sample-cli"], ["obsolete-provider"])
-            self.assertIn(["--force", "--cleanbuild", "--clean", "--nodeps", "--noconfirm"], calls)
+            self.assertIn(["--force", "--cleanbuild", "--clean", "--holdver", "--nodeps", "--noconfirm"], calls)
             self.assertFalse(any("--packagelist" in call for call in calls))
             p.ensure.assert_any_call("compiler", install=True)
             p.ensure.assert_any_call("common", install=True)

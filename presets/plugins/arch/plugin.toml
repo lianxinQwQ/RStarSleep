@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.11.0"
+version = "0.12.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -57,6 +57,7 @@ optional = [
     "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING",
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
     "RSTAR_CONTENT_ROOTPASSWORD",
+    "RSTAR_DISTRIBUTION_AURDEVEL", "RSTAR_DISTRIBUTION_AURREBUILD",
 ]
 
 [config.constraints.RSTAR_CONFIG_SCHEMAVERSION]
@@ -94,10 +95,19 @@ kind = "free-single"
 [config.constraints.RSTAR_DISTRIBUTION_AURKEYSERVER]
 kind = "free-single"
 
+[config.constraints.RSTAR_DISTRIBUTION_AURDEVEL]
+kind = "enum-single"
+values = ["true", "false"]
+
+[config.constraints.RSTAR_DISTRIBUTION_AURREBUILD]
+kind = "free-list"
+
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
 # 基础变化使后续缓存失效；软件目标在维护中协调。
+# Select foundation inputs explicitly so AUR query/rebuild policies do not discard stage caches.
+# 显式选择基础输入，避免 AUR 查询/重建策略丢弃阶段缓存；新增基础参数需同步登记。
 [cache]
-base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION"]
+base_system = ["RSTAR_CONFIG", "RSTAR_DISTRIBUTION_DISTRIBUTION", "RSTAR_DISTRIBUTION_ARCHITECTURE", "RSTAR_DISTRIBUTION_BOOTSTRAPURL", "RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL", "RSTAR_DISTRIBUTION_KEYRING", "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER"]
 software = []
 
 [tools]
