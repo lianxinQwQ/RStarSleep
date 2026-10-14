@@ -21,6 +21,9 @@ impl Drop for Lock {
 /// One allocated attempt retaining its exclusive system lock.
 /// 一个已分配构建尝试，保留独占系统锁。
 pub(super) struct Attempt {
+    /// Diagnostic archive retained independently of system roots and caches.
+    /// 独立于系统根和缓存保留的诊断归档。
+    pub log: super::logging::BuildLog,
     /// Manager-owned configuration, versions, and cache paths.
     /// 管理器所属配置、版本和缓存路径。
     pub layout: SystemLayout,
@@ -46,6 +49,7 @@ pub(super) struct Attempt {
 pub(super) struct Preflight {
     pub layout: SystemLayout,
     pub config: tempfile::TempDir,
+    pub log: super::logging::BuildLog,
     lock: Lock,
 }
 
@@ -53,6 +57,7 @@ impl Preflight {
     pub fn begin(store: &ConfigStore, id: &str) -> Result<Self> {
         let layout = store.system_layout(id)?;
         let lock = lock_system(&layout)?;
+        let log = super::logging::BuildLog::new(&layout.root)?;
         let config = tempfile::Builder::new()
             .prefix("config-preflight-")
             .tempdir_in(&layout.root)
@@ -61,6 +66,7 @@ impl Preflight {
         Ok(Self {
             layout,
             config,
+            log,
             lock,
         })
     }
@@ -130,6 +136,7 @@ impl Attempt {
         let Preflight {
             layout,
             config,
+            log,
             lock,
         } = inputs;
         disk::directory(&layout.versions)?;
@@ -180,7 +187,9 @@ impl Attempt {
         let frozen = directory.join("config");
         fs::rename(config.path(), &frozen).map_err(|e| disk::io(&frozen, e))?;
         disk::sync(&directory)?;
+        log.publish(&directory)?;
         Ok(Self {
+            log,
             config: directory.join("config"),
             layout,
             version,

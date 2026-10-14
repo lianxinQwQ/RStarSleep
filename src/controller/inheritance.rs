@@ -83,16 +83,16 @@ pub(super) fn apply(
             if backend.check_subvolume(unmarked, false).is_ok()
                 || backend.check_subvolume(unmarked, true).is_ok()
             {
-                eprintln!(
+                super::logging::diagnostic(format!(
                     "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
                     source.display(),
-                );
+                ));
             }
             if let Err(error) = backend.check_cow_source(unmarked, &pool) {
-                eprintln!(
+                super::logging::diagnostic(format!(
                     "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
                     source.display()
-                );
+                ));
             }
             seed_persistent(backend, unmarked, &persistent, &pool)?;
         }
@@ -104,10 +104,10 @@ pub(super) fn apply(
         let target = root.join(relative);
         if info.is_dir() {
             if let Err(error) = backend.check_cow_source(&persistent, &pool) {
-                eprintln!(
+                super::logging::diagnostic(format!(
                     "警告：复用含子卷或挂载点的 Mount 持久目录 {} / Warning: reusing a persistent mount directory containing subvolumes or mount points: {error}",
                     persistent.display()
-                );
+                ));
             }
             // Ensure the filesystem has an owned writable subvolume; nested children are allowed.
             // 确保文件系统具有所属可写子卷；允许嵌套后代。

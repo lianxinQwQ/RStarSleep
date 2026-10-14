@@ -244,6 +244,9 @@ mod boot_preflight;
 #[path = "build_workflow/predownload.rs"]
 mod predownload;
 
+#[path = "build_workflow/install_logs.rs"]
+mod install_logs;
+
 /// Refuse an active cutoff without partial deletion, retain newer versions and persistent data.
 /// 拒绝活动截止版本且不部分删除，保留更新版本和持久数据。
 /// # Arguments

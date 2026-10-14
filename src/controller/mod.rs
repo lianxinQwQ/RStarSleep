@@ -17,6 +17,7 @@ mod fs;
 mod identity;
 mod inheritance;
 mod initramfs;
+mod logging;
 mod model;
 mod mounts;
 mod output;

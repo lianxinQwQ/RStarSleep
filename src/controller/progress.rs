@@ -6,7 +6,7 @@ use std::{fmt::Display, time::Instant};
 /// Immediately identify the current system and work on the diagnostic stream.
 /// 在诊断流中即时标明当前系统和正在执行的工作。
 pub(crate) fn message(system: &str, chinese: impl Display, english: impl Display) {
-    eprintln!("==> [RStarSleep][{system}] {chinese} / {english}");
+    super::logging::diagnostic(format!("==> [RStarSleep][{system}] {chinese} / {english}"));
 }
 
 /// Report a step before execution, then its actual result and elapsed time.

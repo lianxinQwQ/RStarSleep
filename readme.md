@@ -169,6 +169,12 @@ RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 需要 Btrfs 工具、nspawn、插件声明的工具，以及安装系统所需权限。
 插件任务和构建脚本的诊断即时输出到终端；连接终端时通过伪终端保留下载进度条，并传入窗口尺寸。
 查询结果仍通过管道由管理器解析，诊断重定向到文件或管道时使用普通日志输出。
+每个已分配版本自动将构建进度、插件与脚本的终端输出保存到
+`systems/<系统>/versions/<版本>/install.log`，失败版本也保留错误及清理过程。
+准备阶段的输出随版本一同归档，共享预下载的输出写入各参与版本；查询操作的 stdout 协议数据不写入日志。
+日志保留原始字节，包括颜色转义、回车和进度条控制字符，可用
+`less -R /rstarsleep/systems/desktop/versions/v00000001/install.log` 查看。
+后续构建及阶段缓存清理保留历史日志；使用 `clean` 删除版本时一并删除其日志。
 每次构建将当前可执行程序同步到管理根的 `RStarSleep`，内容一致时不改写。
 Arch bootstrap 使用可信 Arch 签名密钥环；默认位置为
 `/usr/share/pacman/keyrings/archlinux.gpg`，可在 `[Distribution]` 设置 `Keyring`。

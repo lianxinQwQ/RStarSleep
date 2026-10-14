@@ -3,7 +3,7 @@
 use super::{
     BuildBackend, BuildContext, BuildOutcome, Error, Result, SystemBackend,
     cache::{self, Cache, Identity},
-    fs,
+    fs, logging,
     plugins::{self, LoadedPlugin},
     progress,
     records::{Attempt, Preflight, Status},
@@ -73,15 +73,20 @@ pub fn build_with_backend(
     let mut pending = Vec::new();
     let system_count = systems.len();
     for (index, id) in systems.into_iter().enumerate() {
-        match progress::run(
-            &id,
-            format!("准备配置与检查缓存（{}/{system_count}）", index + 1),
-            format!(
-                "Prepare configuration and check caches ({}/{system_count})",
-                index + 1
-            ),
-            || check_system(store, &id, &runtime),
-        ) {
+        let checked = (|| {
+            let inputs = Preflight::begin(store, &id)?;
+            let _log = logging::enter([inputs.log.clone()]);
+            progress::run(
+                &id,
+                format!("准备配置与检查缓存（{}/{system_count}）", index + 1),
+                format!(
+                    "Prepare configuration and check caches ({}/{system_count})",
+                    index + 1
+                ),
+                || check_system(store, &id, &runtime, inputs),
+            )
+        })();
+        match checked {
             Ok(value) => pending.push(value),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{id}: {error}")),
@@ -138,7 +143,12 @@ pub fn build_with_backend(
             .map(|&index| prepared[index].context.system_id.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        if let Err(error) = progress::run(
+        let _log = logging::enter(
+            indices
+                .iter()
+                .map(|&index| prepared[index].attempt.log.clone()),
+        );
+        let download = progress::run(
             "predownload",
             format!(
                 "预下载批次 {}/{}：系统 {systems}，{} 项软件需求",
@@ -162,7 +172,14 @@ pub fn build_with_backend(
                     prepared[indices[0]].package_plan.is_none(),
                 )
             },
-        ) {
+        )
+        .and_then(|()| {
+            for &index in &indices {
+                prepared[index].attempt.log.check()?;
+            }
+            Ok(())
+        });
+        if let Err(error) = download {
             for &index in &indices {
                 let value = &prepared[index];
                 status(
@@ -187,12 +204,37 @@ pub fn build_with_backend(
         if failed.contains(&index) {
             continue;
         }
-        match progress::run(
+        let _log = logging::enter([value.attempt.log.clone()]);
+        let built = progress::run(
             &value.context.system_id,
             format!("构建版本 {}", value.attempt.version),
             format!("Build version {}", value.attempt.version),
             || build_system(value, &work, &backend, &runtime),
-        ) {
+        );
+        let built = match value.attempt.log.check() {
+            Ok(()) => built,
+            Err(archive) => {
+                let error = match built {
+                    Ok(_) => archive,
+                    Err(error) => Error::Invalid(format!("{error}; 安装日志归档失败: {archive}")),
+                };
+                Err(error)
+            }
+        };
+        if let Err(error) = &built {
+            if let Err(record_error) = status(
+                &value.attempt,
+                &value.context.system_id,
+                "failed",
+                Some(error.to_string()),
+                Some(&value.plugin),
+            ) {
+                return Err(Error::Invalid(format!(
+                    "{error}; 失败记录写入失败: {record_error}"
+                )));
+            }
+        }
+        match built {
             Ok(outcome) => outcomes.push(outcome),
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{}: {error}", value.context.system_id)),
@@ -280,6 +322,12 @@ fn status(
     error: Option<String>,
     plugin: Option<&LoadedPlugin>,
 ) -> Result<()> {
+    if let Some(error) = &error {
+        logging::diagnostic(format!("[{id}] 构建失败 / Build failed: {error}"));
+    }
+    if state != "failed" {
+        attempt.log.check()?;
+    }
     attempt.status(&Status {
         schema_version: 1,
         version: &attempt.version,
@@ -289,7 +337,13 @@ fn status(
         plugin_id: plugin.map(|p| p.metadata.id.as_str()),
         plugin_version: plugin.map(|p| p.metadata.version.as_str()),
         plugin_sha256: plugin.map(|p| p.archive_sha256.as_str()),
-    })
+    })?;
+    if state == "failed" {
+        // Retain the failure's last diagnostics before returning even on an interrupted build.
+        // 即使构建中断，也在返回前同步失败时的最后诊断。
+        let _ = attempt.log.check();
+    }
+    Ok(())
 }
 
 /// Retain locked, frozen, validated inputs through preparation and version publication.
@@ -324,6 +378,7 @@ fn collect_plan(
     backend: &impl BuildBackend,
     runtime: &crate::config::RuntimeConfig,
 ) -> Result<crate::software::PackagePlan> {
+    let _log = logging::enter([value.inputs.log.clone()]);
     progress::run(
         &value.context.system_id,
         "收集软件组、基础包及运行依赖，检查启动要求",
@@ -367,13 +422,13 @@ fn check_system(
     store: &ConfigStore,
     id: &str,
     runtime: &crate::config::RuntimeConfig,
+    inputs: Preflight,
 ) -> Result<Pending> {
     progress::message(
         id,
         "冻结配置，检查插件、参数及启动要求",
         "Freeze configuration and check plugin, parameters and boot requirements",
     );
-    let inputs = Preflight::begin(store, id)?;
     let frozen = inputs.config.path();
     let config = read_build_config_at(frozen)?;
     let architecture = config
@@ -389,7 +444,7 @@ fn check_system(
     let inheritance = crate::config::InheritanceConfig::read(&input)?;
     validate_boot_capabilities(id, runtime, &inheritance, &plugin)?;
     for warning in &plugin.discovery_warnings {
-        eprintln!("{warning}");
+        logging::diagnostic(warning);
     }
     progress::message(
         id,
@@ -455,6 +510,11 @@ fn collect_plans(
     }
     let mut failures = Vec::new();
     for indices in groups.values() {
+        let _log = logging::enter(
+            indices
+                .iter()
+                .map(|&index| pending[index].inputs.log.clone()),
+        );
         let first = &pending[indices[0]];
         let result = super::predownload::with_environment(
             backend,
@@ -570,6 +630,7 @@ fn prepare_system(
         mut context,
         package_plan,
     } = pending;
+    let _log = logging::enter([inputs.log.clone()]);
     let id = context.system_id.clone();
     let id = id.as_str();
     if !*executable_synced {
@@ -655,6 +716,7 @@ fn prepare_system(
                     .collect();
             }
         }
+        attempt.log.check()?;
         Ok(upgrade_packages)
     })();
     match result {
@@ -884,16 +946,7 @@ fn build_system(
             }
             Ok(outcome)
         }
-        Err(error) => {
-            if let Err(record_error) =
-                status(attempt, id, "failed", Some(error.to_string()), Some(loaded))
-            {
-                return Err(Error::Invalid(format!(
-                    "{error}; 失败记录写入失败: {record_error}"
-                )));
-            }
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 

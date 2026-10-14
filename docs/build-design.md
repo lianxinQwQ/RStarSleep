@@ -397,6 +397,14 @@ Packages 为空时在基础层维护恢复的 base 缓存；有 Packages 时只�
 共享预下载批次会列出包含的系统，插件修改操作报告共享缓存工作副本的准备、提交或回滚。
 查询操作不逐条打印额外操作提示，其 stdout 继续仅包含协议数据。
 
+每个已分配版本自动保存 `versions/<版本>/install.log`，包含控制器进度及插件、
+用户脚本实际显示的 stdout/stderr；查询操作仅归档 stderr，不归档 stdout 协议数据。
+预检查及软件计划收集输出先临时保存，成功分配版本后移入该版本；尚未分配版本的检查失败不创建版本目录。
+共享解析与预下载输出复制到所有参与版本，单系统输出只进入本系统日志。
+失败版本保留详细错误、失败进度及清理过程。日志保留原始终端字节，包括 ANSI 颜色、
+回车和进度更新，不额外解码或清理；可用 `less -R <日志路径>` 查看。
+后续构建与阶段缓存清理不改写历史日志，`clean` 删除版本时同时删除其安装日志。
+
 控制器传递明确的上下文变量，例如 `RSTAR_PLUGIN_ROOT`、`RSTAR_PLUGIN_TMP`、
 `RSTAR_ROOT`、`RSTAR_CONFIG_DIR`、`RSTAR_SYSTEM_ID` 和 `RSTAR_DISTRIBUTION_ARCHITECTURE`。
 这些路径必须对应当前宿主或容器内的实际可见路径。包名作为独立参数传递，
@@ -498,6 +506,7 @@ systems/<系统>/cache/<版本>/packages
 systems/<系统>/cache/<版本>/script
 systems/<系统>/cache/<版本>/inherit
 systems/<系统>/versions/<版本>/config/
+systems/<系统>/versions/<版本>/install.log
 systems/<系统>/versions/<版本>/root/
 ```
 

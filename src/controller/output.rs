@@ -1,5 +1,6 @@
-//! Forward build diagnostics as bytes arrive while retaining process results.
-//! 在保留进程结果的同时，即时转发构建诊断。
+//! Forward and archive build diagnostics as bytes arrive while retaining process results.
+//! 在保留进程结果的同时，即时转发并存档构建诊断。
+use super::logging;
 use std::{
     fs::File,
     io::{self, IsTerminal, Read, Write},
@@ -110,9 +111,13 @@ fn terminal_pipe(source: RawFd) -> io::Result<(TerminalReader, File)> {
     Ok((TerminalReader { master, source }, slave))
 }
 
-/// Drain a pipe even after a terminal write fails so the child cannot block on it.
-/// 即使终端写入失败也继续读取管道，避免子进程因管道填满而阻塞。
-fn drain(reader: impl Read, mut target: Option<impl Write>) -> io::Result<Vec<u8>> {
+/// Drain a pipe even after a destination fails, keeping the other destination active.
+/// 即使某一输出目标失败也继续读取管道，并保持另一输出目标工作。
+fn drain(
+    reader: impl Read,
+    mut target: Option<impl Write>,
+    mut archive: Option<impl Write>,
+) -> io::Result<Vec<u8>> {
     let mut reader = reader;
     let mut captured = Vec::new();
     let mut buffer = [0; 8192];
@@ -130,8 +135,15 @@ fn drain(reader: impl Read, mut target: Option<impl Write>) -> io::Result<Vec<u8
                 .write_all(&buffer[..count])
                 .and_then(|()| writer.flush())
         {
-            write_error = Some(error);
+            write_error.get_or_insert(error);
             target = None;
+        }
+        if let Some(writer) = &mut archive
+            && let Err(error) = writer
+                .write_all(&buffer[..count])
+                .and_then(|()| writer.flush())
+        {
+            write_error.get_or_insert(error);
         }
     }
     match write_error {
@@ -148,6 +160,10 @@ fn stream_to(
     stderr: impl Write + Send,
     terminal: Option<RawFd>,
 ) -> io::Result<Output> {
+    // Capture the calling build's log before moving work to reader threads.
+    // 在将读取工作移交线程前捕获当前构建的日志。
+    let archive = logging::writer();
+    let stdout_archive = stdout.as_ref().map(|_| archive.clone());
     let (mut child, child_stdout, child_stderr): (_, Box<dyn Read + Send>, Box<dyn Read + Send>) =
         if let Some(source) = terminal {
             let (child_stdout, stdout_slave) = terminal_pipe(source)?;
@@ -173,8 +189,8 @@ fn stream_to(
             (child, Box::new(stdout), Box::new(stderr))
         };
     thread::scope(|scope| {
-        let stdout = scope.spawn(move || drain(child_stdout, stdout));
-        let stderr = scope.spawn(move || drain(child_stderr, Some(stderr)));
+        let stdout = scope.spawn(move || drain(child_stdout, stdout, stdout_archive));
+        let stderr = scope.spawn(move || drain(child_stderr, Some(stderr), Some(archive)));
         let status = child.wait();
         let stdout = stdout
             .join()
@@ -202,6 +218,19 @@ mod tests {
     struct RecordingWriter {
         bytes: Arc<Mutex<Vec<u8>>>,
         acknowledgement: PathBuf,
+    }
+
+    struct BrokenWriter;
+    impl Write for BrokenWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "destination closed",
+            ))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     impl Write for RecordingWriter {
@@ -267,6 +296,8 @@ exit 99
     #[test]
     fn captures_query_stdout_and_streams_diagnostics() {
         let temporary = tempfile::tempdir().unwrap();
+        let log = logging::BuildLog::new(temporary.path()).unwrap();
+        let _logging = logging::enter([log.clone()]);
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let mut command = Command::new("bash");
         command
@@ -298,6 +329,11 @@ exit 99
         assert!(output.status.success());
         assert_eq!(output.stdout, b"package\texplicit\n");
         assert_eq!(*stderr.lock().unwrap(), b"query-progress\r");
+        log.publish(temporary.path()).unwrap();
+        assert_eq!(
+            fs::read(temporary.path().join("install.log")).unwrap(),
+            b"query-progress\r"
+        );
     }
 
     /// Both pipes can exceed their kernel buffers without blocking each other.
@@ -321,17 +357,10 @@ exit 99
     /// 终端失败不会阻止排空管道或回收正在运行的子进程。
     #[test]
     fn drains_and_reaps_after_terminal_write_failure() {
-        struct BrokenWriter;
-        impl Write for BrokenWriter {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "terminal closed"))
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         for terminal in [None, Some(libc::STDERR_FILENO)] {
             let temporary = tempfile::tempdir().unwrap();
+            let log = logging::BuildLog::new(temporary.path()).unwrap();
+            let _logging = logging::enter([log.clone()]);
             let mut command = Command::new("bash");
             command
                 .args([
@@ -346,6 +375,89 @@ exit 99
             assert_eq!(
                 fs::read(temporary.path().join("completed")).unwrap(),
                 b"done"
+            );
+            log.publish(temporary.path()).unwrap();
+            assert_eq!(
+                fs::read(temporary.path().join("install.log")).unwrap(),
+                vec![0; 262144]
+            );
+        }
+    }
+
+    /// An archive failure does not interrupt console output or stop draining the pipe.
+    /// 存档失败不会中断终端输出，也不会停止排空管道。
+    #[test]
+    fn drains_and_forwards_after_archive_write_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let expected = vec![0xff; 32769];
+        let error = drain(
+            expected.as_slice(),
+            Some(RecordingWriter {
+                bytes: bytes.clone(),
+                acknowledgement: temporary.path().join("console"),
+            }),
+            Some(BrokenWriter),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(*bytes.lock().unwrap(), expected);
+    }
+
+    /// A shared archive writer keeps receiving chunks for its healthy log sinks.
+    /// 共享存档写入器仍接收后续数据块，使其中正常的日志目标继续工作。
+    #[test]
+    fn keeps_sending_chunks_after_archive_write_failure() {
+        struct FailsOnceWriter {
+            bytes: Arc<Mutex<Vec<u8>>>,
+            failed: bool,
+        }
+        impl Write for FailsOnceWriter {
+            fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+                if !self.failed {
+                    self.failed = true;
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "one sink failed"));
+                }
+                self.bytes.lock().unwrap().extend_from_slice(buffer);
+                Ok(buffer.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let expected = vec![0xff; 32769];
+        let error = drain(
+            expected.as_slice(),
+            Some(io::sink()),
+            Some(FailsOnceWriter {
+                bytes: bytes.clone(),
+                failed: false,
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(*bytes.lock().unwrap(), expected[8192..]);
+    }
+
+    /// The archive retains non-UTF-8 bytes and progress controls with pipes or PTYs.
+    /// 管道和 PTY 存档均保留非 UTF-8 字节及进度控制字符。
+    #[test]
+    fn archives_exact_diagnostic_bytes_with_pipes_and_terminals() {
+        for terminal in [None, Some(libc::STDERR_FILENO)] {
+            let temporary = tempfile::tempdir().unwrap();
+            let log = logging::BuildLog::new(temporary.path()).unwrap();
+            let _logging = logging::enter([log.clone()]);
+            let mut command = Command::new("bash");
+            command.args(["-c", "printf '\\377progress\\r\\n\\000done'"]);
+            let output = stream_to(&mut command, Some(io::sink()), io::sink(), terminal).unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"\xffprogress\r\n\0done");
+            assert!(output.stderr.is_empty());
+            log.publish(temporary.path()).unwrap();
+            assert_eq!(
+                fs::read(temporary.path().join("install.log")).unwrap(),
+                output.stdout
             );
         }
     }
