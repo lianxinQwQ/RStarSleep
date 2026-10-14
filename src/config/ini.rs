@@ -316,7 +316,7 @@ impl Document {
                 continue;
             }
             for name in names {
-                crate::software::valid_name(name)
+                crate::software::valid_target(name)
                     .map_err(|e| self.error(entry.line, &e.to_string()))?;
                 packages.push(name.into());
             }

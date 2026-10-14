@@ -45,7 +45,8 @@ maintain_packages() {
     [[ ${1:-} == --targets ]] || { log 'Missing --targets separator'; return 64; }
     shift
     targets=("$@")
-    validate_packages "${plan[@]}" "${targets[@]}" || return
+    validate_packages "${plan[@]}" || return
+    validate_targets "${targets[@]}" || return
     for package in "${plan[@]}"; do
         [[ -z ${plan_names[$package]:-} ]] || { log "Duplicate planned package: $package"; return 64; }
         plan_names["$package"]=1
@@ -70,11 +71,21 @@ maintain_packages() {
         [[ -n ${root_names[$package]:-} ]] || dependencies+=("$package")
     done
 
+    local -a install_plan=("${plan[@]}") install_options=(--needed)
+    local target name index
+    for target in "${targets[@]}"; do
+        [[ $target == */* ]] || continue
+        install_options=()
+        name=${target#*/}
+        for index in "${!install_plan[@]}"; do
+            [[ ${install_plan[$index]##*/} != "$name" ]] || install_plan[$index]=$(source_target "$target")
+        done
+    done
     maintenance_prune || return
     # Every retained package is an explicit transaction target, so old unrelated
     # packages are never upgraded merely because they remain installed.
     # 将所有保留包纳入更新事务，避免顺带升级尚未删除的无关旧软件。
-    pacman -S --needed --noconfirm --ask=4 -- "${plan[@]}" >&2 || return
+    pacman -S "${install_options[@]}" --noconfirm --ask=4 -- "${install_plan[@]}" >&2 || return
     maintenance_prune || return
     pacman -D --asexplicit -- "${roots[@]}" >&2 || return
     if (( ${#dependencies[@]} )); then

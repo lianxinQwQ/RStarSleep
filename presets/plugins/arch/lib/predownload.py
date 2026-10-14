@@ -47,7 +47,25 @@ def run(argv, capture=False, allowed=(0,)):
     return result
 
 
+def target_parts(value):
+    if "/" not in value:
+        return None, value
+    source, name = value.split("/", 1)
+    if not NAME.fullmatch(source) or not NAME.fullmatch(name):
+        raise PreparationError(f"invalid source-qualified target: {value!r}")
+    return source, name
+
+
+def valid_target(value):
+    try:
+        source, name = target_parts(value)
+        return bool(NAME.fullmatch(name))
+    except PreparationError:
+        return False
+
+
 def spec(value):
+    _, value = target_parts(value)
     match = SPEC.fullmatch(value)
     if not match:
         raise PreparationError(f"invalid dependency: {value!r}")
@@ -271,6 +289,7 @@ class Preparer:
                         elif line and current:
                             fields[current].append(line)
                     if fields.get("FILENAME"):
+                        fields["RSTAR_REPOSITORY"] = [database.name.removesuffix(".db")]
                         self.official_metadata.setdefault(fields["FILENAME"][0], fields)
         self.refresh_repo()
         if planning:
@@ -280,6 +299,9 @@ class Preparer:
             f"Predownload environment ready; baseline contains {len(self.baseline)} packages")
 
     def official(self, requirement):
+        source, _ = target_parts(requirement)
+        if source == "aur":
+            return None
         if requirement in self.resolutions:
             return self.resolutions[requirement]
         result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", requirement],
@@ -287,6 +309,8 @@ class Preparer:
         if result.returncode:
             if "target not found:" not in (result.stderr or "") and "could not find" not in (result.stderr or ""):
                 raise PreparationError(f"official resolution failed: {requirement}\n{result.stderr}")
+            if source is not None:
+                raise PreparationError(f"target unavailable in selected repository: {requirement}")
             self.resolutions[requirement] = None
             return None
         filenames = result.stdout.splitlines()
@@ -297,6 +321,9 @@ class Preparer:
 
     def official_target(self, requirement):
         """Classify targets from loaded metadata without resolving each closure."""
+        source, _ = target_parts(requirement)
+        if source is not None:
+            return self.official(requirement) is not None
         name = spec(requirement)[0]
         return any(name in fields.get("NAME", []) or name in fields.get("GROUPS", [])
                    or any(spec(value)[0] == name for value in fields.get("PROVIDES", []))
@@ -305,6 +332,13 @@ class Preparer:
     def collect(self, requested, prepare=False):
         """Collect only target roots and runtime dependencies, without downloading or building."""
         requested = list(dict.fromkeys(requested))
+        sources = {}
+        for value in requested:
+            source, name = target_parts(value)
+            if source is not None:
+                if name in sources and sources[name] != source:
+                    raise PreparationError(f"conflicting sources for package: {name}")
+                sources[name] = source
         selected, visited, pending = {}, set(), []
 
         def select(requirement):
@@ -351,8 +385,12 @@ class Preparer:
     def _plan_transaction(self, requested, selected):
         metadata = dict(self.official_metadata)
 
+        aur_repository = None
+
         def resolve():
-            result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", *requested],
+            targets = [f"{aur_repository}/{target_parts(value)[1]}" if value.startswith("aur/") else value
+                       for value in requested]
+            result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", *targets],
                                  isolated=True, capture=True, allowed=(0, 1))
             if result.returncode:
                 raise PreparationError(f"target package plan cannot be resolved:\n{result.stderr or ''}")
@@ -370,6 +408,7 @@ class Preparer:
             database = self.db / "sync" / f"{repository.name}.db"
             configuration = repository / "pacman.conf"
             configuration.write_text(self.configuration + f"\n[{repository.name}]\nSigLevel = Never\nServer = {repository.as_uri()}\n")
+            aur_repository = repository.name
             original_configuration = self.official_conf
             try:
                 with tarfile.open(database, "w:gz") as archive:
@@ -408,7 +447,8 @@ class Preparer:
             else:
                 batch = {}
                 batches.append(batch)
-            batch[name] = f"{name}={version}"
+            source = metadata.get("RSTAR_REPOSITORY", [None])[0]
+            batch[name] = f"{source}/{name}={version}" if source else f"{name}={version}"
         if batches:
             log(f"下载并校验官方软件包：{len(pending)} 个文件，{len(batches)} 批",
                 f"Download and verify official packages (files: {len(pending)}, batches: {len(batches)})")
@@ -524,7 +564,7 @@ class Preparer:
             if install:
                 log(f"安装 AUR 构建依赖：{requirement}", f"Install AUR build dependency: {requirement}")
                 self.pacman(["-U", "--needed", "--noconfirm", "--", self.repo / providers[0]["filename"]])
-        if install and self.pacman(["-T", requirement], capture=True, allowed=(0, 127)).returncode:
+        if install and self.pacman(["-T", target_parts(requirement)[1]], capture=True, allowed=(0, 127)).returncode:
             raise PreparationError(f"unsatisfied build dependency: {requirement}")
 
     @staticmethod
@@ -879,7 +919,7 @@ def collect_main(arguments):
     QUERY_MODE = True
     try:
         requested = list(dict.fromkeys(arguments))
-        if any(not NAME.fullmatch(name) for name in requested):
+        if any(not valid_target(name) for name in requested):
             raise PreparationError("invalid requested package")
         with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
             preparer = Preparer(workspace)
@@ -909,7 +949,8 @@ def prepare_systems(preparer, systems):
             raise PreparationError(f"system {system_id}: {error}") from error
     preparer.fetch(official_files)
     for target in sorted(aur_targets):
-        preparer.ensure(target)
+        forced = any(f"aur/{target}" in values for values in requests.values())
+        preparer.ensure(f"aur/{target}" if forced else target)
         preparer.clean_dependencies()
     # Only AUR transactions need a final plan after compiling: generated binary
     # dependencies and VCS versions can differ from their source recipe metadata.
@@ -935,7 +976,7 @@ def systems_main(argument):
         raise PreparationError("invalid per-system preparation request")
     for system_id, targets in request["systems"].items():
         if (not NAME.fullmatch(system_id) or not isinstance(targets, list)
-                or any(not isinstance(name, str) or not NAME.fullmatch(name) for name in targets)):
+                or any(not isinstance(name, str) or not valid_target(name) for name in targets)):
             raise PreparationError("invalid system identity or configured package targets")
     previous_query_mode, QUERY_MODE = QUERY_MODE, True
     try:
@@ -951,7 +992,7 @@ def systems_main(argument):
 
 def main():
     requested = list(dict.fromkeys(["base", *sys.argv[1:]]))
-    if any(not NAME.fullmatch(name) for name in requested):
+    if any(not valid_target(name) for name in requested):
         raise PreparationError("invalid requested package")
     log(f"开始共享软件准备：{len(requested)} 项需求（含 base）",
         f"Start shared package preparation: {len(requested)} requirements (including base)")

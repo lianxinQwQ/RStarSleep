@@ -26,6 +26,27 @@ validate_packages() {
     done
 }
 
+# Configured targets may select an explicit repository or AUR.
+validate_targets() {
+    local target
+    for target in "$@"; do
+        if [[ $target == */* ]]; then
+            validate_packages "${target%%/*}" "${target#*/}" || return
+        else
+            validate_packages "$target" || return
+        fi
+    done
+}
+
+# AUR binaries are published in the managed local repository.
+source_target() {
+    if [[ $1 == aur/* ]]; then
+        printf 'rstarsleep/%s\n' "${1#*/}"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 # Normalize pacman's empty filtered query while preserving real query errors.
 # 将 pacman 筛选结果为空的情形规范化，同时保留真正的查询错误。
 # Arguments: pacman query options and optional package names.

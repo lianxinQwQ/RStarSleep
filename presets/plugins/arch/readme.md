@@ -242,6 +242,12 @@ FstabLines=tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 包列表和脚本变化保留基础缓存。已发布版本根不受缓存清理影响。
 
 基础目标为 `base`；内核及用途相关软件由 `[Content] Packages` 指定。
+`Packages` 支持 `仓库名/包名`（例如 `archlinuxcn/paru`）和 `aur/包名`。
+限定仓库必须已在插件 pacman 配置中启用，缺包时直接失败，不回退到 AUR。
+`aur/包名` 强制从 AUR 构建，即使已启用仓库提供同名包；最终从本地
+`rstarsleep` 仓库安装。来源限定只用于具体包，安装清单仍保存实际包名。
+未限定来源时保持仓库优先、找不到再使用 AUR 的行为。
+切换来源时会重新安装，即使版本号相同。
 `Packages` 可混合具体包名和软件组，例如 `linux gnome gnome-shell`。
 `resolve_packages` 优先通过 `pacman -Si` 查询具体包，仅在包不存在时使用 `pacman -Sgq`
 展开软件组；包与组同名时优先选择包。组成员去重后都作为显式目标安装，

@@ -9,11 +9,12 @@ resolve_packages() {
     local target information members package status
     local -a resolved=()
     local -A seen=()
-    validate_packages "$@"
+    validate_targets "$@"
     (( $# )) || return 0
     resolve_tmp=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-resolve.XXXXXXXX")
     trap 'rm -rf -- "$resolve_tmp"' EXIT
     for target in "$@"; do
+        target=$(source_target "$target")
         # Exact packages take precedence over groups, matching pacman's install targets.
         # 具体包优先于软件组，与 pacman 的安装目标语义一致。
         if information=$(pacman -Si -- "$target" 2>"$resolve_tmp/error"); then
@@ -23,7 +24,7 @@ resolve_packages() {
             status=$?
             # Only a missing package permits group lookup; preserve database/configuration errors.
             # 仅缺包时查询软件组；保留数据库和配置错误。
-            if (( status != 1 )) || [[ $(<"$resolve_tmp/error") != "error: package '$target' was not found" ]]; then
+            if [[ $target == */* ]] || (( status != 1 )) || [[ $(<"$resolve_tmp/error") != "error: package '$target' was not found" ]]; then
                 cat -- "$resolve_tmp/error" >&2
                 return "$status"
             fi

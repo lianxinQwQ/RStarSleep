@@ -22,7 +22,7 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
         return Err(Error::Invalid("guest install requires packages".into()));
     }
     for package in packages {
-        crate::software::valid_name(package)?;
+        crate::software::valid_target(package)?;
     }
     let layout = store.system_layout(id)?;
     let _system = controller::lock_system_directory(&layout.root)?;
@@ -73,7 +73,7 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
                     Error::Invalid("guest-packages.conf contains unmanaged settings".into())
                 })?;
             for name in names.split_ascii_whitespace() {
-                crate::software::valid_name(name)?;
+                crate::software::valid_target(name)?;
                 if !requested.iter().any(|v| v == name) {
                     requested.push(name.into());
                 }

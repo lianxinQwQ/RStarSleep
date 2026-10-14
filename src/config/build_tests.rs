@@ -131,7 +131,9 @@ fn rejects_missing_and_invalid_build_inputs() {
         "-flag",
         ".hidden",
         "pkg:version",
-        "repo/pkg",
+        "repo/pkg/extra",
+        "aur/",
+        "/pkg",
         "'a b'",
         "['vim']",
         "name>=1",
@@ -442,4 +444,12 @@ fn overlays_all_ini_files_and_retains_assignment_boundaries() {
             .to_string()
             .contains("恰好配置一次")
     );
+}
+
+#[test]
+fn accepts_source_qualified_targets() {
+    for target in ["paru", "archlinuxcn/paru", "aur/paru"] {
+        crate::software::valid_target(target).unwrap();
+    }
+    assert!(crate::software::valid_name("aur/paru").is_err());
 }

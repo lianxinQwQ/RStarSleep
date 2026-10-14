@@ -1,6 +1,6 @@
 //! Checked package queries bound to one writable root and frozen build inputs.
 //! 绑定一个可写根和冻结构建输入的经检查包查询。
-use super::model::{InstalledPackage, SoftwareState, inventory, names, valid_name};
+use super::model::{InstalledPackage, SoftwareState, inventory, names, valid_target};
 use crate::controller::{BuildBackend, BuildContext, Error, Result, plugins::LoadedPlugin};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -50,7 +50,7 @@ impl<B: BuildBackend> PackageSession<'_, B> {
     pub(super) fn resolve(&self, targets: &[String]) -> Result<BTreeSet<String>> {
         let mut resolved = BTreeSet::new();
         for target in targets.iter().collect::<BTreeSet<_>>() {
-            valid_name(target)?;
+            valid_target(target)?;
             let output = names(&self.call("resolve_packages", std::slice::from_ref(target))?)?;
             if output.is_empty() {
                 return Err(Error::Invalid(format!(

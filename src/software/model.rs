@@ -72,6 +72,16 @@ pub(crate) fn valid_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a configured package target, optionally qualified by its source.
+pub(crate) fn valid_target(target: &str) -> Result<()> {
+    if let Some((source, name)) = target.split_once('/') {
+        valid_name(source)?;
+        valid_name(name)
+    } else {
+        valid_name(target)
+    }
+}
+
 /// Parse one concrete name per line and reject malformed or duplicate results.
 /// 解析每行一个具体名称，拒绝格式错误或重复结果。
 /// # Arguments

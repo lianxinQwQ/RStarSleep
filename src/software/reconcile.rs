@@ -16,7 +16,7 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             &serde_json::to_string(plan).map_err(|e| Error::Invalid(e.to_string()))?,
         )?;
         for target in targets {
-            super::model::valid_name(target)?;
+            super::model::valid_target(target)?;
         }
         let mut arguments = vec!["--plan".into()];
         arguments.extend(plan.packages.iter().cloned());
@@ -137,11 +137,16 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             );
         }
         demotion_roots.extend(previous.requested.iter().cloned());
-        let missing: Vec<_> = retained
+        let mut missing: Vec<_> = retained
             .iter()
             .filter(|name| !actual.contains_key(*name))
             .cloned()
             .collect();
+        for target in targets.iter().filter(|target| target.contains('/')) {
+            let resolved = self.resolve(std::slice::from_ref(target))?;
+            missing.retain(|name| !resolved.contains(name));
+            missing.push(target.clone());
+        }
         if !missing.is_empty() {
             progress::message(
                 &self.context.system_id,

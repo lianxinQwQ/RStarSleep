@@ -33,6 +33,29 @@ provides = virtual-gui=1
 """
 
 
+class SourceTargets(unittest.TestCase):
+    def test_target_validation(self):
+        for value in ("paru", "archlinuxcn/paru", "aur/paru"):
+            self.assertTrue(arch.valid_target(value))
+        for value in ("/paru", "aur/", "aur/x/y", "--repo/paru", "aur/bad name"):
+            self.assertFalse(arch.valid_target(value))
+
+    def test_forced_aur_skips_repository(self):
+        preparer = object.__new__(arch.Preparer)
+        preparer.pacman = Mock(side_effect=AssertionError("repository queried"))
+        self.assertIsNone(preparer.official("aur/paru"))
+        self.assertFalse(preparer.official_target("aur/paru"))
+        self.assertEqual(arch.spec("aur/paru"), ("paru", None, None))
+
+    def test_selected_repository_does_not_fall_back(self):
+        preparer = object.__new__(arch.Preparer)
+        preparer.resolutions = {}
+        preparer.pacman = Mock(return_value=Mock(returncode=1, stderr="target not found: paru"))
+        with self.assertRaises(arch.PreparationError):
+            preparer.official("archlinuxcn/paru")
+        self.assertEqual(preparer.pacman.call_args.args[0][-1], "archlinuxcn/paru")
+
+
 class Configuration(unittest.TestCase):
     def fixture(self):
         temporary = tempfile.TemporaryDirectory()
@@ -465,6 +488,19 @@ class OfflinePacman(unittest.TestCase):
         p.fetch = Mock(side_effect=AssertionError("collector downloaded packages"))
         p.build = Mock(side_effect=AssertionError("collector compiled packages"))
         return p
+
+    def test_forced_aur_wins_over_same_named_repository_package(self):
+        p = self.plan_preparer([("base", "1-1", {}), ("paru", "9-1", {})])
+        p.planned_transactions = {}
+        recipe = arch.srcinfo("pkgbase = paru\npkgver = 1\npkgrel = 1\npkgname = paru\n", "x86_64")
+        p.aur = Mock(return_value=recipe)
+        p.fetch, p.finish, p.clean_dependencies, p.ensure = Mock(), Mock(), Mock(), Mock()
+        result = arch.prepare_systems(p, {"desktop": ["aur/paru"]})
+        self.assertEqual(result["systems"]["desktop"]["packages"], ["base", "paru"])
+        p.ensure.assert_called_once_with("aur/paru")
+        self.assertTrue(any("/paru" in value and value != "aur/paru"
+                            for value in p.pacman.call_args.args[0]))
+        self.assertNotIn("paru-9-1-x86_64.pkg.tar.zst", p.fetch.call_args.args[0])
 
     def test_plan_uses_explicit_official_provider_in_the_combined_transaction(self):
         p = self.plan_preparer([

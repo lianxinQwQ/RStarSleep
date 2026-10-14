@@ -75,7 +75,7 @@ impl BuildConfig {
             validate_identifier(architecture)?;
         }
         for package in &self.packages {
-            crate::software::valid_name(package)
+            crate::software::valid_target(package)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         }
         Ok(())

@@ -7,9 +7,15 @@ source "$plugin_root/lib/common.sh"
 
 # Install independently supplied concrete package names explicitly.
 # 将独立传入的具体包名作为显式目标安装。
-validate_packages "$@"
+validate_targets "$@"
+targets=()
+options=(--needed)
+for target in "$@"; do
+    targets+=("$(source_target "$target")")
+    [[ $target != */* ]] || options=()
+done
 if (( $# )); then
     # Permit dependency-checked replacement of conflicting installed packages.
     # 允许在检查依赖的事务中替换冲突的已安装包。
-    pacman -S --needed --asexplicit --noconfirm --ask=4 -- "$@"
+    pacman -S "${options[@]}" --asexplicit --noconfirm --ask=4 -- "${targets[@]}"
 fi
