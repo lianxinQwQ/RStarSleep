@@ -33,6 +33,76 @@ provides = virtual-gui=1
 """
 
 
+class ChecksumProgress(unittest.TestCase):
+    class Terminal(StringIO):
+        def isatty(self):
+            return True
+
+    def test_consecutive_updates_use_one_terminal_row(self):
+        output = self.Terminal()
+        with patch.dict(os.environ, {"TERM": "xterm"}), redirect_stderr(output):
+            with arch.checksum_progress() as progress:
+                progress.update(25, 520)
+                progress.update(50, 520)
+                progress.update(520, 520)
+        self.assertEqual(output.getvalue().count("\n"), 1)
+        self.assertEqual(output.getvalue().count("\r\x1b[2K"), 2)
+        self.assertTrue(output.getvalue().endswith("520/520\n"))
+
+    def test_intervening_output_is_preserved_and_starts_a_new_progress_row(self):
+        for stream in ("stderr", "stdout"):
+            with self.subTest(stream=stream):
+                diagnostics, protocol = self.Terminal(), StringIO()
+                with patch.dict(os.environ, {"TERM": "xterm"}), \
+                        redirect_stderr(diagnostics), redirect_stdout(protocol):
+                    with arch.checksum_progress() as progress:
+                        progress.update(25, 520)
+                        print("intervening output", file=getattr(sys, stream))
+                        progress.update(50, 520)
+                self.assertNotIn("\r", diagnostics.getvalue())
+                self.assertIn("25/520\n", diagnostics.getvalue())
+                self.assertTrue(diagnostics.getvalue().endswith("50/520\n"))
+                if stream == "stdout":
+                    self.assertEqual(protocol.getvalue(), "intervening output\n")
+                else:
+                    self.assertIn("25/520\nintervening output\n", diagnostics.getvalue())
+
+    def test_redirected_and_dumb_terminals_keep_plain_logs(self):
+        for output, term in ((StringIO(), "xterm"), (self.Terminal(), "dumb")):
+            with self.subTest(term=term), patch.dict(os.environ, {"TERM": term}), \
+                    redirect_stderr(output):
+                with arch.checksum_progress() as progress:
+                    progress.update(25, 520)
+                    progress.update(520, 520)
+                self.assertNotIn("\r", output.getvalue())
+                self.assertNotIn("\x1b", output.getvalue())
+                self.assertEqual(output.getvalue().count("Final verification progress:"), 2)
+
+    def test_failure_ends_progress_and_restores_streams(self):
+        output, protocol = self.Terminal(), StringIO()
+        with patch.dict(os.environ, {"TERM": "xterm"}), \
+                redirect_stderr(output), redirect_stdout(protocol):
+            with self.assertRaises(arch.PreparationError):
+                with arch.checksum_progress() as progress:
+                    progress.update(25, 520)
+                    raise arch.PreparationError("checksum mismatch")
+            self.assertIs(sys.stderr, output)
+            self.assertIs(sys.stdout, protocol)
+            arch.log("校验失败", "checksum mismatch")
+        self.assertIn("25/520\n==> [RStarSleep]", output.getvalue())
+        self.assertIn("checksum mismatch", output.getvalue())
+
+    def test_narrow_terminal_does_not_wrap(self):
+        output = self.Terminal()
+        with patch.dict(os.environ, {"TERM": "xterm"}), redirect_stderr(output), \
+                patch.object(arch.os, "get_terminal_size", return_value=os.terminal_size((6, 24))):
+            # StringIO has no descriptor; provide one for the mocked size query.
+            with patch.object(output, "fileno", return_value=2):
+                with arch.checksum_progress() as progress:
+                    progress.update(25, 520)
+        self.assertEqual(output.getvalue(), "4%\n")
+
+
 class SourceTargets(unittest.TestCase):
     def test_target_validation(self):
         for value in ("paru", "archlinuxcn/paru", "aur/paru"):

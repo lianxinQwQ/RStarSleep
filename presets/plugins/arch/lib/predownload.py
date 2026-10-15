@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 from io import BytesIO
 from pathlib import Path
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 
 NAME = re.compile(r"^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$")
 SPEC = re.compile(r"^([A-Za-z0-9@_+][A-Za-z0-9@._+-]*)(?:(>=|<=|=|>|<)([^\s]+))?$")
@@ -41,6 +42,64 @@ class PreparationError(Exception):
 
 def log(chinese, english):
     print(f"==> [RStarSleep][arch:predownload] {chinese} / {english}", file=sys.stderr, flush=True)
+
+
+class _ProgressStream:
+    """End an inline progress row before forwarding intervening Python output."""
+
+    def __init__(self, stream, progress):
+        self.stream, self.progress = stream, progress
+
+    def write(self, text):
+        if text:
+            self.progress.finish()
+        return self.stream.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+class _ChecksumProgress:
+    def __init__(self, stream):
+        self.stream = stream
+        self.inline = stream.isatty() and os.environ.get("TERM") != "dumb"
+        self.active = False
+
+    def update(self, index, total):
+        if not self.inline:
+            log(f"最终校验进度：{index}/{total}", f"Final verification progress: {index}/{total}")
+            return
+        # Keep the terminal row short: the full bilingual diagnostic wraps at 80 columns.
+        # 终端使用简短文本，避免完整双语诊断在 80 列终端中折行。
+        try:
+            columns = os.get_terminal_size(self.stream.fileno()).columns
+        except (OSError, ValueError):
+            columns = 80
+        text = f"==> 校验 / Verify: {index}/{total}"
+        if len(text) + 2 >= columns:
+            text = f"{index}/{total}"
+        if len(text) >= columns:
+            text = f"{index * 100 // total}%"[:max(1, columns - 1)]
+        self.stream.write(("\r\x1b[2K" if self.active else "") + text)
+        self.stream.flush()
+        self.active = True
+
+    def finish(self):
+        if self.active:
+            self.stream.write("\n")
+            self.stream.flush()
+            self.active = False
+
+
+@contextmanager
+def checksum_progress():
+    progress = _ChecksumProgress(sys.stderr)
+    with redirect_stderr(_ProgressStream(sys.stderr, progress)), \
+            redirect_stdout(_ProgressStream(sys.stdout, progress)):
+        try:
+            yield progress
+        finally:
+            progress.finish()
 
 
 def run(argv, capture=False, allowed=(0,)):
@@ -949,18 +1008,19 @@ class Preparer:
         log(f"最终校验软件包摘要：{len(files)} 个文件",
             f"Final package checksum verification (files: {len(files)})")
         hashes = {}
-        for index, name in enumerate(sorted(files), 1):
-            digest = hashlib.sha256()
-            with (self.cache / name).open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            hashes[name] = digest.hexdigest()
-            if name in self.files:
-                metadata = self.official_metadata.get(name)
-                if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
-                    raise PreparationError(f"official package checksum mismatch: {name}")
-            if index % 25 == 0 or index == len(files):
-                log(f"最终校验进度：{index}/{len(files)}", f"Final verification progress: {index}/{len(files)}")
+        with checksum_progress() as progress:
+            for index, name in enumerate(sorted(files), 1):
+                digest = hashlib.sha256()
+                with (self.cache / name).open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                hashes[name] = digest.hexdigest()
+                if name in self.files:
+                    metadata = self.official_metadata.get(name)
+                    if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
+                        raise PreparationError(f"official package checksum mismatch: {name}")
+                if index % 25 == 0 or index == len(files):
+                    progress.update(index, len(files))
         log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
         if self.files and (self.verification.read_context() != self.verification.context
                            or any(self.verification.expired(name) for name in self.files)):
