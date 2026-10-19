@@ -4,10 +4,12 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 from io import BytesIO
 from io import StringIO
@@ -213,6 +215,80 @@ class Configuration(unittest.TestCase):
         self.assertFalse((plugin / "state/repository/bootstrap-keys").exists())
 
 
+class SaveProgress(unittest.TestCase):
+    def preparer(self, root):
+        p = arch.Preparer.__new__(arch.Preparer)
+        p.repo = root / "repo"
+        p.repo.mkdir()
+        value = dict(format=1, architecture="x86_64", packages={"fixture": {"sha256": "a" * 64}})
+        p.verification = Mock(path=p.repo / ".official-verifications.json")
+        p.verification.value.return_value = value
+        for marker in (".prepared.json", ".planned.json"):
+            (p.repo / marker).write_text('{"old":true}')
+        return p
+
+    def managed_save(self, p, root, success=True):
+        observed = {}
+        address = root / "control.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(address))
+            listener.listen(1)
+            listener.settimeout(3)
+
+            def serve():
+                with listener.accept()[0] as connection:
+                    connection.settimeout(3)
+                    observed["request"] = json.loads(connection.makefile("rb").readline())
+                    observed["markers"] = [(p.repo / name).exists() for name in (".prepared.json", ".planned.json")]
+                    observed["verification"] = json.loads(p.verification.path.read_text())
+                    response = dict(id=1, ok=success)
+                    if not success:
+                        response["error"] = "disk full"
+                    connection.sendall(json.dumps(response).encode() + b"\n")
+
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            sdk = Path(__file__).resolve().parents[1] / "src/controller/plugins/sdk"
+            try:
+                with patch.dict(os.environ, {"RSTAR_CONTROL_SOCKET": str(address), "RSTAR_SDK_DIR": str(sdk)}):
+                    p.save_progress()
+            finally:
+                thread.join(timeout=4)
+                self.assertFalse(thread.is_alive())
+        return observed
+
+    def test_real_sdk_saves_verification_without_old_completion_markers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            p = self.preparer(root)
+            observed = self.managed_save(p, root)
+            self.assertEqual(observed["request"], dict(version=1, id=1, operation="save"))
+            self.assertEqual(observed["markers"], [False, False])
+            self.assertEqual(observed["verification"], p.verification.value())
+
+    def test_save_error_aborts_preparation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            p = self.preparer(root)
+            with self.assertRaisesRegex(arch.PreparationError, "disk full"):
+                self.managed_save(p, root, success=False)
+
+    def test_control_channel_without_sdk_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            p = self.preparer(Path(temporary))
+            with patch.dict(os.environ, {"RSTAR_CONTROL_SOCKET": "socket", "RSTAR_SDK_DIR": ""}):
+                with self.assertRaisesRegex(arch.PreparationError, "SDK directory"):
+                    p.save_progress()
+
+    def test_old_controller_keeps_whole_call_transaction_behavior(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            p = self.preparer(Path(temporary))
+            with patch.dict(os.environ, {"RSTAR_CONTROL_SOCKET": ""}):
+                p.save_progress()
+            self.assertTrue((p.repo / ".prepared.json").exists())
+            self.assertFalse(p.verification.path.exists())
+
+
 class Protocol(unittest.TestCase):
     def preparer(self, cache, packages):
         p = arch.Preparer.__new__(arch.Preparer)
@@ -288,6 +364,35 @@ class Protocol(unittest.TestCase):
             p.fetch(["library-1", "library-2"])
             self.assertEqual(p.pacman.call_count, 2)
             self.assertEqual(p.files, {"library-1", "library-2"})
+
+    def test_download_batch_is_saved_before_a_later_batch_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            p = self.preparer(temporary, [("library-1", "library", "1-1"), ("library-2", "library", "2-1")])
+            saved = []
+            p.save_progress = Mock(side_effect=lambda: saved.append(set(p.files)))
+
+            def pacman(arguments, **kwargs):
+                if arguments[-1] == "library=2-1":
+                    raise arch.PreparationError("second batch failed")
+                (p.cache / "library-1").write_text("verified package")
+
+            p.pacman = Mock(side_effect=pacman)
+            with self.assertRaisesRegex(arch.PreparationError, "second batch failed"):
+                p.fetch(["library-1", "library-2"])
+            self.assertEqual(saved, [{"library-1"}])
+            p.verification.verified.assert_called_once_with("library-1", p.official_metadata["library-1"], p.cache / "library-1")
+
+    def test_invalid_download_is_never_saved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            p = self.preparer(temporary, [("pkg", "pkg", "1-1")])
+            (p.cache / "pkg").write_text("bad package")
+            p.pacman = Mock()
+            p.save_progress = Mock()
+            p.verification.verified.side_effect = arch.official_cache.VerificationError("bad digest")
+            with self.assertRaisesRegex(arch.PreparationError, "bad digest"):
+                p.fetch(["pkg"])
+            p.save_progress.assert_not_called()
+            self.assertFalse(p.files)
 
     def test_cached_but_unverified_files_still_get_a_download_verification(self):
         with tempfile.TemporaryDirectory() as temporary:

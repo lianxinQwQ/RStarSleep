@@ -111,16 +111,45 @@ class Incremental(unittest.TestCase):
         second.build(self.recipe(text=text))
         second.makepkg.assert_not_called()
 
-    def test_failed_runtime_preparation_does_not_replace_build_record(self):
+    def test_completed_build_is_saved_before_runtime_failure_and_reused_on_retry(self):
         first = self.preparer()
         first.build(self.recipe())
-        previous = (first.repo / ".aur-builds.json").read_bytes()
         second = self.preparer()
+        saves = []
+
+        def save():
+            if (second.repo / ".aur-builds.json").exists():
+                saves.append(json.loads((second.repo / ".aur-builds.json").read_text()))
+
+        second.save_progress = Mock(side_effect=save)
         second.ensure.side_effect = lambda value, **kwargs: (_ for _ in ()).throw(
             arch.PreparationError("runtime unavailable")) if not kwargs.get("install") else None
         with self.assertRaisesRegex(arch.PreparationError, "runtime unavailable"):
             second.build(self.recipe(commit="recipe-2"))
-        self.assertEqual((first.repo / ".aur-builds.json").read_bytes(), previous)
+        self.assertEqual(saves[-1]["architectures"]["x86_64"]["sample"]["commit"], "recipe-2")
+        self.assertFalse((second.repo / ".prepared.json").exists())
+        third = self.preparer()
+        third.build(self.recipe(commit="recipe-2"))
+        third.makepkg.assert_not_called()
+        third.ensure.assert_called_once_with("generated-runtime")
+
+    def test_verified_sources_are_saved_before_compilation_failure(self):
+        p = self.preparer()
+        events = []
+
+        def makepkg(checkout, arguments):
+            if "--verifysource" in arguments:
+                events.append("sources verified")
+            else:
+                events.append("compile")
+                raise arch.PreparationError("compile failed")
+
+        p.makepkg.side_effect = makepkg
+        p.save_progress = Mock(side_effect=lambda: events.append("save"))
+        with self.assertRaisesRegex(arch.PreparationError, "compile failed"):
+            p.build(self.recipe())
+        self.assertEqual(events, ["sources verified", "save", "compile"])
+        self.assertFalse((p.repo / ".aur-builds.json").exists())
 
     def test_missing_or_corrupt_single_copy_is_repaired_without_rebuild(self):
         first = self.preparer()

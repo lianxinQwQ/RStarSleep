@@ -512,6 +512,25 @@ class Preparer:
                 self.official_conf = original_configuration
                 database.unlink(missing_ok=True)
 
+    def save_progress(self):
+        """Publish useful cache work without declaring this whole batch prepared."""
+        if not os.environ.get("RSTAR_CONTROL_SOCKET"):
+            return  # Older controllers retain their whole-call transaction behavior.
+        directory = os.environ.get("RSTAR_SDK_DIR")
+        if not directory:
+            raise PreparationError("save control channel has no SDK directory")
+        # No intermediate save may publish completion markers from an older plan.
+        for name in (".prepared.json", ".planned.json"):
+            (self.repo / name).unlink(missing_ok=True)
+        atomic_json(self.verification.path, self.verification.value())
+        try:
+            loader = importlib.util.spec_from_file_location("rstarsleep_control", Path(directory) / "rstar.py")
+            client = importlib.util.module_from_spec(loader)
+            loader.loader.exec_module(client)
+            client.save()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise PreparationError(f"cannot save preparation progress: {error}") from error
+
     def fetch(self, filenames, force=False):
         filenames = set(filenames)
         pending = filenames if force else filenames - self.files
@@ -545,7 +564,7 @@ class Preparer:
                 batch = {}
                 batches.append(batch)
             source = metadata.get("RSTAR_REPOSITORY", [None])[0]
-            batch[name] = f"{source}/{name}={version}" if source else f"{name}={version}"
+            batch[name] = (f"{source}/{name}={version}" if source else f"{name}={version}", filename)
         if batches:
             log(f"下载并校验官方软件包：{len(pending)} 个文件，{len(batches)} 批",
                 f"Download and verify official packages (files: {len(pending)}, batches: {len(batches)})")
@@ -556,15 +575,20 @@ class Preparer:
             # -Sp already resolved each full closure. Download those exact packages
             # without choosing different providers or merging version constraints.
             # Two --nodeps flags skip re-resolution, retaining integrity/signature checks.
-            self.pacman(["-Sw", "--nodeps", "--nodeps", "--noconfirm", "--", *batch.values()], isolated=True)
+            self.pacman(["-Sw", "--nodeps", "--nodeps", "--noconfirm", "--", *[target for target, _ in batch.values()]], isolated=True)
+            completed = {filename for _, filename in batch.values()}
+            try:
+                for name in completed:
+                    if not (self.cache / name).is_file():
+                        raise PreparationError(f"missing downloaded package: {name}")
+                    self.verification.verified(name, self.official_metadata[name], self.cache / name)
+            except official_cache.VerificationError as error:
+                raise PreparationError(str(error)) from error
+            self.files.update(completed)
+            self.save_progress()
         for name in filenames:
             if not (self.cache / name).is_file():
                 raise PreparationError(f"missing downloaded package: {name}")
-        try:
-            for name in pending:
-                self.verification.verified(name, self.official_metadata[name], self.cache / name)
-        except official_cache.VerificationError as error:
-            raise PreparationError(str(error)) from error
         self.files.update(filenames)
         if batches:
             log(f"本阶段官方包准备完成：{len(pending)} 个新校验文件",
@@ -854,7 +878,7 @@ class Preparer:
                                               sources=revisions, artifacts=artifacts, aur_dependencies=references)
         atomic_json(self.repo / ".aur-builds.json", self.cache_index)
 
-    def complete_artifacts(self, base, artifacts):
+    def complete_artifacts(self, base, artifacts, record=None):
         """Rebuilt and reused packages use the same actual binary runtime metadata."""
         name = base["name"]
         self.artifacts[name] = artifacts
@@ -865,6 +889,11 @@ class Preparer:
             base["conflicts"][artifact["name"]] = artifact["conflicts"]
         self.publish(base, artifacts)
         self.states[name] = "built"
+        if record is not None:
+            # Save the complete split-package group and reuse record before
+            # unrelated runtime preparation can fail or save another batch.
+            record()
+            self.save_progress()
         dependencies = list(dict.fromkeys(dependency for artifact in artifacts for dependency in artifact["dependencies"]
                                           if not any(self.artifact_satisfies(p, dependency) for p in artifacts)))
         log(f"准备 {name} 的二进制运行依赖：{len(dependencies)} 项",
@@ -930,6 +959,7 @@ class Preparer:
                     raise PreparationError(f"downloaded Git source is stale or changed during fetch: {name}; retry preparation")
             except ValueError as error:
                 raise PreparationError(str(error)) from error
+        self.save_progress()
         log(f"编译 AUR 软件包：{name}", f"Compile AUR package: {name}")
         # prepare() may create commits or remove .git. Record the downloaded
         # source identity above and prevent a second fetch during compilation.
@@ -947,12 +977,14 @@ class Preparer:
             artifacts.append(artifact)
         if not artifacts or set(base["packages"]) - {p["name"] for p in artifacts}:
             raise PreparationError(f"incomplete split-package outputs: {name}")
-        self.complete_artifacts(base, artifacts)
-        if cacheable:
-            self.remember_build(base, artifacts, actual, dependencies)
-        else:
-            self.load_cache().pop(name, None)
-            atomic_json(self.repo / ".aur-builds.json", self.cache_index)
+        def record():
+            if cacheable:
+                self.remember_build(base, artifacts, actual, dependencies)
+            else:
+                self.load_cache().pop(name, None)
+                atomic_json(self.repo / ".aur-builds.json", self.cache_index)
+
+        self.complete_artifacts(base, artifacts, record=record)
         self.cache_counts["built"] += 1
         log(f"AUR 软件包准备完成：{name}，共 {len(artifacts)} 个产物",
             f"AUR package ready: {name}, {len(artifacts)} artifacts")

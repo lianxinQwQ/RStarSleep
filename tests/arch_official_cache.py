@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 path = Path(__file__).resolve().parents[1] / 'presets/plugins/arch/lib/predownload.py'
 loader = importlib.util.spec_from_file_location('predownload', path)
@@ -90,6 +90,24 @@ class OfficialCacheTests(unittest.TestCase):
         again = self.preparer()
         again.fetch([self.filename])
         again.finish(['fixture'])
+        again.pacman.assert_not_called()
+        self.assertEqual(again.files, {self.filename})
+
+    def test_saved_download_is_reusable_before_whole_preparation_finishes(self):
+        sdk = self.root / 'sdk'
+        sdk.mkdir()
+        # The transport is exercised against the real SDK in arch_predownload.py.
+        (sdk / 'rstar.py').write_text('def save():\n    pass\n')
+        first = self.preparer()
+        for marker in ('.prepared.json', '.planned.json'):
+            (first.repo / marker).write_text('{"old":true}')
+        with patch.dict(os.environ, {'RSTAR_CONTROL_SOCKET': 'managed-call', 'RSTAR_SDK_DIR': str(sdk)}):
+            first.fetch([self.filename])
+        self.assertTrue(first.verification.path.is_file())
+        self.assertFalse((first.repo / '.prepared.json').exists())
+        self.assertFalse((first.repo / '.planned.json').exists())
+        again = self.preparer()
+        again.fetch([self.filename])
         again.pacman.assert_not_called()
         self.assertEqual(again.files, {self.filename})
 
