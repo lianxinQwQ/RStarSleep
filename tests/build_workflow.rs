@@ -405,3 +405,6 @@ fn clean_removes_only_owned_boot_files() {
 
 #[path = "build_workflow/unified_packages.rs"]
 mod unified_packages;
+
+#[path = "build_workflow/reuse.rs"]
+mod reuse;

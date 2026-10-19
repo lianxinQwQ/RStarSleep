@@ -153,7 +153,13 @@ impl LoadedPlugin {
         parameters: &crate::config::PluginParameters,
     ) -> Result<()> {
         let mut plugin_values = parameters.values.clone();
-        plugin_values.retain(|name, _| !name.starts_with("RSTAR_INHERITANCE_"));
+        plugin_values.retain(|name, _| {
+            !name.starts_with("RSTAR_INHERITANCE_")
+                && !matches!(
+                    name.as_str(),
+                    "RSTAR_CONFIG_CACHEREUSEMINUTES" | "RSTAR_CACHE_REUSE_MINUTES"
+                )
+        });
         self.validate_configuration(&plugin_values)?;
         for (name, values) in &parameters.lists {
             let Some(rule) = self.metadata.config.constraints.get(name) else {

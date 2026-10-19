@@ -8,7 +8,17 @@ impl LoadedPlugin {
     /// Software depends on both its own selected fields and the base it inherits.
     /// 软件依赖自身选定字段以及所继承基础的选定字段。
     pub(crate) fn cache_configuration_hash(&self, config: &Path, software: bool) -> Result<String> {
-        let parameters = crate::config::read_plugin_parameters_at(config)?;
+        let mut parameters = crate::config::read_plugin_parameters_at(config)?;
+        // Controller policy is not an input to the plugin's stage output, even for RSTAR_CONFIG.
+        // 即使选择整个 RSTAR_CONFIG，控制器策略也不属于插件阶段产物的输入。
+        for name in [
+            "RSTAR_CONFIG_CACHEREUSEMINUTES",
+            "RSTAR_CACHE_REUSE_MINUTES",
+        ] {
+            parameters.values.remove(name);
+            parameters.lists.remove(name);
+            parameters.field_sections.remove(name);
+        }
         let mut selectors: BTreeSet<_> = self.metadata.cache.base_system.iter().collect();
         if software {
             selectors.extend(&self.metadata.cache.software);

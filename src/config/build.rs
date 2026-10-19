@@ -49,6 +49,10 @@ struct GlobalBuildOptions {
     /// Optional scratch directory relative to the manager root or absolute.
     /// 可选临时目录，相对于管理根或为绝对路径。
     work_dir: Option<PathBuf>,
+    /// Maximum age for skipping completed stages; zero keeps normal maintenance.
+    /// 跳过已完成阶段的最长分钟数；零保留常规维护。
+    #[serde(default)]
+    cache_reuse_minutes: u64,
 }
 
 impl BuildConfig {
@@ -391,6 +395,49 @@ pub(crate) fn normalized_build_config(text: &str, path: &Path) -> Result<Vec<u8>
 }
 
 impl ConfigStore {
+    /// Resolve the global cache lifetime with a frozen per-system override.
+    /// 读取全局缓存有效期，并应用冻结的系统配置覆盖。
+    /// # Arguments
+    /// - `self`: Initialized manager containing global policy. 包含全局策略的已初始化管理器。
+    /// - `directory`: Frozen system configuration root. 冻结的系统配置根。
+    /// # Errors
+    /// Reject malformed, negative or overflowing minute counts before building.
+    /// 在构建前拒绝格式错误、负值或溢出的分钟数。
+    pub fn cache_reuse_minutes_at(&self, directory: &Path) -> Result<u64> {
+        let path = self.global_config_path();
+        let text = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        let options: GlobalBuildOptions =
+            toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+        if options.schema_version != 1 {
+            return Err(Error::Invalid("仅支持全局 schema_version = 1".into()));
+        }
+        let parameters = read_plugin_parameters_at(directory)?;
+        let system = parameters
+            .lists
+            .get("RSTAR_CONFIG_CACHEREUSEMINUTES")
+            .or_else(|| parameters.lists.get("RSTAR_CACHE_REUSE_MINUTES"));
+        let minutes = match system {
+            None => options.cache_reuse_minutes,
+            Some(values) => {
+                let [value] = values.as_slice() else {
+                    return Err(Error::Invalid(
+                        "CacheReuseMinutes 必须是单个非负整数".into(),
+                    ));
+                };
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(Error::Invalid("CacheReuseMinutes 必须是非负整数".into()));
+                }
+                value
+                    .parse::<u64>()
+                    .map_err(|_| Error::Invalid("CacheReuseMinutes 超出范围".into()))?
+            }
+        };
+        minutes
+            .checked_mul(60)
+            .ok_or_else(|| Error::Invalid("cache_reuse_minutes 换算秒数溢出".into()))?;
+        Ok(minutes)
+    }
+
     /// Read one system's editable complete build configuration.
     /// 读取一个系统当前可编辑的完整构建配置。
     ///

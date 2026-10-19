@@ -61,6 +61,9 @@ pub struct SimulatedBackend {
     pub remove_kept_on_update: Cell<bool>,
     pub mutate_editable: RefCell<Option<PathBuf>>,
     pub mutate_environment: RefCell<Option<(PathBuf, String)>>,
+    /// Change a live source after inheritance inputs have already been frozen and hashed.
+    /// 在继承输入已经冻结并散列后修改运行来源。
+    pub mutate_on_script_restore: RefCell<Option<(PathBuf, String)>>,
     pub package_groups: RefCell<BTreeMap<String, Vec<String>>>,
     pub runtime_dependencies: RefCell<BTreeMap<String, Vec<String>>>,
     pub collected_package_plan_override: RefCell<Option<String>>,
@@ -404,6 +407,11 @@ impl BuildBackend for SimulatedBackend {
     fn snapshot(&self, source: &Path, destination: &Path, readonly: bool) -> Result<()> {
         assert!(source.join(MARKER).is_file());
         assert!(!destination.exists());
+        if destination.ends_with("script-root")
+            && let Some((path, text)) = self.mutate_on_script_restore.borrow_mut().take()
+        {
+            fs::write(path, text).unwrap();
+        }
         self.snapshots.borrow_mut().push(SnapshotEvent {
             source: source.into(),
             destination: destination.into(),

@@ -130,6 +130,10 @@ pub(super) struct Record {
     /// Resolved managed targets and actual installed inventory.
     /// 已解析管理目标和实际安装清单。
     pub software: SoftwareState,
+    /// Optional execution receipt; older records remain valid maintenance donors.
+    /// 可选执行凭据；旧记录仍可作为常规维护来源。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse: Option<super::reuse::Receipt>,
 }
 
 /// One validated completed cache and its durable inventory/provenance.
@@ -171,6 +175,9 @@ fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
         if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::Invalid("缓存摘要无效".into()));
         }
+    }
+    if let Some(receipt) = &record.reuse {
+        receipt.validate()?;
     }
     for id in [
         &record.origin_version,

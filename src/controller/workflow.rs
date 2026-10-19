@@ -355,6 +355,7 @@ struct Prepared {
     context: BuildContext,
     upgrade_packages: Vec<String>,
     package_plan: Option<crate::software::PackagePlan>,
+    reuse_minutes: u64,
 }
 
 type DownloadGroup = (
@@ -370,6 +371,7 @@ struct Pending {
     config: crate::config::BuildConfig,
     context: BuildContext,
     package_plan: Option<crate::software::PackagePlan>,
+    reuse_minutes: u64,
 }
 
 fn collect_plan(
@@ -431,6 +433,7 @@ fn check_system(
     );
     let frozen = inputs.config.path();
     let config = read_build_config_at(frozen)?;
+    let reuse_minutes = store.cache_reuse_minutes_at(frozen)?;
     let architecture = config
         .architecture
         .as_deref()
@@ -464,7 +467,13 @@ fn check_system(
         parameters: input
             .values
             .into_iter()
-            .filter(|(name, _)| !name.starts_with("RSTAR_INHERITANCE_"))
+            .filter(|(name, _)| {
+                !name.starts_with("RSTAR_INHERITANCE_")
+                    && !matches!(
+                        name.as_str(),
+                        "RSTAR_CONFIG_CACHEREUSEMINUTES" | "RSTAR_CACHE_REUSE_MINUTES"
+                    )
+            })
             .collect(),
         config: frozen.to_path_buf(),
         persistent_mounts: Vec::new(),
@@ -478,6 +487,7 @@ fn check_system(
         config,
         context,
         package_plan: None,
+        reuse_minutes,
     })
 }
 
@@ -629,6 +639,7 @@ fn prepare_system(
         config,
         mut context,
         package_plan,
+        reuse_minutes,
     } = pending;
     let _log = logging::enter([inputs.log.clone()]);
     let id = context.system_id.clone();
@@ -651,14 +662,22 @@ fn prepare_system(
         if let Some(plan) = &package_plan {
             fs::write(&attempt.directory.join("package-plan.toml"), plan)?;
         }
-        // Script caches are never donors; retire them only after configuration passes preflight.
-        // script 缓存绝不作为来源；配置通过预检查后才清理。
+        // Retain script donors while timed reuse is enabled; inherit always runs again.
+        // 启用限时复用时保留 script 来源；inherit 始终重新执行。
         progress::message(
             id,
-            "清理历史脚本及后续阶段缓存",
-            "Clear previous script and later stage caches",
+            "清理不复用的历史后续阶段缓存",
+            "Clear historical later stage caches that are not reused",
         );
-        cache::clear_from(backend, &attempt.layout.cache, "script")?;
+        cache::clear_from(
+            backend,
+            &attempt.layout.cache,
+            if reuse_minutes > 0 {
+                "inherit"
+            } else {
+                "script"
+            },
+        )?;
         let mut upgrade_packages = Vec::new();
         {
             let mut protected = loaded.metadata.protected_packages.clone();
@@ -727,6 +746,7 @@ fn prepare_system(
             context,
             upgrade_packages,
             package_plan,
+            reuse_minutes,
         }),
         Err(error) => {
             status(
@@ -876,6 +896,22 @@ fn build_system(
         let mut software_identity = identity.clone();
         software_identity.options_sha256 =
             loaded.cache_configuration_hash(&attempt.config, true)?;
+        let scripts = if prepared.reuse_minutes > 0 {
+            if let Some(version) = &attempt.previous {
+                cache::load(
+                    backend,
+                    &attempt.layout.cache.join(version),
+                    &attempt.layout.versions.join(version).join("config"),
+                    version,
+                    "script",
+                    &software_identity,
+                )?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let stages = Stages {
             backend,
             plugin: loaded,
@@ -887,8 +923,9 @@ fn build_system(
             package_plan: prepared.package_plan.as_ref(),
             scratch: &scratch,
             prepare_boot_inheritance: runtime.main_system.as_deref() == Some(id.as_str()),
+            reuse_minutes: prepared.reuse_minutes,
         };
-        stages.run(base, packages, &mut owned)
+        stages.run(base, packages, scripts, &mut owned)
     })();
     let cleanup = progress::run(
         id,
@@ -1003,7 +1040,7 @@ fn cleanup(backend: &impl BuildBackend, owned: &[PathBuf]) -> Result<()> {
     for root in owned.iter().rev() {
         match fs::exists(root).and_then(|exists| {
             if exists {
-                backend.delete_subvolume(root)
+                backend.delete_subvolume_recursive(root)
             } else {
                 Ok(())
             }

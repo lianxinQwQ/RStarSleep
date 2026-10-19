@@ -259,7 +259,7 @@ fn subvolume_options(subvolume: &Path, readonly: bool) -> Result<String> {
 /// # Arguments
 /// - `source`: Current-running-system source. 当前运行系统来源。
 /// - `system`: Owning system directory. 所属系统目录。
-fn check_source(source: &Path, system: &Path) -> Result<bool> {
+pub(super) fn check_source(source: &Path, system: &Path) -> Result<bool> {
     disk::checked(source)?;
     let manager = system
         .parent()

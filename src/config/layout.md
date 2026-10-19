@@ -480,3 +480,9 @@ pending-inheritance 产物；失败构建保持上一引用。冷启动/重启�
 删除过程遇到错误会停止，可重试；版本所有权记录随版本保留到对应外部启动文件删除完成。
 
 配置解析、模拟构建和真实 Bash 接口已测试；真实 Btrfs/nspawn 完整链路仍待集成验证。
+
+
+`cache_reuse_minutes` 是可选全局非负整数，默认 `0`；系统 INI 的 `[Config] CacheReuseMinutes`（旧 TOML 顶层 `cache_reuse_minutes`）可覆盖，包括显式 `0`。
+`ConfigStore::cache_reuse_minutes_at()` 在冻结配置上解析该策略，拒绝负数、多项及换算秒数溢出。策略无需在插件中声明。
+正值允许前三个阶段在输入未变且未到期时跳过全部执行；执行时间不因缓存命中刷新。构建继承同时校验冻结来源的内容及元数据摘要。
+详细阶段规则见 [构建设计](../../docs/build-design.md#限时直接复用前三个阶段)。

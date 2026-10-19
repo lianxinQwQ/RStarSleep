@@ -453,3 +453,71 @@ fn accepts_source_qualified_targets() {
     }
     assert!(crate::software::valid_name("aur/paru").is_err());
 }
+
+/// Global defaults, frozen system overrides and historical inputs share one validated TTL.
+/// 全局默认值、冻结系统覆盖与旧输入使用统一校验的有效期。
+/// # Arguments
+/// No parameters. 无参数。
+#[test]
+fn resolves_cache_lifetime_and_rejects_invalid_values() {
+    let (_temporary, store) = fixture();
+    let directory = store.root().join("input");
+    write_build(&directory, "[Config]\nSchemaVersion=1\n");
+    assert_eq!(store.cache_reuse_minutes_at(&directory).unwrap(), 0);
+    fs::write(
+        store.global_config_path(),
+        "schema_version=1\ncache_reuse_minutes=10\n",
+    )
+    .unwrap();
+    assert_eq!(store.cache_reuse_minutes_at(&directory).unwrap(), 10);
+    for (value, expected) in [("3", 3), ("0", 0)] {
+        fs::write(
+            directory.join(BUILD_CONFIG_PATH),
+            format!("[Config]\nCacheReuseMinutes={value}\n"),
+        )
+        .unwrap();
+        assert_eq!(store.cache_reuse_minutes_at(&directory).unwrap(), expected);
+    }
+    for value in [
+        "",
+        "-1",
+        "1.5",
+        "true",
+        "abc",
+        "18446744073709551615",
+        "1\nCacheReuseMinutes=2",
+    ] {
+        fs::write(
+            directory.join(BUILD_CONFIG_PATH),
+            format!("[Config]\nCacheReuseMinutes={value}\n"),
+        )
+        .unwrap();
+        assert!(
+            store.cache_reuse_minutes_at(&directory).is_err(),
+            "accepted {value}"
+        );
+    }
+    fs::remove_file(directory.join(BUILD_CONFIG_PATH)).unwrap();
+    fs::write(
+        directory.join(LEGACY_BUILD_CONFIG_PATH),
+        "cache_reuse_minutes=4\n",
+    )
+    .unwrap();
+    assert_eq!(store.cache_reuse_minutes_at(&directory).unwrap(), 4);
+    fs::write(
+        directory.join(LEGACY_BUILD_CONFIG_PATH),
+        "schema_version=1\n",
+    )
+    .unwrap();
+    for value in ["-1", "1.5", "true", "'10'", "18446744073709551615"] {
+        fs::write(
+            store.global_config_path(),
+            format!("schema_version=1\ncache_reuse_minutes={value}\n"),
+        )
+        .unwrap();
+        assert!(
+            store.cache_reuse_minutes_at(&directory).is_err(),
+            "accepted global {value}"
+        );
+    }
+}

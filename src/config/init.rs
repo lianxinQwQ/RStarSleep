@@ -14,6 +14,9 @@ schema_version = 1\n\
 # Optional build scratch directory; defaults to work/ under this manager root.\n\
 # 可选构建临时目录；默认使用此管理根下的 work/。\n\
 # work_dir = \"work\"\n\
+# Reuse unchanged completed stages for this many minutes; 0 disables skipping.\n\
+# 配置未变时直接复用阶段缓存的分钟数；0 禁用直接复用，系统可覆盖。\n\
+cache_reuse_minutes = 0\n\
 # Optional main system ID; omit this setting until a main system is selected.\n\
 # 可选的主系统标识；选定主系统前省略此项。\n\
 # main_system = \"desktop\"\n\
@@ -28,6 +31,9 @@ pub(super) const BUILD_DEFAULT: &str = "\
 # 当前可编辑的系统构建配置。\n\
 [Config]\n\
 SchemaVersion=1\n\
+# Optional override of global cache_reuse_minutes; 0 always executes stages.\n\
+# 可选覆盖全局缓存有效期；0 始终执行各阶段。\n\
+# CacheReuseMinutes=10\n\
 \n\
 # Distribution plugin type; selected from archives in the workspace plugins/ directory.\n\
 # 发行版插件类型；从工作目录 plugins/ 内的压缩包自动选择。\n\

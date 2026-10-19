@@ -8,6 +8,7 @@ use super::{
     plugins::LoadedPlugin,
     progress,
     records::Attempt,
+    reuse::{self, Receipt},
 };
 use crate::{
     base_system,
@@ -44,6 +45,9 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Whether to prepare main-system initramfs integration.
     /// 是否准备主系统 initramfs 集成。
     pub(super) prepare_boot_inheritance: bool,
+    /// Maximum age for directly reusing a completed stage; zero disables skipping.
+    /// 直接复用已完成阶段的最长分钟数；零禁用跳过执行。
+    pub(super) reuse_minutes: u64,
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
@@ -58,12 +62,15 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   本基础步骤的过往缓存，若可用。
     /// - `packages`: This package step's prior cache, if available.
     ///   本软件包步骤的过往缓存，若可用。
+    /// - `scripts`: Prior script cache eligible for time-bounded validation.
+    ///   待限时校验的过往脚本缓存。
     /// - `owned`: Scratch roots to clean after the attempt.
     ///   此次尝试后需要清理的临时根。
     pub(super) fn run(
         &self,
         base: Option<Cache>,
         packages: Option<Cache>,
+        scripts: Option<Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<BuildOutcome> {
         let id = &self.context.system_id;
@@ -77,7 +84,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             id,
             "构建时继承、软件维护后处理和用户脚本（3/4）",
             "Build-time inheritance, post-maintenance and user scripts (3/4)",
-            || self.script_step(&packages, owned),
+            || self.script_step(&packages, scripts.as_ref(), owned),
         )?;
         progress::run(
             id,
@@ -87,8 +94,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         )
     }
 
-    /// Create or restore this system's own base, then always maintain it before committing.
-    /// 创建或恢复此系统自己的基础根，然后始终先维护再提交。
+    /// Reuse a fresh base directly or create/restore and maintain it before committing.
+    /// 直接复用未过期基础，或创建、恢复并维护后提交。
     ///
     /// # Arguments
     ///
@@ -106,6 +113,21 @@ impl<B: BuildBackend> Stages<'_, B> {
         packages: Option<&Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
+        let inputs = reuse::inputs(
+            "base-system",
+            &self.identity.options_sha256,
+            self.context,
+            None,
+            &[u8::from(self.config.packages.is_empty())],
+        );
+        if reuse::matches(
+            cached,
+            self.reuse_minutes,
+            &self.plugin.archive_sha256,
+            &inputs,
+        )? {
+            return self.reuse(cached.unwrap());
+        }
         let root = self.scratch.join("base-root");
         owned.push(root.clone());
         if let Some(cached) = cached {
@@ -174,7 +196,13 @@ impl<B: BuildBackend> Stages<'_, B> {
             base_system::maintain(self.backend, self.plugin, &root, self.context)?;
             session.capture(Vec::new())?
         };
-        self.commit("base-system", &root, software, cached)
+        self.commit(
+            "base-system",
+            &root,
+            software,
+            cached,
+            Some(Receipt::executed(inputs)?),
+        )
     }
 
     /// Install from the preceding step's output, or maintain this step's own restored cache.
@@ -196,6 +224,23 @@ impl<B: BuildBackend> Stages<'_, B> {
         previous_step: &Cache,
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
+        let targets = serde_json::to_vec(&self.config.packages)
+            .map_err(|e| super::Error::Invalid(e.to_string()))?;
+        let inputs = reuse::inputs(
+            "packages",
+            &self.software_identity.options_sha256,
+            self.context,
+            Some(previous_step),
+            &targets,
+        );
+        if reuse::matches(
+            cached,
+            self.reuse_minutes,
+            &self.plugin.archive_sha256,
+            &inputs,
+        )? {
+            return self.reuse(cached.unwrap());
+        }
         let root = self.scratch.join("root");
         owned.push(root.clone());
         let cached = if self.plugin.metadata.package_maintenance && self.config.packages.is_empty()
@@ -252,7 +297,13 @@ impl<B: BuildBackend> Stages<'_, B> {
         } else {
             session.install(&self.config.packages)?
         };
-        self.commit("packages", &root, software, cached)
+        self.commit(
+            "packages",
+            &root,
+            software,
+            cached,
+            Some(Receipt::executed(inputs)?),
+        )
     }
 
     /// Inherit build-time data, then reapply plugin behavior and scripts on fresh software output.
@@ -262,20 +313,89 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   共享阶段输入。
     /// - `packages`: Completed software stage.
     ///   已完成软件阶段。
+    /// - `cached`: Previous script-stage output, when available.
+    ///   过往脚本阶段产物，若可用。
     /// - `owned`: Scratch roots to clean on success or failure.
     ///   成功或失败时需要清理的临时根。
-    fn script_step(&self, packages: &Cache, owned: &mut Vec<PathBuf>) -> Result<Cache> {
+    fn script_step(
+        &self,
+        packages: &Cache,
+        cached: Option<&Cache>,
+        owned: &mut Vec<PathBuf>,
+    ) -> Result<Cache> {
+        let frozen = if self.reuse_minutes > 0 {
+            Some(super::inheritance_inputs::freeze(
+                self.backend,
+                self.context,
+                self.scratch,
+                &self.attempt.layout.root,
+                owned,
+            )?)
+        } else {
+            None
+        };
+        let inputs = frozen
+            .as_ref()
+            .map(|frozen| -> Result<String> {
+                Ok(reuse::inputs(
+                    "script",
+                    &config_hash(&self.attempt.config)?,
+                    self.context,
+                    Some(packages),
+                    frozen.sha256.as_bytes(),
+                ))
+            })
+            .transpose()?;
+        if let Some(inputs) = &inputs
+            && reuse::matches(
+                cached,
+                self.reuse_minutes,
+                &self.plugin.archive_sha256,
+                inputs,
+            )?
+        {
+            let cached = cached.unwrap();
+            if self.plugin.metadata.query_package_files {
+                let source = self
+                    .attempt
+                    .layout
+                    .versions
+                    .join(&cached.record.version)
+                    .join("application-files.tsv");
+                super::fs::checked(&source)?;
+                if !std::fs::symlink_metadata(&source)
+                    .map_err(|e| super::fs::io(&source, e))?
+                    .is_file()
+                {
+                    return Err(super::Error::Invalid(
+                        "缓存软件包文件清单必须为普通文件".into(),
+                    ));
+                }
+                let bytes = std::fs::read(&source).map_err(|e| super::fs::io(&source, e))?;
+                crate::subsystem::atomic_write(
+                    &self.attempt.directory.join("application-files.tsv"),
+                    &bytes,
+                    0o600,
+                )
+                .map_err(|e| super::Error::Invalid(e.to_string()))?;
+            }
+            return self.reuse(cached);
+        }
         let root = self.scratch.join("script-root");
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
-        let inherited = super::inheritance::apply_build(
-            self.backend,
-            self.context,
-            &root,
-            self.scratch,
-            &self.attempt.layout.root,
-        )?;
+        let inherited = if let Some(frozen) = &frozen {
+            frozen.apply(self.backend, &root)?
+        } else {
+            super::inheritance::apply_build(
+                self.backend,
+                self.context,
+                &root,
+                self.scratch,
+                &self.attempt.layout.root,
+            )?
+        };
         if self.plugin.metadata.post_maintenance {
             self.backend
                 .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
@@ -314,7 +434,13 @@ impl<B: BuildBackend> Stages<'_, B> {
             )
             .map_err(|e| super::Error::Invalid(e.to_string()))?;
         }
-        self.commit("script", &root, software, None)
+        self.commit(
+            "script",
+            &root,
+            software,
+            None,
+            inputs.map(Receipt::executed).transpose()?,
+        )
     }
 
     /// Prepare persistent mounts and boot-time inheritance before publishing script output.
@@ -439,20 +565,52 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   经校验的已安装清单和目标。
     /// - `source`: Actual prior cache donor, absent for first installation.
     ///   实际过往缓存来源，首次安装时省略。
+    /// - `reuse`: Receipt of actual successful execution, when fingerprinted.
+    ///   已计算指纹时的实际成功执行凭据。
     fn commit(
         &self,
         stage: &str,
         root: &Path,
         software: SoftwareState,
         source: Option<&Cache>,
+        reuse: Option<Receipt>,
     ) -> Result<Cache> {
-        let record = self.record(stage, software, source)?;
+        let mut record = self.record(stage, software, source)?;
+        record.reuse = reuse;
         let directory = self.attempt.layout.cache.join(&self.attempt.version);
         progress::run(
             &self.context.system_id,
             format!("保存 {stage} 阶段的只读缓存"),
             format!("Save the read-only {stage} stage cache"),
             || cache::commit(self.backend, root, &directory, record),
+        )
+    }
+
+    /// Give a cache hit an independent read-only root while preserving its original execution time.
+    /// 为命中缓存创建独立只读根，同时保留最初执行时间。
+    /// # Arguments
+    /// - `self`: Current frozen attempt and storage backend. 当前冻结尝试及存储后端。
+    /// - `cached`: Validated fresh stage with matching inputs. 已验证有效期及输入匹配的阶段。
+    fn reuse(&self, cached: &Cache) -> Result<Cache> {
+        let mut record = cached.record.clone();
+        record.source_version = Some(record.version.clone());
+        record.version = self.attempt.version.clone();
+        record.config_sha256 = config_hash(&self.attempt.config)?;
+        progress::run(
+            &self.context.system_id,
+            format!("{} 缓存未过期且输入未变化，跳过阶段执行", record.stage),
+            format!(
+                "{} cache is fresh and inputs are unchanged; skip stage execution",
+                record.stage
+            ),
+            || {
+                cache::commit(
+                    self.backend,
+                    &cached.root,
+                    &self.attempt.layout.cache.join(&self.attempt.version),
+                    record,
+                )
+            },
         )
     }
 
@@ -517,6 +675,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             },
             config_sha256: config_hash(&self.attempt.config)?,
             software,
+            reuse: None,
         })
     }
 }
