@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 import arch_predownload as protocol
@@ -92,6 +93,41 @@ class Incremental(unittest.TestCase):
         manifest = json.loads((second.repo / ".prepared.json").read_text())
         self.assertEqual(len(manifest["packages"]), 2)
         self.assertEqual(manifest["aur"], first.artifacts)
+
+    def test_tmpfs_retry_publishes_complete_split_outputs_and_remains_reusable(self):
+        first = self.preparer()
+        compile = first.makepkg.side_effect
+        builds = []
+        partial = first.builds / "sample/src"
+
+        def makepkg(checkout, arguments):
+            if "--force" not in arguments:
+                return
+            builds.append(first.builds)
+            if len(builds) == 1:
+                partial.mkdir(parents=True)
+                (partial / "partial").write_text("incomplete build")
+                (first.outputs / "sample/partial.pkg.tar.zst").write_text("incomplete output")
+                raise arch.CommandError(["makepkg"], subprocess.CompletedProcess(
+                    ["makepkg"], 5, stderr="No space left on device"), no_space=True)
+            self.assertFalse(partial.exists())
+            compile(checkout, arguments)
+
+        first.makepkg.side_effect = makepkg
+        with ExitStack() as scratch, patch.object(arch, "filesystem_type", side_effect=lambda path:
+                                                 "tmpfs" if Path(path).is_relative_to(first.work) else "btrfs"):
+            first.scratch = scratch
+            first.build(self.recipe())
+            self.assertEqual(len(builds), 2)
+            self.assertEqual(first.cache_counts, dict(reused=0, built=1))
+            self.assertEqual(len(first.artifacts["sample"]), 2)
+            self.assertEqual(sum("--verifysource" in call.args[1] for call in first.makepkg.call_args_list), 1)
+            disk = first.builds.parent
+        self.assertFalse(disk.exists())
+        second = self.preparer()
+        second.build(self.recipe())
+        second.makepkg.assert_not_called()
+        self.assertEqual(second.cache_counts, dict(reused=1, built=0))
 
     def test_unselected_packages_remain_reusable(self):
         first = self.preparer()
@@ -419,7 +455,7 @@ package() {{
             home = fixture.root / "home"
             home.mkdir(exist_ok=True)
             # Tool execution stays under the test user's identity and temp paths.
-            def user(argv, capture=False):
+            def user(argv, capture=False, stream=False):
                 commands.append(argv)
                 env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
                 result = subprocess.run(argv, capture_output=True, text=True, env=env)

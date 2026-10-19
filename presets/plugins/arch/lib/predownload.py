@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Prepare shared official package closures and a locally built AUR repository."""
+import codecs
 import hashlib
 import importlib.util
 import json
@@ -17,7 +18,7 @@ import urllib.parse
 import urllib.request
 from io import BytesIO
 from pathlib import Path
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 
 NAME = re.compile(r"^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$")
 SPEC = re.compile(r"^([A-Za-z0-9@_+][A-Za-z0-9@._+-]*)(?:(>=|<=|=|>|<)([^\s]+))?$")
@@ -38,6 +39,12 @@ _verification_spec.loader.exec_module(official_cache)
 
 class PreparationError(Exception):
     pass
+
+
+class CommandError(PreparationError):
+    def __init__(self, argv, result, no_space=False):
+        self.no_space = no_space and result.returncode > 0 and result.returncode not in (130, 143)
+        super().__init__(f"command failed ({result.returncode}): {shlex.join(list(map(str, argv)))}\n{result.stderr or ''}")
 
 
 def log(chinese, english):
@@ -102,13 +109,59 @@ def checksum_progress():
             progress.finish()
 
 
-def run(argv, capture=False, allowed=(0,)):
-    result = subprocess.run(list(map(str, argv)), text=True,
-                            stdout=subprocess.PIPE if capture else (sys.stderr if QUERY_MODE else None),
-                            stderr=subprocess.PIPE if capture else None)
+def run(argv, capture=False, allowed=(0,), stream=False):
+    no_space = False
+    if stream:
+        # Keep diagnostics live without retaining an entire compiler log in RAM.
+        tail = ""
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        with subprocess.Popen(list(map(str, argv)), stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+            try:
+                while data := process.stdout.read1(8192):
+                    text = decoder.decode(data)
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+                    no_space |= any(message in tail[-64:] + text for message in
+                                    ("No space left on device", "ENOSPC", "设备上没有空间", "裝置上已無多餘空間"))
+                    tail = (tail + text)[-65536:]
+                final = decoder.decode(b"", final=True)
+                sys.stderr.write(final)
+                sys.stderr.flush()
+                tail = (tail + final)[-65536:]
+            except BaseException:
+                process.kill()
+                raise
+            result = subprocess.CompletedProcess(argv, process.wait(), stderr=tail)
+    else:
+        result = subprocess.run(list(map(str, argv)), text=True,
+                                stdout=subprocess.PIPE if capture else (sys.stderr if QUERY_MODE else None),
+                                stderr=subprocess.PIPE if capture else None)
     if result.returncode not in allowed:
-        raise PreparationError(f"command failed ({result.returncode}): {shlex.join(list(map(str, argv)))}\n{result.stderr or ''}")
+        raise CommandError(argv, result, no_space=no_space)
     return result
+
+
+def filesystem_type(path):
+    """Use the actual mount, including bind mounts and escaped mount names."""
+    path = Path(path).resolve()
+    selected, kind = -1, None
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields, filesystem = line.split(" - ", 1)
+        mount = Path(re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields.split()[4]))
+        if (path == mount or mount in path.parents) and len(mount.parts) >= selected:
+            selected, kind = len(mount.parts), filesystem.split()[0]
+    if kind is None:
+        raise PreparationError(f"cannot determine backing filesystem: {path}")
+    return kind
+
+
+@contextmanager
+def preparation_workspace(prefix):
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace, \
+            ExitStack() as scratch:
+        preparer = Preparer(workspace)
+        preparer.scratch = scratch
+        yield preparer
 
 
 def target_parts(value):
@@ -308,14 +361,15 @@ class Preparer:
         self.cache_counts = dict(reused=0, built=0)
         self.refresh_repo()
 
-    def user(self, argv, capture=False):
+    def user(self, argv, capture=False, stream=False):
         return run(["runuser", "-u", "rstar-build", "--", "env",
-                    f"HOME={self.builder.pw_dir}", f"GNUPGHOME={self.keys}", *argv], capture=capture)
+                    f"HOME={self.builder.pw_dir}", f"GNUPGHOME={self.keys}", *argv], capture=capture, stream=stream)
 
     def makepkg(self, checkout, argv, capture=False):
         return self.user(["env", "-u", "PKGDEST", "-u", "SRCDEST", "-u", "BUILDDIR", "-u", "CARCH",
                           "bash", "-c", 'cd -- "$1"; shift; exec makepkg "$@"',
-                          "rstarsleep-makepkg", str(checkout), "--config", str(self.makepkg_conf), *argv], capture=capture)
+                          "rstarsleep-makepkg", str(checkout), "--config", str(self.makepkg_conf), *argv],
+                         capture=capture, stream=not capture)
 
     def pacman(self, argv, isolated=False, capture=False, allowed=(0,)):
         return run(["pacman", "--config", self.official_conf if isolated else self.build_conf,
@@ -904,6 +958,62 @@ class Preparer:
         self.states[name] = "complete"
         self.stack.pop()
 
+    def compile_package(self, base, output):
+        arguments = ["--force", "--cleanbuild", "--clean", "--holdver", "--nodeps", "--noconfirm"]
+        try:
+            self.makepkg(base["checkout"], arguments)
+            return output
+        except CommandError as first:
+            if not first.no_space or not any(filesystem_type(path) == "tmpfs" for path in (self.builds, output)):
+                raise
+            log(f"{base['name']} 构建时 tmpfs 空间不足，切换硬盘重试一次",
+                f"tmpfs ran out of space while building {base['name']}; retry once on disk")
+            try:
+                output = self.disk_build_workspace(base["name"], output)
+                self.makepkg(base["checkout"], arguments)
+            except (PreparationError, OSError) as second:
+                raise PreparationError(f"Initial tmpfs build failed:\n{first}\nDisk fallback failed:\n{second}") from second
+            return output
+
+    def disk_build_workspace(self, name, output):
+        # /var/tmp belongs to the disposable predownload root, not a source/cache volume.
+        # Check the actual backing mount: users may also have mounted /var/tmp as tmpfs.
+        directory = Path(self.scratch.enter_context(
+            tempfile.TemporaryDirectory(prefix="rstarsleep-aur-", dir="/var/tmp")))
+        if filesystem_type(directory) in ("tmpfs", "ramfs"):
+            raise PreparationError(f"disk fallback is memory-backed: {directory}; use a disk-backed /var/tmp or TMPDIR")
+        failed = (self.builds / name, output)
+        # Require room for at least the files already produced, with a small reserve.
+        # This is a lower bound, not a prediction of a PKGBUILD's eventual peak usage.
+        required = 64 * 1024 * 1024
+        for path in failed:
+            if path.is_dir() and not path.is_symlink():
+                required += sum(item.stat().st_blocks * 512 for item in path.rglob("*")
+                                if not item.is_symlink() and item.is_file())
+        free = shutil.disk_usage(directory).free
+        if free < required:
+            raise PreparationError(f"insufficient disk fallback space at {directory}: {free} bytes free, at least {required} required")
+        directory.chmod(0o755)
+        builds, outputs = directory / "build", directory / "packages"
+        for path in (builds, outputs, outputs / name):
+            path.mkdir()
+            path.chmod(0o755)
+            os.chown(path, self.builder.pw_uid, self.builder.pw_gid)
+        configuration = directory / "makepkg.conf"
+        configuration.write_text(self.makepkg_conf.read_text() +
+                                 f"\nBUILDDIR={shlex.quote(str(builds))}\nPKGDEST={shlex.quote(str(outputs / name))}\n")
+        configuration.chmod(0o644)
+        for path in failed:
+            if path.is_symlink():
+                path.unlink()
+            elif path.exists():
+                shutil.rmtree(path)
+        # Keep all following pkgbase builds on disk for the rest of this invocation.
+        self.builds, self.outputs, self.makepkg_conf = builds, outputs, configuration
+        log(f"硬盘构建目录：{directory}，可用空间 {free // (1024 * 1024)} MiB；本轮后续构建使用硬盘",
+            f"Disk build workspace: {directory}, {free // (1024 * 1024)} MiB free; subsequent builds use disk")
+        return outputs / name
+
     def build(self, base):
         name = base["name"]
         if self.states.get(name) in ("built", "complete"):
@@ -963,7 +1073,7 @@ class Preparer:
         log(f"编译 AUR 软件包：{name}", f"Compile AUR package: {name}")
         # prepare() may create commits or remove .git. Record the downloaded
         # source identity above and prevent a second fetch during compilation.
-        self.makepkg(base["checkout"], ["--force", "--cleanbuild", "--clean", "--holdver", "--nodeps", "--noconfirm"])
+        output = self.compile_package(base, output)
         log(f"收集并检查 {name} 的构建产物", f"Collect and inspect build artifacts for {name}")
         artifacts = []
         for package in sorted(output.glob("*.pkg.tar.*")):
@@ -1079,8 +1189,7 @@ def collect_main(arguments):
         requested = list(dict.fromkeys(arguments))
         if any(not valid_target(name) for name in requested):
             raise PreparationError("invalid requested package")
-        with tempfile.TemporaryDirectory(prefix="rstarsleep-package-plan-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
-            preparer = Preparer(workspace)
+        with preparation_workspace("rstarsleep-package-plan-") as preparer:
             preparer.initialize(planning=True)
             requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
             packages = preparer.collect(requested)
@@ -1139,8 +1248,7 @@ def systems_main(argument):
             raise PreparationError("invalid system identity or configured package targets")
     previous_query_mode, QUERY_MODE = QUERY_MODE, True
     try:
-        with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
-            preparer = Preparer(workspace)
+        with preparation_workspace("rstarsleep-predownload-") as preparer:
             preparer.initialize()
             result = prepare_systems(preparer, request["systems"])
     finally:
@@ -1155,8 +1263,7 @@ def main():
         raise PreparationError("invalid requested package")
     log(f"开始共享软件准备：{len(requested)} 项需求（含 base）",
         f"Start shared package preparation: {len(requested)} requirements (including base)")
-    with tempfile.TemporaryDirectory(prefix="rstarsleep-predownload-", dir=os.environ.get("RSTAR_PLUGIN_TMP") or None) as workspace:
-        preparer = Preparer(workspace)
+    with preparation_workspace("rstarsleep-predownload-") as preparer:
         preparer.initialize()
         requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
         aur_targets = preparer.prefetch(requested)

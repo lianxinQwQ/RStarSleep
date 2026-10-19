@@ -13,7 +13,7 @@ import threading
 import unittest
 from io import BytesIO
 from io import StringIO
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -213,6 +213,158 @@ class Configuration(unittest.TestCase):
         preparer = self.initialize(plugin, workspace)
         self.assertEqual(preparer.keyring_targets, ["custom/custom-keyring"])
         self.assertFalse((plugin / "state/repository/bootstrap-keys").exists())
+
+
+class BuildSpaceFallback(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(dir="/var/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.scratch = ExitStack()
+        self.addCleanup(self.scratch.close)
+        self.p = p = arch.Preparer.__new__(arch.Preparer)
+        p.scratch = self.scratch
+        p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
+        p.builds, p.outputs = self.root / "build", self.root / "packages"
+        self.output = p.outputs / "sample"
+        for directory in (p.builds / "sample" / "src", self.output, p.outputs / "other"):
+            directory.mkdir(parents=True, exist_ok=True)
+        (p.builds / "sample/src/partial").write_text("partial build")
+        (self.output / "partial.pkg.tar.zst").write_text("incomplete")
+        (p.outputs / "other/keep").write_text("previous output")
+        p.distfiles = self.root / "sources"
+        p.distfiles.mkdir()
+        (p.distfiles / "archive.tar.gz").write_text("verified source")
+        p.makepkg_conf = self.root / "makepkg.conf"
+        p.makepkg_conf.write_text(f"SRCDEST={p.distfiles}\nBUILDDIR={p.builds}\nPKGDEST={self.output}\n")
+        p.config_sha256 = "unchanged build identity"
+        self.base = dict(name="sample", checkout=self.root / "checkout")
+        self.base["checkout"].mkdir()
+        self.error = arch.CommandError(["makepkg"], subprocess.CompletedProcess(
+            ["makepkg"], 5, stderr="zstd: Write error: No space left on device"), no_space=True)
+        self.mounts = patch.object(arch, "filesystem_type", side_effect=lambda path:
+                                   "tmpfs" if Path(path).is_relative_to(self.root) else "btrfs")
+        self.mounts.start()
+        self.addCleanup(self.mounts.stop)
+
+    def test_retry_moves_both_paths_cleans_only_failed_package_and_keeps_later_builds_on_disk(self):
+        def compile(checkout, arguments):
+            if self.p.makepkg.call_count == 1:
+                raise self.error
+            self.assertFalse(self.output.exists())
+            self.assertFalse((self.root / "build/sample").exists())
+            self.assertTrue((self.root / "packages/other/keep").is_file())
+            self.assertEqual((self.p.distfiles / "archive.tar.gz").read_text(), "verified source")
+            for suffix in ("cli", "gui", "debug"):
+                (self.p.outputs / "sample" / f"sample-{suffix}.pkg.tar.zst").write_text("complete")
+
+        self.p.makepkg = Mock(side_effect=compile)
+        with redirect_stderr(StringIO()) as diagnostics:
+            output = self.p.compile_package(self.base, self.output)
+        self.assertEqual(self.p.makepkg.call_count, 2)
+        self.assertEqual(self.p.makepkg.call_args_list[0], self.p.makepkg.call_args_list[1])
+        self.assertEqual(len(list(output.glob("*.pkg.tar.zst"))), 3)
+        self.assertFalse(output.is_relative_to(self.root))
+        self.assertIn("retry once on disk", diagnostics.getvalue())
+        self.assertIn(f"BUILDDIR={self.p.builds}", self.p.makepkg_conf.read_text())
+        self.assertTrue(self.p.makepkg_conf.read_text().endswith(f"PKGDEST={output}\n"))
+        self.assertEqual(self.p.config_sha256, "unchanged build identity")
+        disk = output.parent.parent
+        later = self.p.outputs / "later"
+        later.mkdir()
+        self.p.makepkg.reset_mock(side_effect=True)
+        self.assertEqual(self.p.compile_package(dict(name="later", checkout=self.base["checkout"]), later), later)
+        self.p.makepkg.assert_called_once()
+        self.assertEqual(later.parent.parent, disk)
+        self.scratch.close()
+        self.assertFalse(disk.exists())
+
+    def test_ordinary_failure_and_disk_enospc_are_not_retried(self):
+        for no_space, kind in ((False, "tmpfs"), (True, "btrfs")):
+            with self.subTest(no_space=no_space, kind=kind):
+                error = arch.CommandError(["makepkg"], subprocess.CompletedProcess(
+                    ["makepkg"], 5, stderr="failure"), no_space=no_space)
+                self.p.makepkg = Mock(side_effect=error)
+                with patch.object(arch, "filesystem_type", return_value=kind), \
+                        self.assertRaises(arch.CommandError) as failure:
+                    self.p.compile_package(self.base, self.output)
+                self.assertIs(failure.exception, error)
+                self.p.makepkg.assert_called_once()
+                self.assertTrue(self.output.exists())
+
+    def test_retry_failure_reports_both_attempts_and_never_retries_a_third_time(self):
+        self.p.makepkg = Mock(side_effect=[self.error, arch.PreparationError("compiler failed on disk")])
+        with redirect_stderr(StringIO()), self.assertRaises(arch.PreparationError) as failure:
+            self.p.compile_package(self.base, self.output)
+        self.assertIn("No space left on device", str(failure.exception))
+        self.assertIn("compiler failed on disk", str(failure.exception))
+        self.assertEqual(self.p.makepkg.call_count, 2)
+        disk = self.p.builds.parent
+        self.scratch.close()
+        self.assertFalse(disk.exists())
+
+    def test_memory_backed_or_full_fallback_is_rejected_without_retry(self):
+        for kind, free, message in (("tmpfs", 1 << 40, "memory-backed"),
+                                    ("ramfs", 1 << 40, "memory-backed"),
+                                    ("btrfs", 0, "insufficient disk fallback space")):
+            with self.subTest(kind=kind, free=free):
+                self.p.makepkg = Mock(side_effect=self.error)
+                with patch.object(arch, "filesystem_type", side_effect=lambda path:
+                                  "tmpfs" if Path(path).is_relative_to(self.root) else kind), \
+                        patch.object(arch.shutil, "disk_usage", return_value=Mock(free=free)), \
+                        redirect_stderr(StringIO()), self.assertRaisesRegex(arch.PreparationError, message):
+                    self.p.compile_package(self.base, self.output)
+                self.p.makepkg.assert_called_once()
+                self.assertTrue((self.root / "build/sample/src/partial").exists())
+
+    def test_cleanup_does_not_follow_symlink_at_failed_build_root(self):
+        shutil.rmtree(self.p.builds / "sample")
+        (self.p.builds / "sample").symlink_to(self.p.distfiles, target_is_directory=True)
+        self.p.makepkg = Mock(side_effect=[self.error, None])
+        with redirect_stderr(StringIO()):
+            self.p.compile_package(self.base, self.output)
+        self.assertEqual((self.p.distfiles / "archive.tar.gz").read_text(), "verified source")
+
+
+class BuildDiagnostics(unittest.TestCase):
+    def test_entrypoint_workspace_cleans_disk_scratch_even_when_preparation_fails(self):
+        with patch.object(arch, "Preparer", return_value=Mock()), \
+                self.assertRaisesRegex(arch.PreparationError, "failed"):
+            with arch.preparation_workspace("rstarsleep-test-") as preparer:
+                disk = Path(preparer.scratch.enter_context(tempfile.TemporaryDirectory(dir="/var/tmp")))
+                raise arch.PreparationError("failed")
+        self.assertFalse(disk.exists())
+
+    def test_stream_detects_space_error_in_either_stream_even_after_it_leaves_the_tail(self):
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream), redirect_stderr(StringIO()) as diagnostics, \
+                    redirect_stdout(StringIO()) as protocol:
+                command = [sys.executable, "-c", "import sys; "
+                           f"print('No space left on device',file=sys.{stream},flush=True); "
+                           "print('x'*70000,flush=True); sys.exit(5)"]
+                with self.assertRaises(arch.CommandError) as failure:
+                    arch.run(command, stream=True)
+                self.assertTrue(failure.exception.no_space)
+                self.assertIn("No space left on device", diagnostics.getvalue())
+                self.assertEqual(protocol.getvalue(), "")
+                self.assertLess(len(str(failure.exception)), 66000)
+
+    def test_stream_accepts_success_and_does_not_classify_other_errors_as_enospc(self):
+        with redirect_stderr(StringIO()):
+            self.assertEqual(arch.run([sys.executable, "-c", "print('complete')"], stream=True).returncode, 0)
+            with self.assertRaises(arch.CommandError) as failure:
+                arch.run([sys.executable, "-c", "import sys; print('compile failed'); sys.exit(5)"], stream=True)
+            self.assertFalse(failure.exception.no_space)
+
+    def test_mount_detection_uses_longest_mount_including_binds_and_escaped_spaces(self):
+        mounts = ("1 0 0:1 / / rw - btrfs /dev/test rw\n"
+                  "2 1 0:2 / /run rw - tmpfs tmpfs rw\n"
+                  "3 2 0:1 /disk /run/plugin-tmp rw - btrfs /dev/test rw\n"
+                  "4 2 0:3 / /run/space\\040here rw - tmpfs tmpfs rw\n")
+        with patch.object(Path, "read_text", return_value=mounts):
+            self.assertEqual(arch.filesystem_type("/run/plugin-tmp/build"), "btrfs")
+            self.assertEqual(arch.filesystem_type("/run/plugin-tmp-other/build"), "tmpfs")
+            self.assertEqual(arch.filesystem_type("/run/space here/build"), "tmpfs")
 
 
 class SaveProgress(unittest.TestCase):
