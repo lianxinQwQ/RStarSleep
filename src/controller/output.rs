@@ -14,7 +14,7 @@ use std::{
 pub(super) fn stream(command: &mut Command, query: bool) -> io::Result<Output> {
     // Diagnostics are displayed on stderr, including the child's stdout.
     // 诊断显示在 stderr，包括子进程的 stdout。
-    let terminal = (!query && io::stderr().is_terminal()).then_some(libc::STDERR_FILENO);
+    let terminal = io::stderr().is_terminal().then_some(libc::STDERR_FILENO);
     stream_to(command, (!query).then(io::stderr), io::stderr(), terminal)
 }
 
@@ -166,18 +166,31 @@ fn stream_to(
     let stdout_archive = stdout.as_ref().map(|_| archive.clone());
     let (mut child, child_stdout, child_stderr): (_, Box<dyn Read + Send>, Box<dyn Read + Send>) =
         if let Some(source) = terminal {
-            let (child_stdout, stdout_slave) = terminal_pipe(source)?;
+            // Query stdout is a protocol pipe; stderr still needs a terminal for
+            // download tools whose stdout is redirected there by the plugin.
+            // 查询 stdout 使用协议管道；stderr 仍需为重定向到此的软件包工具提供终端。
+            let (child_stdout, stdout_stdio) = if stdout.is_some() {
+                let (reader, slave) = terminal_pipe(source)?;
+                (Some(reader), Stdio::from(slave))
+            } else {
+                (None, Stdio::piped())
+            };
             let (child_stderr, stderr_slave) = terminal_pipe(source)?;
             let spawned = command
                 .stdin(Stdio::null())
-                .stdout(Stdio::from(stdout_slave))
+                .stdout(stdout_stdio)
                 .stderr(Stdio::from(stderr_slave))
                 .spawn();
             // Command retains its Stdio descriptors after spawn. Close these copies
             // so the readers receive EOF when the child exits, including on failure.
             // Command 在 spawn 后保留 Stdio；关闭其副本，使子进程退出后读取能结束。
             command.stdout(Stdio::null()).stderr(Stdio::null());
-            (spawned?, Box::new(child_stdout), Box::new(child_stderr))
+            let mut child = spawned?;
+            let child_stdout: Box<dyn Read + Send> = match child_stdout {
+                Some(reader) => Box::new(reader),
+                None => Box::new(child.stdout.take().expect("piped query stdout")),
+            };
+            (child, child_stdout, Box::new(child_stderr))
         } else {
             let mut child = command
                 .stdin(Stdio::null())
@@ -333,6 +346,56 @@ exit 99
         assert_eq!(
             fs::read(temporary.path().join("install.log")).unwrap(),
             b"query-progress\r"
+        );
+    }
+
+    /// Predownload keeps JSON on a pipe while redirected package tools see a terminal.
+    /// 预下载将 JSON 保留在管道中，同时让重定向的软件包工具感知终端。
+    #[test]
+    fn query_keeps_protocol_private_and_streams_terminal_download_progress() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log = logging::BuildLog::new(temporary.path()).unwrap();
+        let _logging = logging::enter([log.clone()]);
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                r#"
+[[ ! -t 0 && ! -t 1 && -t 2 ]] || exit 98
+printf '{"schema_version":1,"systems":{}}\n'
+bash -c '[[ -t 1 ]] || exit 97; printf "download 50%%\\r"' >&2 || exit $?
+for (( attempt = 0; attempt < 500; attempt++ )); do
+    if [[ -f "$1" ]]; then
+        printf 'download 100%%\n' >&2
+        exit 0
+    fi
+    sleep 0.01
+done
+exit 99
+"#,
+                "rstarsleep-query-terminal-test",
+            ])
+            .arg(temporary.path().join("stderr"));
+        let output = stream_to(
+            &mut command,
+            None::<io::Sink>,
+            RecordingWriter {
+                bytes: stderr.clone(),
+                acknowledgement: temporary.path().join("stderr"),
+            },
+            Some(libc::STDERR_FILENO),
+        )
+        .unwrap();
+        assert!(output.status.success(), "{:?}", output.status);
+        assert_eq!(output.stdout, b"{\"schema_version\":1,\"systems\":{}}\n");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap();
+        assert_eq!(output.stderr, b"download 50%\rdownload 100%\n");
+        assert_eq!(*stderr.lock().unwrap(), output.stderr);
+        log.publish(temporary.path()).unwrap();
+        assert_eq!(
+            fs::read(temporary.path().join("install.log")).unwrap(),
+            output.stderr
         );
     }
 
