@@ -6,6 +6,175 @@ use super::*;
 use crate::controller::plugins::container::nspawn;
 use std::fs;
 
+#[test]
+fn managed_host_call_saves_via_sdk_and_command_then_keeps_output() {
+    use std::{cell::Cell, rc::Rc};
+    let plugin = fixture(&[], &[]);
+    let root = plugin.temporary.path().join("target");
+    let context = crate::controller::BuildContext {
+        system_id: "predownload".into(),
+        architecture: "x86_64".into(),
+        config: root.clone(),
+        parameters: Default::default(),
+        parameter_lists: Default::default(),
+        environment: Default::default(),
+        distribution_options: Default::default(),
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        r#"set -e
+printf 'first' > "$RSTAR_ROOT/stage"
+"$RSTAR_SAVE"
+printf 'second' > "$RSTAR_ROOT/stage"
+python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ['RSTAR_SDK_DIR'])
+import rstar
+rstar.save()
+PY
+printf 'finished\n'
+printf 'diagnostic\n' >&2
+printf '%s' "$RSTAR_CONTROL_SOCKET" > "$RSTAR_ROOT/socket"
+"#,
+    )
+    .unwrap();
+    let called = Rc::new(Cell::new(0));
+    let mut save = || {
+        let expected = if called.get() == 0 { "first" } else { "second" };
+        assert_eq!(fs::read_to_string(root.join("stage")).unwrap(), expected);
+        called.set(called.get() + 1);
+        Ok(())
+    };
+    let output = plugin
+        .invoke_for_build_with_save("bootstrap", &[], &root, &context, &mut save)
+        .unwrap();
+    assert_eq!(called.get(), 2);
+    assert_eq!(output.stdout, b"finished\n");
+    assert_eq!(output.stderr, b"diagnostic\n");
+    assert!(!Path::new(&fs::read_to_string(root.join("socket")).unwrap()).exists());
+}
+
+#[test]
+fn ignored_save_failure_still_fails_managed_call() {
+    let plugin = fixture(&[], &[]);
+    let root = plugin.temporary.path().join("target");
+    let context = crate::controller::BuildContext {
+        system_id: "predownload".into(),
+        architecture: "x86_64".into(),
+        config: root.clone(),
+        parameters: Default::default(),
+        parameter_lists: Default::default(),
+        environment: Default::default(),
+        distribution_options: Default::default(),
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        "\"$RSTAR_SAVE\" || :\nexit 0\n",
+    )
+    .unwrap();
+    let error = plugin
+        .invoke_for_build_with_save("bootstrap", &[], &root, &context, &mut || {
+            Err(crate::controller::Error::Invalid("save rejected".into()))
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("save rejected"));
+}
+
+#[test]
+fn save_channel_is_bound_only_for_container_task_before_delimiter() {
+    let plugin = fixture(&[], &[]);
+    let root = plugin.temporary.path().join("target");
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        config: root.clone(),
+        parameters: Default::default(),
+        parameter_lists: Default::default(),
+        environment: Default::default(),
+        distribution_options: Default::default(),
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    launcher(&plugin, "", false);
+    let path = plugin.temporary.path().join("host-bin");
+    plugin
+        .invoke_environment_with_save(
+            "update",
+            &[],
+            &root,
+            "x86_64",
+            (path.as_os_str(), Some(&context)),
+            Some(&mut || Ok(())),
+        )
+        .unwrap();
+    let trace = fs::read(plugin.root().join("launcher-argv")).unwrap();
+    let frames: Vec<_> = trace
+        .split(|b| *b == 0)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect();
+    let calls: Vec<_> = frames
+        .split(|s| s == "CALL")
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert!(
+        !calls[0]
+            .iter()
+            .any(|s| s.contains("RSTAR_CONTROL_SOCKET") || s.contains("/run/rstarsleep/control"))
+    );
+    let delimiter = calls[1].iter().position(|s| s == "--").unwrap();
+    assert!(
+        calls[1][..delimiter]
+            .iter()
+            .any(|s| s == "--setenv=RSTAR_CONTROL_SOCKET=/run/rstarsleep/control/control.sock")
+    );
+    assert!(
+        calls[1][..delimiter]
+            .iter()
+            .any(|s| s.starts_with("--bind-ro=") && s.ends_with(":/run/rstarsleep/control"))
+    );
+}
+
+#[test]
+fn partial_control_request_does_not_prevent_plugin_exit() {
+    let plugin = fixture(&[], &[]);
+    let root = plugin.temporary.path().join("target");
+    let context = crate::controller::BuildContext {
+        system_id: "desktop".into(),
+        architecture: "x86_64".into(),
+        config: root.clone(),
+        parameters: Default::default(),
+        parameter_lists: Default::default(),
+        environment: Default::default(),
+        distribution_options: Default::default(),
+        persistent_mounts: Vec::new(),
+        inherited_mounts: Vec::new(),
+    };
+    fs::write(
+        plugin.operation_path("bootstrap").unwrap(),
+        r#"python3 - <<'PY'
+import os, socket, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(os.environ['RSTAR_CONTROL_SOCKET'])
+s.sendall(b'{')
+time.sleep(0.03)
+PY
+"#,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    plugin
+        .invoke_for_build_with_save("bootstrap", &[], &root, &context, &mut || {
+            panic!("incomplete request")
+        })
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
 /// Both probe and task receive literal secrets through the environment, including list JSON.
 /// 探测和任务通过环境接收秘密的原值及列表 JSON，命令行只包含变量名。
 #[test]

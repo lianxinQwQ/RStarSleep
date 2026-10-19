@@ -137,7 +137,29 @@ impl<B: BuildBackend> ScopedBackend<'_, B> {
             PersistentTransaction::begin(self.backend, &self.pool, &self.state, &mappings)?;
         let mut context = context.clone();
         context.persistent_mounts = transaction.mounts();
-        let result = self.backend.invoke(plugin, operation, args, root, &context);
+        let mut save_failure = None;
+        let mut save = || {
+            if let Some(error) = &save_failure {
+                return Err(Error::Invalid(format!("此前保存失败: {error}")));
+            }
+            let result = progress::run(
+                &context.system_id,
+                "保存插件持久卷进度",
+                "Save plugin persistent volume progress",
+                || transaction.save(self.backend),
+            );
+            if let Err(error) = &result {
+                save_failure = Some(error.to_string());
+            }
+            result
+        };
+        let result = self
+            .backend
+            .invoke_with_save(plugin, operation, args, root, &context, &mut save);
+        let result = match save_failure {
+            Some(error) => Err(Error::Invalid(format!("插件持久卷保存失败: {error}"))),
+            None => result,
+        };
         match result {
             Ok(output) => {
                 if report {

@@ -4,6 +4,7 @@ mod cache_inputs;
 mod commands;
 pub(crate) mod configuration;
 mod container;
+mod control;
 mod discovery;
 mod loader;
 mod model;

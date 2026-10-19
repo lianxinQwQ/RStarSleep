@@ -18,6 +18,22 @@ pub(super) fn stream(command: &mut Command, query: bool) -> io::Result<Output> {
     stream_to(command, (!query).then(io::stderr), io::stderr(), terminal)
 }
 
+/// Service invocation control on the caller while reader threads drain diagnostics.
+pub(super) fn stream_with_control(
+    command: &mut Command,
+    query: bool,
+    poll: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<Output> {
+    let terminal = io::stderr().is_terminal().then_some(libc::STDERR_FILENO);
+    stream_to_with_control(
+        command,
+        (!query).then(io::stderr),
+        io::stderr(),
+        terminal,
+        Some(poll),
+    )
+}
+
 /// Keep terminal-aware tools producing progress without changing captured bytes.
 /// 让感知终端的工具生成进度，同时保持捕获的原始字节。
 struct TerminalReader {
@@ -160,6 +176,16 @@ fn stream_to(
     stderr: impl Write + Send,
     terminal: Option<RawFd>,
 ) -> io::Result<Output> {
+    stream_to_with_control(command, stdout, stderr, terminal, None)
+}
+
+fn stream_to_with_control(
+    command: &mut Command,
+    stdout: Option<impl Write + Send>,
+    stderr: impl Write + Send,
+    terminal: Option<RawFd>,
+    mut poll: Option<&mut dyn FnMut() -> io::Result<()>>,
+) -> io::Result<Output> {
     // Capture the calling build's log before moving work to reader threads.
     // 在将读取工作移交线程前捕获当前构建的日志。
     let archive = logging::writer();
@@ -204,7 +230,27 @@ fn stream_to(
     thread::scope(|scope| {
         let stdout = scope.spawn(move || drain(child_stdout, stdout, stdout_archive));
         let stderr = scope.spawn(move || drain(child_stderr, Some(stderr), Some(archive)));
-        let status = child.wait();
+        let status = if let Some(poll) = &mut poll {
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) => (),
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(error);
+                    }
+                }
+                if let Err(error) = poll() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(error);
+                }
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+        } else {
+            child.wait()
+        };
         let stdout = stdout
             .join()
             .map_err(|_| io::Error::other("stdout reader panicked"))??;
@@ -255,6 +301,50 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn control_runs_on_caller_while_large_output_is_drained() {
+        use std::{cell::Cell, rc::Rc};
+        let temporary = tempfile::tempdir().unwrap();
+        let owner = thread::current().id();
+        let calls = Rc::new(Cell::new(0));
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                r#"
+head -c 262144 /dev/zero & head -c 262144 /dev/zero >&2 & wait
+printf 'ready' > "$1/ready"
+for (( i = 0; i < 500; i++ )); do
+    [[ -f "$1/saved" ]] && exit 0
+    sleep 0.01
+done
+exit 99
+"#,
+                "rstar-control-output",
+            ])
+            .arg(temporary.path());
+        let mut poll = || {
+            assert_eq!(thread::current().id(), owner);
+            if temporary.path().join("ready").exists() && calls.get() == 0 {
+                calls.set(1);
+                fs::write(temporary.path().join("saved"), "saved")?;
+            }
+            Ok(())
+        };
+        let output = stream_to_with_control(
+            &mut command,
+            Some(io::sink()),
+            io::sink(),
+            None,
+            Some(&mut poll),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 262144);
+        assert_eq!(output.stderr.len(), 262144);
+        assert_eq!(calls.get(), 1);
     }
 
     /// The child requires receipt of both partial lines before it can finish.

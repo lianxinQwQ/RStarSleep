@@ -412,6 +412,19 @@ pub trait BuildBackend {
         root: &Path,
         context: &BuildContext,
     ) -> Result<String>;
+    /// Execute with synchronous saves handled on the calling thread.
+    /// 在调用线程处理同步保存；旧后端仍可执行不使用保存的插件。
+    fn invoke_with_save(
+        &self,
+        plugin: &LoadedPlugin,
+        operation: &str,
+        args: &[String],
+        root: &Path,
+        context: &BuildContext,
+        _save: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<String> {
+        self.invoke(plugin, operation, args, root, context)
+    }
     /// Execute a copied build script inside the target system.
     /// 在目标系统内部执行已复制的构建脚本。
     /// # Arguments

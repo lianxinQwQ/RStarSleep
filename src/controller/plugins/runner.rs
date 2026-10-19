@@ -94,6 +94,30 @@ impl LoadedPlugin {
         )
     }
 
+    /// Run a managed call with a private synchronous save channel.
+    pub fn invoke_for_build_with_save(
+        &self,
+        operation: &str,
+        arguments: &[OsString],
+        root: &Path,
+        context: &crate::controller::BuildContext,
+        save: &mut dyn FnMut() -> crate::controller::Result<()>,
+    ) -> Result<Output> {
+        identifier(&context.system_id)?;
+        if !context.config.is_absolute() || !context.config.is_dir() {
+            return Err(Error::Invalid("冻结配置目录无效".into()));
+        }
+        let path = std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+        self.invoke_environment_with_save(
+            operation,
+            arguments,
+            root,
+            &context.architecture,
+            (&path, Some(context)),
+            Some(save),
+        )
+    }
+
     /// Perform invocation using one fixed host PATH for both checking and execution.
     /// 使用同一个固定宿主 PATH 进行检查和执行。
     ///
@@ -147,6 +171,25 @@ impl LoadedPlugin {
         root: &Path,
         architecture: &str,
         environment: (&OsStr, Option<&crate::controller::BuildContext>),
+    ) -> Result<Output> {
+        self.invoke_environment_with_save(
+            operation,
+            arguments,
+            root,
+            architecture,
+            environment,
+            None,
+        )
+    }
+
+    fn invoke_environment_with_save(
+        &self,
+        operation: &str,
+        arguments: &[OsString],
+        root: &Path,
+        architecture: &str,
+        environment: (&OsStr, Option<&crate::controller::BuildContext>),
+        save: Option<&mut dyn FnMut() -> crate::controller::Result<()>>,
     ) -> Result<Output> {
         let (host_path, context) = environment;
         if operation == "post_maintenance" && !self.metadata.post_maintenance {
@@ -243,6 +286,10 @@ impl LoadedPlugin {
             None
         };
         let visible_root = workspace.as_ref().map(|w| w.path()).unwrap_or(self.root());
+        let mut control = save
+            .as_ref()
+            .map(|_| super::control::Server::new())
+            .transpose()?;
         let mut command = if operation == "bootstrap" {
             let tools = required_tools(&self.metadata.tools.host, mandatory);
             check_host(self, operation, &tools, host_path)?;
@@ -332,6 +379,9 @@ impl LoadedPlugin {
                 visible_root,
                 &configuration,
             )?;
+            if let Some(control) = &control {
+                control.configure(&mut command, true)?;
+            }
             command.arg("--");
             if shell_script {
                 command.arg("bash");
@@ -392,8 +442,21 @@ impl LoadedPlugin {
         {
             crate::controller::container::host_environment(&mut command, &context.environment);
         }
+        super::control::Server::clear_environment(&mut command);
+        if operation == "bootstrap"
+            && let Some(control) = &control
+        {
+            control.configure(&mut command, false)?;
+        }
         command.args(arguments);
-        let output = if context.is_some() {
+        let output = if let (Some(control), Some(save)) = (control.as_mut(), save) {
+            crate::controller::output::stream_with_control(
+                &mut command,
+                super::is_query(operation)
+                    || (operation == "predownload" && self.metadata.predownload_plans),
+                &mut || control.poll(save),
+            )
+        } else if context.is_some() {
             crate::controller::output::stream(
                 &mut command,
                 super::is_query(operation)
@@ -403,6 +466,9 @@ impl LoadedPlugin {
             command.output()
         }
         .map_err(|source| io_error(&self.archive, source))?;
+        if let Some(control) = &control {
+            control.check()?;
+        }
         if !output.status.success() {
             return Err(execution_error(self, operation, &output));
         }

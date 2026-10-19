@@ -73,6 +73,7 @@ pub(super) fn nspawn_from(
     configuration: &std::collections::BTreeMap<String, String>,
 ) -> Result<Command> {
     let mut command = crate::controller::container::command(launcher, root);
+    super::control::Server::clear_environment(&mut command);
     command
         .current_dir(resources)
         .env("PATH", host_path)

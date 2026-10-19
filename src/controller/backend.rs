@@ -366,6 +366,27 @@ impl BuildBackend for SystemBackend {
             Ok(String::new())
         }
     }
+    fn invoke_with_save(
+        &self,
+        plugin: &LoadedPlugin,
+        operation: &str,
+        args: &[String],
+        root: &Path,
+        context: &BuildContext,
+        save: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<String> {
+        self.check_subvolume(root, false)?;
+        let args: Vec<_> = args.iter().map(OsString::from).collect();
+        let output = plugin.invoke_for_build_with_save(operation, &args, root, context, save)?;
+        if super::plugins::is_query(operation)
+            || (operation == "predownload" && plugin.metadata.predownload_plans)
+        {
+            String::from_utf8(output.stdout)
+                .map_err(|_| Error::Invalid(format!("{operation} 查询不是 UTF-8")))
+        } else {
+            Ok(String::new())
+        }
+    }
     /// Execute a script in its copied directory inside a validated writable system.
     /// 在已校验的可写系统内，以已复制目录执行脚本。
     /// # Arguments

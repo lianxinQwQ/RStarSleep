@@ -31,6 +31,9 @@ struct Entry {
 struct Journal {
     schema_version: u32,
     phase: Phase,
+    /// A live working copy can outlast several separately published saves.
+    #[serde(default)]
+    working: bool,
     entries: Vec<Entry>,
 }
 
@@ -80,6 +83,7 @@ impl PersistentTransaction {
         lock.try_lock()
             .map_err(|e| Error::Invalid(format!("全局持久目录正在使用: {e}")))?;
         let root = state.join("transaction");
+        recover(backend, pool, &state.join("save"))?;
         recover(backend, pool, &root)?;
         let mut entries = Vec::new();
         let mut names = BTreeSet::new();
@@ -117,6 +121,7 @@ impl PersistentTransaction {
             let record = Journal {
                 schema_version: 1,
                 phase: Phase::Preparing,
+                working: true,
                 entries,
             };
             write_journal(&root, &record)?;
@@ -148,6 +153,64 @@ impl PersistentTransaction {
     pub fn mounts(&self) -> Vec<PersistentMount> {
         self.mounts.clone()
     }
+    /// Durably publish snapshots without moving or unlocking the mounted working copies.
+    /// 持久发布快照，不移动或解锁正在挂载的工作副本。
+    pub fn save(&mut self, backend: &impl BuildBackend) -> Result<()> {
+        if self.lock.is_none() {
+            return Err(Error::Invalid("持久事务已经结束".into()));
+        }
+        let work = self.state.join("transaction");
+        let working = read(&work)?;
+        if working.phase != Phase::Preparing || !working.working {
+            return Err(Error::Invalid("持久事务保存状态不符".into()));
+        }
+        let root = self.state.join("save");
+        recover(backend, &self.pool, &root)?;
+        let result = (|| {
+            validate_layout(&work, &working)?;
+            let mut entries = Vec::new();
+            for entry in &working.entries {
+                let source = work.join("new").join(&entry.name);
+                backend.check_subvolume(&source, false)?;
+                backend.check_no_nested_subvolumes(&source)?;
+                entries.push(Entry {
+                    name: entry.name.clone(),
+                    had_original: disk::exists(&self.pool.join(&entry.name))?,
+                });
+            }
+            disk::directory(&root)?;
+            disk::sync(&self.state)?;
+            let record = Journal {
+                schema_version: 1,
+                phase: Phase::Preparing,
+                working: false,
+                entries,
+            };
+            write_journal(&root, &record)?;
+            disk::directory(&root.join("new"))?;
+            disk::directory(&root.join("old"))?;
+            disk::sync(&root)?;
+            // The plugin has quiesced its writers until the save acknowledgement.
+            flush(&work)?;
+            for entry in &record.entries {
+                backend.snapshot(
+                    &work.join("new").join(&entry.name),
+                    &root.join("new").join(&entry.name),
+                    false,
+                )?;
+            }
+            publish(backend, &self.pool, &root, record)
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => match recover(backend, &self.pool, &root) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::Invalid(format!(
+                    "{error}; 持久保存恢复失败: {cleanup}"
+                ))),
+            },
+        }
+    }
     pub fn commit(&mut self, backend: &impl BuildBackend) -> Result<()> {
         if self.lock.is_none() {
             return Err(Error::Invalid("持久事务已经结束".into()));
@@ -158,35 +221,15 @@ impl PersistentTransaction {
             return Err(Error::Invalid("持久事务提交状态不符".into()));
         }
         let result = (|| {
-            validate_layout(&root, &record)?;
-            for entry in &record.entries {
-                let new = root.join("new").join(&entry.name);
-                backend.check_subvolume(&new, false)?;
-                backend.check_no_nested_subvolumes(&new)?;
-                let original = self.pool.join(&entry.name);
-                if entry.had_original {
-                    backend.check_subvolume(&original, false)?;
-                    backend.check_no_nested_subvolumes(&original)?;
-                } else if disk::exists(&original)? {
-                    return Err(Error::Invalid("事务期间出现新的正式持久子卷".into()));
+            recover(backend, &self.pool, &self.state.join("save"))?;
+            if record.working {
+                for entry in &mut record.entries {
+                    entry.had_original = disk::exists(&self.pool.join(&entry.name))?;
                 }
-                if disk::exists(&root.join("old").join(&entry.name))? {
-                    return Err(Error::Invalid("事务已有旧卷".into()));
-                }
+                record.working = false;
+                write_journal(&root, &record)?;
             }
-            flush(&root)?;
-            record.phase = Phase::Swapping;
-            write_journal(&root, &record)?;
-            for entry in &record.entries {
-                let published = self.pool.join(&entry.name);
-                if entry.had_original {
-                    rename(&published, &root.join("old").join(&entry.name))?;
-                }
-                rename(&root.join("new").join(&entry.name), &published)?;
-            }
-            record.phase = Phase::Committed;
-            write_journal(&root, &record)?;
-            recover(backend, &self.pool, &root)
+            publish(backend, &self.pool, &root, record)
         })();
         match result {
             Ok(()) => {
@@ -203,6 +246,7 @@ impl PersistentTransaction {
         if self.lock.is_none() {
             return Ok(());
         }
+        recover(backend, &self.pool, &self.state.join("save"))?;
         recover(backend, &self.pool, &self.state.join("transaction"))?;
         self.finish();
         Ok(())
@@ -212,6 +256,43 @@ impl PersistentTransaction {
             let _ = file.unlock();
         }
     }
+}
+/// Publish one journaled set, shared by an explicit save and the final commit.
+fn publish(
+    backend: &impl BuildBackend,
+    pool: &Path,
+    root: &Path,
+    mut record: Journal,
+) -> Result<()> {
+    validate_layout(root, &record)?;
+    for entry in &record.entries {
+        let new = root.join("new").join(&entry.name);
+        backend.check_subvolume(&new, false)?;
+        backend.check_no_nested_subvolumes(&new)?;
+        let original = pool.join(&entry.name);
+        if entry.had_original {
+            backend.check_subvolume(&original, false)?;
+            backend.check_no_nested_subvolumes(&original)?;
+        } else if disk::exists(&original)? {
+            return Err(Error::Invalid("事务期间出现新的正式持久子卷".into()));
+        }
+        if disk::exists(&root.join("old").join(&entry.name))? {
+            return Err(Error::Invalid("事务已有旧卷".into()));
+        }
+    }
+    flush(root)?;
+    record.phase = Phase::Swapping;
+    write_journal(root, &record)?;
+    for entry in &record.entries {
+        let published = pool.join(&entry.name);
+        if entry.had_original {
+            rename(&published, &root.join("old").join(&entry.name))?;
+        }
+        rename(&root.join("new").join(&entry.name), &published)?;
+    }
+    record.phase = Phase::Committed;
+    write_journal(root, &record)?;
+    recover(backend, pool, root)
 }
 fn read(root: &Path) -> Result<Journal> {
     let path = root.join("journal.toml");
@@ -227,6 +308,9 @@ fn read(root: &Path) -> Result<Journal> {
             .map_err(|e| Error::Invalid(format!("持久事务日志无效: {e}")))?;
     if record.schema_version != 1 {
         return Err(Error::Invalid("不支持的持久事务日志版本".into()));
+    }
+    if record.working && record.phase != Phase::Preparing {
+        return Err(Error::Invalid("工作卷日志不能处于发布阶段".into()));
     }
     let mut names = BTreeSet::new();
     for entry in &record.entries {
@@ -356,7 +440,12 @@ fn recover(backend: &impl BuildBackend, pool: &Path, root: &Path) -> Result<()> 
             if disk::exists(&old)? {
                 return Err(Error::Invalid("准备阶段不能存在旧卷".into()));
             }
-            if entry.had_original {
+            if record.working {
+                // Explicit saves may have replaced or first published this volume.
+                if disk::exists(&published)? {
+                    backend.check_subvolume(&published, false)?;
+                }
+            } else if entry.had_original {
                 backend.check_subvolume(&published, false)?;
             } else if disk::exists(&published)? {
                 return Err(Error::Invalid("未提交的新持久卷已发布".into()));

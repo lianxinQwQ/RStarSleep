@@ -185,6 +185,7 @@ fn interrupted_multi_volume_swaps_restore_all_originals() {
             fs::write(m.source.join("data"), "new").unwrap();
         }
         record.phase = Phase::Swapping;
+        record.working = false;
         write_journal(&root, &record).unwrap();
         let mut count = 0;
         for e in &record.entries {
@@ -217,6 +218,7 @@ fn committed_cleanup_can_resume_after_empty_directories_are_removed() {
     let root = f.state().join("transaction");
     let mut record = read(&root).unwrap();
     record.phase = Phase::Swapping;
+    record.working = false;
     write_journal(&root, &record).unwrap();
     for e in &record.entries {
         rename(&f.pool().join(&e.name), &root.join("old").join(&e.name)).unwrap();
@@ -267,4 +269,203 @@ fn failed_commit_cleans_work_volume_even_if_plugin_changed_readonly_property() {
         "old"
     );
     assert!(!f.state().join("transaction").exists());
+}
+
+#[test]
+fn repeated_saves_keep_mounts_and_lock_and_rollback_only_unsaved_data() {
+    use std::os::unix::fs::MetadataExt;
+    for seeded in [false, true] {
+        let f = Fixture::new();
+        if seeded {
+            f.seed();
+        }
+        let mut tx = f.begin();
+        let mounts = tx.mounts();
+        let inodes: Vec<_> = mounts
+            .iter()
+            .map(|m| fs::metadata(&m.source).unwrap().ino())
+            .collect();
+        for data in ["save-a", "save-b"] {
+            for m in &mounts {
+                fs::write(m.source.join("data"), data).unwrap();
+            }
+            tx.save(&f.backend).unwrap();
+            for (m, inode) in mounts.iter().zip(&inodes) {
+                assert_eq!(fs::metadata(&m.source).unwrap().ino(), *inode);
+            }
+            for m in mappings() {
+                assert_eq!(
+                    fs::read_to_string(f.pool().join(m.name).join("data")).unwrap(),
+                    data
+                );
+            }
+            assert!(
+                PersistentTransaction::begin(&f.backend, &f.pool(), &f.state(), &mappings())
+                    .is_err()
+            );
+        }
+        for m in mounts {
+            fs::write(m.source.join("data"), "unsaved").unwrap();
+        }
+        tx.rollback(&f.backend).unwrap();
+        let mut next = f.begin();
+        for m in next.mounts() {
+            assert_eq!(fs::read_to_string(m.source.join("data")).unwrap(), "save-b");
+        }
+        next.rollback(&f.backend).unwrap();
+        assert!(!f.state().join("save").exists());
+        assert!(!f.state().join("transaction").exists());
+    }
+}
+
+#[test]
+fn final_commit_after_save_publishes_remaining_changes() {
+    let f = Fixture::new();
+    let mut tx = f.begin();
+    for m in tx.mounts() {
+        fs::write(m.source.join("data"), "saved").unwrap();
+    }
+    tx.save(&f.backend).unwrap();
+    for m in tx.mounts() {
+        fs::write(m.source.join("data"), "final").unwrap();
+    }
+    tx.commit(&f.backend).unwrap();
+    for m in mappings() {
+        assert_eq!(
+            fs::read_to_string(f.pool().join(m.name).join("data")).unwrap(),
+            "final"
+        );
+    }
+    assert!(tx.save(&f.backend).is_err());
+}
+
+#[test]
+fn save_snapshot_failure_preserves_last_saved_group() {
+    for failed in [1, 2] {
+        let f = Fixture::new();
+        f.seed();
+        let mut tx = f.begin();
+        for m in tx.mounts() {
+            fs::write(m.source.join("data"), "saved").unwrap();
+        }
+        tx.save(&f.backend).unwrap();
+        f.backend
+            .fail_snapshot
+            .set(f.backend.snapshots.get() + failed);
+        for m in tx.mounts() {
+            fs::write(m.source.join("data"), "failed").unwrap();
+        }
+        assert!(tx.save(&f.backend).is_err());
+        assert!(!f.state().join("save").exists());
+        tx.rollback(&f.backend).unwrap();
+        for m in mappings() {
+            assert_eq!(
+                fs::read_to_string(f.pool().join(m.name).join("data")).unwrap(),
+                "saved"
+            );
+        }
+    }
+}
+
+#[test]
+fn interrupted_save_recovers_before_discarding_live_work() {
+    for seeded in [false, true] {
+        for step in 0..=4 {
+            for committed in [false, true] {
+                if committed && step != 4 {
+                    continue;
+                }
+                let f = Fixture::new();
+                if seeded {
+                    f.seed();
+                }
+                let tx = f.begin();
+                let root = f.state().join("save");
+                fs::create_dir(&root).unwrap();
+                let record = Journal {
+                    schema_version: 1,
+                    phase: Phase::Swapping,
+                    working: false,
+                    entries: mappings()
+                        .into_iter()
+                        .map(|m| Entry {
+                            name: m.name,
+                            had_original: seeded,
+                        })
+                        .collect(),
+                };
+                write_journal(&root, &record).unwrap();
+                fs::create_dir(root.join("new")).unwrap();
+                fs::create_dir(root.join("old")).unwrap();
+                for (entry, mount) in record.entries.iter().zip(tx.mounts()) {
+                    fs::write(mount.source.join("data"), "saved").unwrap();
+                    f.backend
+                        .snapshot(&mount.source, &root.join("new").join(&entry.name), false)
+                        .unwrap();
+                    fs::write(mount.source.join("data"), "later-unsaved").unwrap();
+                }
+                let mut count = 0;
+                for entry in &record.entries {
+                    if count < step && seeded {
+                        rename(
+                            &f.pool().join(&entry.name),
+                            &root.join("old").join(&entry.name),
+                        )
+                        .unwrap();
+                    }
+                    count += 1;
+                    if count < step {
+                        rename(
+                            &root.join("new").join(&entry.name),
+                            &f.pool().join(&entry.name),
+                        )
+                        .unwrap();
+                    }
+                    count += 1;
+                }
+                if committed {
+                    write_journal(
+                        &root,
+                        &Journal {
+                            phase: Phase::Committed,
+                            ..record
+                        },
+                    )
+                    .unwrap();
+                }
+                drop(tx);
+                let mut next = f.begin();
+                for m in mappings() {
+                    let data = f.pool().join(m.name).join("data");
+                    if committed {
+                        assert_eq!(fs::read_to_string(data).unwrap(), "saved");
+                    } else if seeded {
+                        assert_eq!(fs::read_to_string(data).unwrap(), "old");
+                    } else {
+                        assert!(!data.exists());
+                    }
+                }
+                next.rollback(&f.backend).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn dropped_call_keeps_successful_save_without_resuming_its_work() {
+    let f = Fixture::new();
+    let mut tx = f.begin();
+    for m in tx.mounts() {
+        fs::write(m.source.join("data"), "saved").unwrap();
+    }
+    tx.save(&f.backend).unwrap();
+    for m in tx.mounts() {
+        fs::write(m.source.join("data"), "unsaved").unwrap();
+    }
+    drop(tx);
+    let mut next = f.begin();
+    for m in next.mounts() {
+        assert_eq!(fs::read_to_string(m.source.join("data")).unwrap(), "saved");
+    }
+    next.rollback(&f.backend).unwrap();
 }

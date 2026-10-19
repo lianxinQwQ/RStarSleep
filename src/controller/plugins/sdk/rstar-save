@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+import sys
+from rstar import save
+
+try:
+    save()
+except Exception as error:
+    print(f"RStarSleep save: {error}", file=sys.stderr)
+    sys.exit(1)
