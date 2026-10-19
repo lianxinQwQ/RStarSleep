@@ -119,8 +119,7 @@ fn package_requests_preserve_other_inputs() {
     let base =
         "[Config]\nSchemaVersion=1\n[Distribution]\nDistribution=arch\n[Content]\nPackages=base\n";
     fs::write(layout.config.join("build/config.conf"), base).unwrap();
-    let inheritance =
-        "# retain formatting\n[Inheritance]\nTiming=initramfs\nCopyOnWrite=/var/lib/myapp\n";
+    let inheritance = "# retain formatting\n[Inheritance]\nCopyOnWriteBoot=/var/lib/myapp\n";
     fs::write(layout.config.join("build/inherit.conf"), inheritance).unwrap();
     install_packages(&store, "app", &["firefox".into(), "git".into()]).unwrap();
     install_packages(&store, "app", &["git".into(), "vim".into()]).unwrap();

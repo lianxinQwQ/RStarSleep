@@ -49,6 +49,7 @@ pub struct SimulatedBackend {
     pub events: RefCell<Vec<Event>>,
     pub running_root: RefCell<Option<PathBuf>>,
     pub fail_inheritance_copy: Cell<bool>,
+    pub post_maintenance_probe: RefCell<Option<PathBuf>>,
     pub fail_cleanup: Cell<bool>,
     pub boot_publications: Cell<usize>,
     pub snapshots: RefCell<Vec<SnapshotEvent>>,
@@ -528,6 +529,11 @@ impl BuildBackend for SimulatedBackend {
         match operation {
             "post_maintenance" => {
                 assert!(args.is_empty());
+                if let Some(relative) = self.post_maintenance_probe.borrow().as_ref() {
+                    let inherited = fs::read_to_string(root.join(relative))
+                        .map_err(|e| Error::Invalid(format!("post-maintenance probe: {e}")))?;
+                    fs::write(root.join(".post-maintenance-inherited"), inherited).unwrap();
+                }
                 fs::write(
                     root.join(".post-maintenance"),
                     self.count("post_maintenance").to_string(),

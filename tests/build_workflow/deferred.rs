@@ -13,7 +13,7 @@ fn pending(
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nTiming=initramfs\nDirectorySubvolume={}\nCopyOnWrite={}{}\n",
+            "[Inheritance]\nDirectorySubvolume={}\nCopyOnWriteBoot={}{}\n",
             if subvolumes { "yes" } else { "no" },
             source.display(),
             if source.is_dir() { "/" } else { "" }
@@ -120,6 +120,125 @@ fn first_boot_captures_latest_data_once_and_survives_cache_invalidation() {
         "runtime-edited"
     );
     assert!(second.root.exists());
+}
+
+#[test]
+fn build_and_boot_inheritance_capture_independent_sources_at_their_own_times() {
+    for (main, subvolumes) in [(false, false), (false, true), (true, true)] {
+        let fixture = Fixture::new();
+        fixture.system(
+            "desktop",
+            &[
+                "linux",
+                "mkinitcpio",
+                "btrfs-progs",
+                "coreutils",
+                "util-linux",
+                "bash",
+                "findutils",
+            ],
+        );
+        if main {
+            fs::write(
+                fixture.store.global_config_path(),
+                "schema_version=1\nmain_system='desktop'\n",
+            )
+            .unwrap();
+        }
+        let live = fixture.store.root().parent().unwrap();
+        let build_directory = live.join("build-data");
+        let build_file = live.join("build-file");
+        let boot_directory = live.join("boot-data");
+        let boot_file = live.join("boot-file");
+        for directory in [&build_directory, &boot_directory] {
+            fs::create_dir(directory).unwrap();
+            fs::write(directory.join("value"), "at-build").unwrap();
+        }
+        for file in [&build_file, &boot_file] {
+            fs::write(file, "at-build").unwrap();
+        }
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/inherit.conf"),
+            format!(
+                "[Inheritance]\nDirectorySubvolume={}\nCopyOnWriteBuild={}/\nCopyOnWriteBuild={}\nCopyOnWriteBoot={}/\nCopyOnWriteBoot={}\n",
+                if subvolumes { "yes" } else { "no" },
+                build_directory.display(), build_file.display(),
+                boot_directory.display(), boot_file.display(),
+            ),
+        ).unwrap();
+        let backend = SimulatedBackend::default();
+        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap()
+            .remove(0);
+        assert!(outcome.root.ends_with("prepared-root"));
+        assert_eq!(
+            backend.count("prepare_inheritance_initramfs"),
+            usize::from(main)
+        );
+        let version = outcome.root.parent().unwrap();
+        let manifest = record(&version.join("inheritance-pending.toml"));
+        let targets: Vec<_> = manifest["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| Path::new(source["target"].as_str().unwrap()))
+            .collect();
+        assert_eq!(targets, [&boot_directory, &boot_file]);
+        let relative = |path: &Path| path.strip_prefix("/").unwrap().to_path_buf();
+        for file in [build_directory.join("value"), build_file.clone()] {
+            assert_eq!(
+                fs::read_to_string(outcome.root.join(relative(&file))).unwrap(),
+                "at-build"
+            );
+            fs::write(file, "after-build").unwrap();
+        }
+        fs::remove_dir_all(&build_directory).unwrap();
+        fs::remove_file(&build_file).unwrap();
+        for file in [boot_directory.join("value"), boot_file.clone()] {
+            assert!(!outcome.root.join(relative(&file)).exists());
+            fs::write(file, "at-first-boot").unwrap();
+        }
+        backend.fail_inheritance_copy.set(true);
+        assert!(finalize(&outcome, &backend).is_err());
+        assert!(!version.join("root").exists());
+        backend.fail_inheritance_copy.set(false);
+        finalize(&outcome, &backend).unwrap();
+        let root = version.join("root");
+        for file in [build_directory.join("value"), build_file.clone()] {
+            assert_eq!(
+                fs::read_to_string(root.join(relative(&file))).unwrap(),
+                "at-build"
+            );
+        }
+        for file in [boot_directory.join("value"), boot_file.clone()] {
+            assert_eq!(
+                fs::read_to_string(root.join(relative(&file))).unwrap(),
+                "at-first-boot"
+            );
+        }
+        if subvolumes {
+            for directory in [&build_directory, &boot_directory] {
+                backend
+                    .check_subvolume(&root.join(relative(directory)), false)
+                    .unwrap();
+            }
+        }
+        fs::remove_dir_all(&boot_directory).unwrap();
+        fs::remove_file(&boot_file).unwrap();
+        for file in [&build_file, &boot_file] {
+            fs::write(root.join(relative(file)), "runtime-edited").unwrap();
+        }
+        let snapshots = backend.snapshots.borrow().len();
+        finalize(&outcome, &backend).unwrap();
+        assert_eq!(backend.snapshots.borrow().len(), snapshots);
+        for file in [&build_file, &boot_file] {
+            assert_eq!(
+                fs::read_to_string(root.join(relative(file))).unwrap(),
+                "runtime-edited"
+            );
+        }
+    }
 }
 
 #[test]
@@ -399,7 +518,7 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
-        "[Inheritance]\nTiming=initramfs\nCopyOnWrite=/boot/\nCopyOnWrite=/usr/lib/modules/\n",
+        "[Inheritance]\nCopyOnWriteBoot=/boot/\nCopyOnWriteBoot=/usr/lib/modules/\n",
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))

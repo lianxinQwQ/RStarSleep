@@ -75,8 +75,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         })?;
         let scripts = progress::run(
             id,
-            "软件维护后处理和用户脚本（3/4）",
-            "Post-maintenance and user scripts (3/4)",
+            "构建时继承、软件维护后处理和用户脚本（3/4）",
+            "Build-time inheritance, post-maintenance and user scripts (3/4)",
             || self.script_step(&packages, owned),
         )?;
         progress::run(
@@ -255,8 +255,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         self.commit("packages", &root, software, cached)
     }
 
-    /// Reapply plugin behavior and scripts on fresh software output without prior effects.
-    /// 在全新软件输出上重新应用插件后处理及脚本，避免继承先前执行效果。
+    /// Inherit build-time data, then reapply plugin behavior and scripts on fresh software output.
+    /// 在全新软件输出上先继承构建时数据，再重新应用插件后处理及脚本。
     /// # Arguments
     /// - `self`: Shared stage inputs.
     ///   共享阶段输入。
@@ -269,12 +269,19 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
+        let inherited = super::inheritance::apply_build(
+            self.backend,
+            self.context,
+            &root,
+            self.scratch,
+            &self.attempt.layout.root,
+        )?;
         if self.plugin.metadata.post_maintenance {
             self.backend
                 .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
         }
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
-        let software = if applied || self.plugin.metadata.post_maintenance {
+        let software = if inherited || applied || self.plugin.metadata.post_maintenance {
             let session = PackageSession {
                 backend: self.backend,
                 plugin: self.plugin,
@@ -310,8 +317,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         self.commit("script", &root, software, None)
     }
 
-    /// Reapply inheritance from the running system and explicitly publish directory subvolumes.
-    /// 重新从运行系统应用继承，并显式发布目录子卷。
+    /// Prepare persistent mounts and boot-time inheritance before publishing script output.
+    /// 准备持久挂载及启动时继承，再发布脚本产物。
     /// # Arguments
     /// - `self`: Frozen stage inputs. 冻结阶段输入。
     /// - `scripts`: Completed script output. 完成的脚本输出。
@@ -319,7 +326,7 @@ impl<B: BuildBackend> Stages<'_, B> {
     fn inheritance_step(&self, scripts: &Cache, owned: &mut Vec<PathBuf>) -> Result<BuildOutcome> {
         let input = crate::config::read_plugin_parameters_at(&self.context.config)?;
         let config = crate::config::InheritanceConfig::read(&input)?;
-        if config.copy_on_write.is_empty()
+        if config.copy_on_write_boot.is_empty()
             && config.mounts.is_empty()
             && !self
                 .context
@@ -328,8 +335,8 @@ impl<B: BuildBackend> Stages<'_, B> {
         {
             progress::message(
                 &self.context.system_id,
-                "未配置继承，直接发布脚本阶段产物",
-                "No inheritance configured; publish the script stage output",
+                "无需持久挂载或启动继承，直接发布脚本阶段产物",
+                "No persistent mounts or boot-time inheritance; publish the script stage output",
             );
             return self.publish(scripts);
         }
@@ -342,18 +349,14 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&scripts.root, &root, false)?;
-        let inherited = super::inheritance::apply(
+        let inherited = super::inheritance::apply_mounts(
             self.backend,
             self.plugin,
             self.context,
             &root,
-            self.scratch,
             &self.attempt.layout.root,
-            owned,
         )?;
-        if config.timing == crate::config::InheritanceTiming::Initramfs
-            && !config.copy_on_write.is_empty()
-        {
+        if !config.copy_on_write_boot.is_empty() {
             if self.prepare_boot_inheritance {
                 progress::message(
                     &self.context.system_id,

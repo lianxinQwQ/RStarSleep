@@ -73,10 +73,7 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
     let layout = f.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
-        format!(
-            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}/\n",
-            source.display()
-        ),
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
     )
     .unwrap();
     let first = controller::build_with_backend(&f.store, Some("desktop"), &b)
@@ -278,10 +275,7 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
     let consumer = f.store.system_layout("consumer").unwrap();
     fs::write(
         consumer.config.join("build/inherit.conf"),
-        format!(
-            "[Inheritance]\nTiming=initramfs\nCopyOnWrite={}/\n",
-            source.display()
-        ),
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
     )
     .unwrap();
     let pending = controller::build_with_backend(&f.store, Some("consumer"), &b)

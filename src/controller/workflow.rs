@@ -758,9 +758,7 @@ fn validate_boot_capabilities(
             plugin.metadata.id
         )));
     }
-    if inheritance.timing == crate::config::InheritanceTiming::Initramfs
-        && !inheritance.copy_on_write.is_empty()
-    {
+    if !inheritance.copy_on_write_boot.is_empty() {
         if plugin.metadata.initramfs_inheritance.is_none() {
             return Err(Error::Invalid(format!(
                 "主系统 {id} 启用启动时 CoW 继承，但插件 {} 未声明 [initramfs_inheritance] 要求",
@@ -794,9 +792,7 @@ fn validate_boot_packages(
         &plugin.metadata.boot.as_ref().unwrap().packages,
         packages,
     )?;
-    if inheritance.timing == crate::config::InheritanceTiming::Initramfs
-        && !inheritance.copy_on_write.is_empty()
-    {
+    if !inheritance.copy_on_write_boot.is_empty() {
         require_planned_packages(
             id,
             "启动时 CoW 继承",

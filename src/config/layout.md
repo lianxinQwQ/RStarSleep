@@ -97,7 +97,7 @@ Btrfs 顶层/
 角色变更不移动目录。同一系统不能同时承担主/子系统角色；移出子系统名单后拒绝新请求，
 daemon 后台协调停止机器并撤销用户未修改的自有入口，保留版本与持久数据。
 持久化数据默认跨同一系统的版本共享，删除版本不应删除它；其快照与回滚策略
-由具体持久化功能管理。Mount 数据首次复制后持续复用，不随重建覆盖；CopyOnWrite
+由具体持久化功能管理。Mount 数据首次复制后持续复用，不随重建覆盖；两种 CoW 继承
 数据属于各版本独立子卷，不放入 persistent。缓存独立于已完成版本，可以清理。
 每个系统独立安装和维护基础根，仅复用自己的最新过往阶段缓存。
 下载的初始系统安装文件由插件保存到声明的全局持久目录，供后续独立安装使用；
@@ -358,8 +358,9 @@ cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 
 `systems/<系统>/config/script/` 由 `init-system` 创建，旧配置缺少此目录时视为空。
 构建开始将脚本输入一并留档；script 步骤位于软件安装/维护后、版本发布前。
-此步骤先执行可选插件 `post_maintenance`，再执行单系统脚本。
-Arch 预设在后处理接口中读取可选 `[Content] RootPassword` 设置 root 密码，未配置或为空时不修改软件阶段输出中的密码；
+此步骤从已提交的 `packages` 缓存创建可写 `script-root`，先应用 `CopyOnWriteBuild`，
+再执行可选插件 `post_maintenance`，最后执行单系统脚本。
+Arch 预设在后处理接口中读取可选 `[Content] RootPassword` 设置 root 密码，未配置或为空时不修改当前工作根中的密码；
 修改该字段不使基础或软件缓存失效。配置值按现有 INI 规则解析，并随配置以明文留档。
 
 ```text
@@ -375,12 +376,13 @@ config/script/
 按顶层文件名顺序串行执行，每项在系统内获得独立可写资源目录，完成后清理。
 输入来自冻结配置，资源写入不修改当前配置或留档。未知文件及不安全条目报错。
 
-此步骤每次直接从本次软件缓存创建可写 CoW 工作根，插件后处理也每次重新执行，
-不会修改基础或软件缓存。插件后处理和用户脚本均执行成功后独立提交
-`cache/<版本>/script` 与 `script.toml`，随后应用配置的继承；无继承时直接从 script 发布。
+此步骤每次直接从本次软件缓存创建可写 CoW 工作根，构建继承和插件后处理也每次重新执行，
+不会修改基础或软件缓存。构建继承、插件后处理和用户脚本均执行成功后独立提交
+`cache/<版本>/script` 与 `script.toml`，随后处理 Mount、启动继承准备及版本发布。
+没有 Mount、启动继承及额外 fstab 行时直接从 script 发布。
 旧 script 缓存永不用于构建，无有缓存/无缓存分支；删除或修改脚本不会继承旧脚本效果。
 script 及后续阶段快照只用于调试和备份，不作为下次构建的复用来源。
-插件后处理或脚本失败阻止发布，但保留基础和软件缓存。全配置摘要包含脚本及权限，检测留档修改。
+构建继承、插件后处理或脚本失败阻止发布，但保留基础和软件缓存。全配置摘要包含脚本及权限，检测留档修改。
 
 ## 继承配置与版本数据
 
@@ -389,10 +391,12 @@ script 及后续阶段快照只用于调试和备份，不作为下次构建的�
 
 ```ini
 [Inheritance]
-# Require CoW copies from the currently running system into each new version.
-# 要求每次从当前运行系统以 CoW 复制到新版本。
-CopyOnWrite=/etc/hostname
-CopyOnWrite=
+# Capture after package cache commit, before post_maintenance and scripts.
+# 软件缓存提交后、插件后处理及脚本执行前继承。
+CopyOnWriteBuild=/etc/hostname
+# Capture at the first start of this version.
+# 每个版本首次启动时继承。
+CopyOnWriteBoot=
     /home/alice/
     /var/lib/myapp/
 # Seed once in this system's persistent directory, then reuse it.
@@ -401,17 +405,21 @@ Mount=/srv/data/
 Mount=/etc/myapp.conf
 ```
 
-控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWrite、Mount、Timing、DirectorySubvolume，
+控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume，
 不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，必须以 `/` 开头，
 目录必须以 `/` 结尾，普通文件不能以 `/` 结尾；执行继承时核验类型。不接受 `/`、
-`//`、`.` 或 `..` 路径段、重复、相互包含或持久名称冲突；来源还不能包含目标管理存储。
+`//`、`.` 或 `..` 路径段、重复、相互包含或持久名称冲突；两份 CoW 列表和 Mount 统一校验，
+来源还不能包含目标管理存储。
 Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn 绑定分隔字符 `:`、`\`。
 
-CopyOnWrite 默认在软件及 script 之后继承当前运行系统，按 Btrfs UUID 检查同一文件系统。
+CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，在新建的 `script-root` 中继承当前运行系统，
+随后才执行 `post_maintenance` 和用户脚本，结果保存在 `script` 缓存；CopyOnWriteBoot 在版本首次启动时继承。
+两份列表可同时配置，分别执行，按 Btrfs UUID 检查同一文件系统。
 目录默认子卷化，已有来源子卷直接递归快照；`DirectorySubvolume=no` 可关闭最外层子卷化。
 保存阶段缓存、恢复及发布根均显式处理全部内部子卷；缓存封存为只读，工作根与最终版本根可写。
-设置 `Timing=initramfs` 后，首次选择启动目标版本时才完成 CoW 继承；准备根与清单随版本
-保存，不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
+CopyOnWriteBoot 非空时，构建继承结果保存在准备根中，启动列表单独写入清单，在主系统首次
+启动的 initramfs 或子系统启动准备阶段完成继承；准备根与清单随版本保存，
+不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
 [首次启动继承](../../docs/initramfs-inheritance.md)。
 
 Mount 先去掉目录路径末尾的 `/`，再将其余 `/` 替换为 `-`，包括开头斜杠：`/home/alice/` 保存为

@@ -20,6 +20,10 @@ pub(super) fn command(launcher: &Path, root: &Path) -> Command {
             "--register=no",
             "--as-pid2",
             "--link-journal=no",
+            // Allow GPG to lock its secure memory pool within a bounded quota.
+            // 允许 GPG 在有限额度内锁定安全内存池。
+            "--system-call-filter=@memlock",
+            "--rlimit=RLIMIT_MEMLOCK=8388608:8388608",
         ])
         .arg("--directory")
         .arg(root);

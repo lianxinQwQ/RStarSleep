@@ -1,5 +1,5 @@
-//! Inherit current-system data after scripts, with explicit snapshots for directory subvolumes.
-//! 脚本后继承当前系统数据，显式为目录子卷建立快照。
+//! Inherit build-time data before scripts and prepare persistent mounts after scripts.
+//! 脚本前继承构建时数据，脚本后准备持久挂载。
 use super::{
     BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin, progress,
 };
@@ -17,47 +17,61 @@ pub(super) struct Inherited {
     pub mounts: Vec<super::PersistentMount>,
 }
 
-/// Apply files, independent directory snapshots and persistent mount declarations to a fresh root.
-/// 向全新根应用文件、独立目录快照及持久挂载声明。
+/// Inherit live data into a writable software-cache copy before hooks and scripts.
+/// 在后处理及脚本前，向软件缓存的可写副本继承运行数据。
+/// # Arguments
+/// - `backend`: CoW and plugin backend. CoW 及插件后端。
+/// - `context`: Frozen current build inputs. 冻结的当前构建输入。
+/// - `root`: Writable pre-script root. 脚本前的可写根。
+/// - `scratch`: Current attempt scratch directory. 当前尝试的临时目录。
+/// - `system`: Owning managed-system directory. 所属被管理系统目录。
+pub(super) fn apply_build(
+    backend: &impl BuildBackend,
+    context: &BuildContext,
+    root: &Path,
+    scratch: &Path,
+    system: &Path,
+) -> Result<bool> {
+    let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
+    let config = InheritanceConfig::read(&parameters)?;
+    for source in &config.copy_on_write_build {
+        progress::message(
+            &context.system_id,
+            format!("继承写时复制路径：{}", source.display()),
+            format!("Inherit copy-on-write path: {}", source.display()),
+        );
+        let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+        let resolved = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
+        let directory = check_source(&resolved, system)?;
+        validate_inheritance_type(source, directory)?;
+        backend.check_cow_source(&resolved, scratch)?;
+        inherit_path(
+            backend,
+            &resolved,
+            &disk::guest_path(root, source)?,
+            config.directory_subvolume,
+        )?;
+    }
+    Ok(!config.copy_on_write_build.is_empty())
+}
+
+/// Prepare persistent mount declarations on the completed script output.
+/// 在已完成脚本的根中准备持久挂载声明。
 /// # Arguments
 /// - `backend`: CoW and plugin backend. CoW 及插件后端。
 /// - `plugin`: Selected distribution plugin. 所选发行版插件。
 /// - `context`: Frozen current build inputs. 冻结的当前构建输入。
 /// - `root`: Writable post-script root. 脚本后的可写根。
-/// - `scratch`: Current attempt scratch directory. 当前尝试的临时目录。
 /// - `system`: Owning managed-system directory. 所属被管理系统目录。
-/// - `owned`: Temporary subvolumes tracked for failure cleanup. 为失败清理跟踪的临时子卷。
-pub(super) fn apply(
+pub(super) fn apply_mounts(
     backend: &impl BuildBackend,
     plugin: &LoadedPlugin,
     context: &BuildContext,
     root: &Path,
-    scratch: &Path,
     system: &Path,
-    _owned: &mut Vec<PathBuf>,
 ) -> Result<Inherited> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
-    if config.timing == crate::config::InheritanceTiming::Build {
-        for source in &config.copy_on_write {
-            progress::message(
-                &context.system_id,
-                format!("继承写时复制路径：{}", source.display()),
-                format!("Inherit copy-on-write path: {}", source.display()),
-            );
-            let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-            let resolved = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
-            let directory = check_source(&resolved, system)?;
-            validate_inheritance_type(source, directory)?;
-            backend.check_cow_source(&resolved, scratch)?;
-            inherit_path(
-                backend,
-                &resolved,
-                &disk::guest_path(root, source)?,
-                config.directory_subvolume,
-            )?;
-        }
-    }
     let mut arguments = Vec::new();
     let mut inherited_mounts = Vec::new();
     let pool = system.join("persistent");

@@ -207,7 +207,7 @@ tools = ["mkinitcpio", "btrfs", "cp", "mount", "findmnt", "mkdir", "sleep", "bas
 `kind` 只接受 `kernel`、`initrd`，产物声明中须有且只有一个必选内核；initrd 按声明顺序发布。
 核心负责验证文件、复制到启动分区、记录所有权和发布启动项，插件不直接写宿主启动分区。
 
-仅主系统启用 `Timing=initramfs` 且配置非空 `CopyOnWrite` 时检查
+仅主系统配置非空 `CopyOnWriteBoot` 时检查
 `[initramfs_inheritance]` 并调用 `prepare_inheritance_initramfs.sh`。控制器在分配目标版本及修改目标缓存前，
 检查对应能力的 `packages` 是否出现在当前系统的具体目标计划中。软件组成员、基础包及
 运行依赖均可满足要求；缺项才要求调整配置，程序不会自动把能力要求的软件包补入目标。

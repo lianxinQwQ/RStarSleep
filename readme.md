@@ -197,31 +197,32 @@ Arch 插件通过既有持久目录机制，将全局 `persistent/arch-data/` �
 Arch 预设检测 Config、Distribution 整节，软件包增删和脚本变化保留基础缓存。
 已发布版本根和配置留档保留。插件哈希变化不会强制重建兼容缓存。
 软件维护执行一次完整更新，补装缺失目标，将移除目标改为依赖并清理不再需要的软件。
-软件步骤完成后先调用插件声明的 `post_maintenance`，再执行
+软件步骤完成并提交 `packages` 缓存后，从该缓存创建可写 `script-root`，
+先应用 `CopyOnWriteBuild`，再调用插件声明的 `post_maintenance`，最后执行
 `systems/<系统>/config/script/`：目录或压缩包运行 `main.sh`，
 独立 `*.sh` 复制进空目录后运行。按文件名顺序，在系统内部以各资源目录为工作目录执行。
-插件后处理和用户脚本共用本次软件缓存创建的可写 CoW 副本，执行成功后提交独立 `script` 阶段缓存，
+构建继承、插件后处理和用户脚本共用此可写 CoW 副本，执行成功后提交独立 `script` 阶段缓存，
 不复用旧 script 缓存，也不将后处理结果写回软件缓存；任一执行失败时保留已完成的软件缓存并停止发布。
 script 及后续阶段的快照用于调试和备份，不作为下次构建的复用来源。
-随后执行配置的继承，最终系统根位于 `systems/<系统>/versions/<版本>/root`。
+随后处理 `Mount`、启动继承准备及版本发布，最终系统根位于 `systems/<系统>/versions/<版本>/root`。
 详细协议、步骤缓存动作和文件职责见 [构建设计](docs/build-design.md)。
 当前已通过模拟流程和真实 Bash 测试；真实 Btrfs、bootstrap/nspawn 完整安装尚未验证。
 
 ## 从当前运行系统继承数据
 
 新系统生成空的 `systems/<系统>/config/build/inherit.conf` 模板，由控制器独立读取，
-接受 `[Inheritance] CopyOnWrite`、`Mount`、`Timing` 和 `DirectorySubvolume`。文件与其他 INI 一同叠加，名称没有特殊含义：
+接受 `[Inheritance] CopyOnWriteBuild`、`CopyOnWriteBoot`、`Mount` 和 `DirectorySubvolume`。文件与其他 INI 一同叠加，名称没有特殊含义：
 
 ```ini
 [Inheritance]
-# build (default) or initramfs (first selected boot).
-Timing=build
 # Create an independent subvolume for each inherited directory (default yes).
 DirectorySubvolume=yes
-# Copy from the currently running system into each new version.
-# 每次从当前运行系统复制到新版本。
-CopyOnWrite=/etc/hostname
-CopyOnWrite=
+# Copy after package cache commit, before post_maintenance and scripts.
+# 软件缓存提交后、插件后处理及脚本执行前继承。
+CopyOnWriteBuild=/etc/hostname
+# Capture independently at the first boot of each version.
+# 每个版本首次启动时独立继承。
+CopyOnWriteBoot=
     /home/alice/
     /var/lib/myapp/
 # Initialize once in this system's persistent storage, then reuse it.
@@ -233,17 +234,19 @@ Mount=/etc/myapp.conf
 每行登记一个规范绝对路径，支持重复赋值和多行值。路径必须以 `/` 开头：目录必须以 `/`
 结尾，普通文件不能以 `/` 结尾；执行继承时校验实际类型。路径不能为 `/`，不能包含
 `//`、`.` 或 `..` 路径段，也不能重复、相互包含，或去掉目录末尾 `/` 后将其余 `/`
-替换成 `-` 时发生名称冲突。
+替换成 `-` 时发生名称冲突；这些检查同时覆盖两份 CoW 列表和 Mount。
 
-`CopyOnWrite` 默认在软件和 script 之后从当前运行系统继承，要求来源与构建目录的
-Btrfs UUID 相同。文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时
-直接递归快照。`DirectorySubvolume=no` 可让最外层目标保持普通目录，原有内部子卷仍保留。
+`CopyOnWriteBuild` 在软件安装/维护及 `packages` 缓存提交后、`post_maintenance` 和用户脚本
+执行前从当前运行系统继承，结果随脚本输出保存到 `script` 缓存；`CopyOnWriteBoot` 在版本首次
+启动时继承。两份列表可同时配置、分别执行，均要求来源与目标的 Btrfs UUID 相同。
+文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时直接递归快照。`DirectorySubvolume=no` 可让最外层目标保持普通目录，原有内部子卷仍保留。
 缓存保存、恢复和版本发布都会递归快照整个系统根中的子卷，包括脚本创建的子卷。
 阶段缓存及其内部子卷只读；最终版本根及其内部子卷可写，主系统以 `rw` 挂载根。
 直接写入版本根的修改随该版本保留；需要跨版本共享的数据使用 Mount。
 
-设置 `Timing=initramfs` 后，构建保存独立 `prepared-root` 和来源清单；首次选择启动该版本时，
-在正式根挂载前完成继承并发布最终根，失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
+`CopyOnWriteBoot` 非空时，构建保存包含构建时继承结果的独立 `prepared-root`，来源清单只记录
+启动列表。主系统首次选择该版本时，在正式根挂载前完成启动列表的继承并发布最终根；
+子系统在启动准备阶段完成。失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
 的传统和 systemd initramfs。继承路径不设黑名单，CLI 在任何构建修改前提示并等待 3 秒，
 可按 Ctrl+C 取消。内核和 initramfs 固定使用构建时产物，继承后的兼容性由用户负责。
 配置、依赖、提交恢复及验证范围见 [首次启动继承说明](docs/initramfs-inheritance.md)。

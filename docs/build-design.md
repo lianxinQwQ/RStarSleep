@@ -198,7 +198,7 @@ system = ["bash", "pacman", "pacman-key", "chpasswd", "awk", "cat", "rm", "mktem
 不通过元数据配置入口。API 2 加载时要求原十个必需操作，API 3 额外要求系统身份初始化
 `system_init`；声明 `mount_inheritance = true` 时还必须提供同名操作。
 `post_maintenance` 是可选能力，省略时为 false；声明为 true 时必须提供安全的同名操作入口。
-启动继承动作只在当前系统为主系统、`Timing=initramfs` 且 `CopyOnWrite` 非空时，
+启动继承动作只在当前系统为主系统且 `CopyOnWriteBoot` 非空时，
 于构建前要求存在；子系统不要求该入口。所需操作文件必须为普通文件，不接受目录或
 符号链接。每次调用前再次校验当前操作文件。公共函数可以放在 `lib/common.sh`
 供各操作脚本引用。
@@ -328,7 +328,7 @@ PATH 代替。操作执行器调用 `.sh` 入口时检查 Bash；无后缀入口
 | `system_init`（API 3） | 在独立安装根中初始化稳定身份和系统特定配置 |
 | `update` | 执行该发行版的完整系统更新 |
 | `maintain_packages`（可选） | 根据完整目标计划统一清理、安装、更新软件，返回实际软件状态 |
-| `post_maintenance`（可选） | 软件阶段完成后、用户脚本之前执行发行版自定义行为；无参数，每次构建调用 |
+| `post_maintenance`（可选） | 软件缓存提交及 CopyOnWriteBuild 继承后、用户脚本之前执行发行版自定义行为；无参数，每次构建调用 |
 | `collect_packages`（可选） | 收集配置目标、声明基础包及运行依赖，输出当前系统的具体包计划 |
 | `resolve_packages` / `query_packages` | 将配置解析为实际包名，查询已安装包及显式/依赖安装原因 |
 | `install` / `remove` / `mark_reason` | 安装、依赖检查下删除、调整安装原因 |
@@ -420,6 +420,11 @@ Packages 为空时在基础层维护恢复的 base 缓存；有 Packages 时只�
 - 运行插件前检查入口所需工具；bootstrap 得到的根必须能执行后续任务。
 - CoW、缓存提交和版本完成标记始终由控制器负责。
 
+构建插件及用户脚本共用的非启动模式 nspawn 允许 `@memlock` 系统调用，
+并将 `RLIMIT_MEMLOCK` 的软、硬额度设为 8 MiB，供 GPG 锁定安全内存池。
+普通用户执行的 AUR 构建同样可在额度内锁定内存；无需额外授予 `CAP_IPC_LOCK`。
+这避免默认系统调用过滤导致的 `gpg: Warning: using insecure memory!`，不屏蔽 GPG 警告。
+
 用户将插件压缩包或目录放入工作根的 `plugins/` 即可备用。控制器读取每个系统的
 `[Distribution] Distribution` 和可选 `Architecture`，按包内 `system_types` 及 `architectures` 自动匹配。
 `system_types` 省略时使用插件 `id`；文件名不参与身份匹配。
@@ -510,8 +515,8 @@ systems/<系统>/versions/<版本>/install.log
 systems/<系统>/versions/<版本>/root/
 ```
 
-阶段缓存都是系统根的只读 Btrfs 子卷快照，继承阶段含独立只读目录子卷，发布时显式快照。
-没有继承和额外 fstab 行时不创建 inherit 阶段，直接从 script 发布。每个缓存有位于系统根
+阶段缓存都是系统根的只读 Btrfs 子卷快照，保留构建继承及脚本创建的内部子卷，发布时显式快照。
+没有 Mount、启动继承和额外 fstab 行时不创建 inherit 阶段，直接从 script 发布。每个缓存有位于系统根
 之外的完成记录，保存阶段、来源版本、插件身份及版本、归档摘要、缓存格式、
 架构和实际包清单。
 控制器按插件 ID、cache_format、系统类型、架构、受保护目标以及配置摘要判断兼容性。
@@ -553,11 +558,13 @@ systems/<系统>/versions/<版本>/root/
 - 新版 Packages 为空时始终使用本次基础输出，跳过旧软件缓存及重复维护。
 - 旧插件无软件缓存时首次安装；有缓存时执行通用系统更新、目标调整和孤儿清理。
 
-步骤 3：插件后处理和 script。
+步骤 3：构建继承、插件后处理和 script。
 
 - 每次从本次已提交的软件缓存创建可写 CoW `script-root`，没有有缓存/无缓存分支，
   从不读取旧 script 缓存或最终版本根。即使 script 目录为空，也提交此步骤输出。
-- 插件后处理与用户脚本共用此阶段快照；script 及后续快照只供调试和备份，不作下次构建来源。
+- 在 `script-root` 中先应用 `CopyOnWriteBuild`，再执行插件后处理和用户脚本；
+  构建继承不写回 `packages` 缓存，后处理和脚本可以读取、修改继承结果。
+- 构建继承、插件后处理与用户脚本共用此阶段快照；script 及后续快照只供调试和备份，不作下次构建来源。
 - 若插件声明 `post_maintenance = true`，先无参数调用该操作，再执行用户脚本。
   每次构建均重新调用，包括软件缓存复用和 Packages 为空的情况；结果不写回基础或软件缓存。
 - 按文件名顺序执行冻结配置的 `script/` 中全部条目；目录和压缩包要求根内普通
@@ -567,15 +574,17 @@ systems/<系统>/versions/<版本>/root/
 - 传入 `RSTAR_SYSTEM_ID`、`RSTAR_DISTRIBUTION_ARCHITECTURE`、`RSTAR_ROOT=/`，冻结配置只读绑定，
   `RSTAR_CONFIG_DIR=/run/rstarsleep/config`。未知文件、特殊条目及越界链接直接报错。
 - 执行成功后捕获实际包清单，并提交 `cache/<版本>/script` 只读快照和 `script.toml`。
-  插件后处理或脚本失败时不提交 script 缓存、不发布版本，已完成的基础和软件缓存仍可复用。
+  构建继承、插件后处理或脚本失败时不提交 script 缓存、不发布版本，已完成的基础和软件缓存仍可复用。
 
 步骤 4：inherit。
 
-- 没有 CopyOnWrite、Mount 和 FstabLines 时直接从 script 缓存发布版本根。
-- 否则从本次 script 缓存创建可写根，继承当前运行系统的数据，并在需要时调用挂载插件接口。
-- 构建时继承完成后捕获实际包清单，保存 `inherit` 与 `inherit.toml`，随后递归快照父根和全部内部子卷
+- CopyOnWriteBoot、Mount 和 FstabLines 均为空时直接从 script 缓存发布版本根，保留其中的构建继承及脚本结果。
+- 否则从本次 script 缓存创建可写根，处理 Mount 和 FstabLines，并在需要时调用挂载插件接口。
+- CopyOnWriteBoot 非空时，将已完成构建继承的根保存为独立 prepared-root，只为启动列表登记待办，
+  首次启动时完成剩余继承；主系统额外准备 initramfs 集成。
+- 没有启动待办时，Mount 和 FstabLines 处理完成后捕获实际包清单，保存 `inherit` 与 `inherit.toml`，随后递归快照父根和全部内部子卷
   作为版本系统根。继承缓存的父根及内部子卷只读，发布的版本根及内部子卷可写。
-- 继承失败阻止发布，已成功提交的基础、软件和 script 缓存仍保留；下次构建重新执行 script、inherit。
+- 本步骤失败阻止发布，已成功提交的基础、软件和 script 缓存仍保留；下次构建重新执行构建继承、script、inherit。
 
 最终从本次最后完成的阶段创建可写版本根。各步骤始终使用独立工作根；
 下一步骤使用已提交快照，不拼接文件树。一个步骤失败便不执行
@@ -589,14 +598,14 @@ script 只消费本次软件输出，inherit 只消费本次 script 输出，两
 ## 当前运行系统的数据继承
 
 控制器以 `InheritanceConfig::read()` 从合并 INI 参数独立读取 `[Inheritance]`，
-不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWrite、Mount、Timing 和 DirectorySubvolume：
+不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount 和 DirectorySubvolume：
 
 ```ini
 # Suggested systems/<system>/config/build/inherit.conf; its name has no parsing semantics.
 # 推荐 systems/<系统>/config/build/inherit.conf；文件名无解析语义。
 [Inheritance]
-CopyOnWrite=/etc/hostname
-CopyOnWrite=
+CopyOnWriteBuild=/etc/hostname
+CopyOnWriteBoot=
     /home/alice/
     /var/lib/myapp/
 Mount=/srv/data/
@@ -608,17 +617,21 @@ Mount=/etc/myapp.conf
 控制字符、父级跳转或编码名称冲突；来源不能包含目标管理存储，顶层来源解析为普通文件或目录。
 Mount 还不能遮盖 `/rstarsleep`、`/run/rstarsleep`，路径不得包含 nspawn 绑定分隔字符 `:`、`\`。
 
-CopyOnWrite 默认在构建时从当前运行系统继承；`Timing=initramfs` 可延后到目标版本首次启动。
+CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，从该缓存创建的 `script-root` 中
+继承当前运行系统，然后执行 `post_maintenance` 和用户脚本，成功后一起提交 `script` 缓存；
+CopyOnWriteBoot 在目标版本首次启动时继承。
+两份列表可同时配置，不使用全局时机开关；跨列表及 Mount 的路径重复、相互包含和名称冲突统一拒绝。
 来源与目标必须具有相同 Btrfs UUID。普通文件使用强制 reflink；目录默认创建独立目标子卷，
 来源已有子卷时直接递归快照。`DirectorySubvolume=no` 只关闭最外层目标子卷化，内部原有
 子卷仍保留。阶段缓存保存、恢复及最终发布均处理完整子卷树；缓存封存为只读，工作根及最终版本根可写。
-构建时继承的来源不允许尚未解析的内部挂载；initramfs 模式将内部挂载固定为独立来源映射。
+构建时继承的来源不允许尚未解析的内部挂载；启动时继承将内部挂载固定为独立来源映射。
 
-initramfs 模式完成软件、脚本及 Mount 配置后，主系统由核心打包通用早期执行器，再调用
+CopyOnWriteBoot 非空时，完成软件、构建列表继承、插件后处理、用户脚本及 Mount 配置后，
+主系统由核心打包通用早期执行器，再调用
 `prepare_inheritance_initramfs` 插件动作；Arch 插件通过 mkinitcpio 生成镜像。
 随后保存独立准备根及待办清单，预先发布候选启动项并标记 `pending-inheritance`。
-子系统保存准备根及待办清单，不调用主系统的镜像集成动作。首次启动在
-正式根挂载前提交最终根，成功后标记 `complete`；不运行插件或重新捕获包清单。
+子系统保存准备根及待办清单，不调用主系统的镜像集成动作。首次启动时主系统在
+正式根挂载前、子系统在启动准备阶段提交最终根，成功后标记 `complete`；不运行插件或重新捕获包清单。
 路径不设黑名单，构建前提供 3 秒 Ctrl+C 取消时间；启动内核及 initramfs 保持构建时产物，
 兼容性由用户负责。详细协议见 [首次启动继承](initramfs-inheritance.md)。
 
@@ -877,7 +890,7 @@ Bash 包装函数及 Python 解析器复用
 ## 主系统启动发布
 
 主系统由全局 `main_system` 指定。构建前检查插件的 `[boot]` 声明；只有主系统且
-`Timing=initramfs`、`CopyOnWrite` 非空时，才追加检查 `[initramfs_inheritance]` 声明和
+`CopyOnWriteBoot` 非空时，才追加检查 `[initramfs_inheritance]` 声明和
 `prepare_inheritance_initramfs` 入口。主系统还要求 `[package_plan]` 查询能力。
 随后在收集软件包需求时，将两组 `packages` 与当前系统的具体目标安装计划比较；软件组成员、
 基础包及运行依赖均可满足要求，缺项才报错，不自动把能力要求的软件包加入安装目标。

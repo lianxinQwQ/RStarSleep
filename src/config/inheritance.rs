@@ -11,40 +11,26 @@ use std::{
 /// 当前运行系统的继承请求。
 #[derive(Debug, Clone)]
 pub struct InheritanceConfig {
-    /// Absolute paths copied into every version from the running system.
-    /// 每个版本从运行系统复制的绝对路径。
-    pub copy_on_write: Vec<PathBuf>,
+    /// Absolute paths copied into script-root after package cache commit,
+    /// before post-processing and scripts.
+    /// 软件缓存提交后、插件后处理及脚本执行前，复制到 script-root 的运行系统绝对路径。
+    pub copy_on_write_build: Vec<PathBuf>,
+    /// Absolute paths captured when each version is first started.
+    /// 每个版本首次启动时继承的绝对路径。
+    pub copy_on_write_boot: Vec<PathBuf>,
     /// Absolute paths backed by this system's persistent objects.
     /// 由本系统持久对象支持的绝对路径。
     pub mounts: Vec<PathBuf>,
-    /// When to capture CopyOnWrite sources; Mount remains a build-time operation.
-    pub timing: InheritanceTiming,
     /// Give inherited directories independent subvolumes for subsequent snapshots.
     pub directory_subvolume: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum InheritanceTiming {
-    #[default]
-    Build,
-    Initramfs,
-}
-
-impl InheritanceTiming {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Build => "build",
-            Self::Initramfs => "initramfs",
-        }
-    }
 }
 
 impl Default for InheritanceConfig {
     fn default() -> Self {
         Self {
-            copy_on_write: Vec::new(),
+            copy_on_write_build: Vec::new(),
+            copy_on_write_boot: Vec::new(),
             mounts: Vec::new(),
-            timing: InheritanceTiming::Build,
             directory_subvolume: true,
         }
     }
@@ -120,13 +106,10 @@ impl InheritanceConfig {
                 continue;
             }
             match key.as_str() {
-                "RSTAR_INHERITANCE_TIMING" => {
-                    config.timing = match scalar(key, values)? {
-                        "build" => InheritanceTiming::Build,
-                        "initramfs" => InheritanceTiming::Initramfs,
-                        _ => return Err(Error::Invalid("Timing 必须为 build 或 initramfs".into())),
-                    };
-                    continue;
+                "RSTAR_INHERITANCE_TIMING" | "RSTAR_INHERITANCE_COPYONWRITE" => {
+                    return Err(Error::Invalid(
+                        "继承配置不再支持 Timing 或 CopyOnWrite；请将构建时路径迁移到 CopyOnWriteBuild，首次启动时路径迁移到 CopyOnWriteBoot".into(),
+                    ));
                 }
                 "RSTAR_INHERITANCE_DIRECTORYSUBVOLUME" => {
                     config.directory_subvolume = match scalar(key, values)? {
@@ -143,7 +126,8 @@ impl InheritanceConfig {
                 _ => (),
             }
             let target = match key.as_str() {
-                "RSTAR_INHERITANCE_COPYONWRITE" => &mut config.copy_on_write,
+                "RSTAR_INHERITANCE_COPYONWRITEBUILD" => &mut config.copy_on_write_build,
+                "RSTAR_INHERITANCE_COPYONWRITEBOOT" => &mut config.copy_on_write_boot,
                 "RSTAR_INHERITANCE_MOUNT" => &mut config.mounts,
                 _ => return Err(Error::Invalid(format!("未知继承配置: {key}"))),
             };
@@ -173,7 +157,12 @@ impl InheritanceConfig {
                 }
             }
         }
-        let paths: Vec<_> = config.copy_on_write.iter().chain(&config.mounts).collect();
+        let paths: Vec<_> = config
+            .copy_on_write_build
+            .iter()
+            .chain(&config.copy_on_write_boot)
+            .chain(&config.mounts)
+            .collect();
         for (index, path) in paths.iter().enumerate() {
             for other in &paths[index + 1..] {
                 if path.starts_with(other) || other.starts_with(path) {
@@ -227,36 +216,121 @@ mod tests {
     }
 
     #[test]
-    fn timing_and_directory_options_are_scalar_and_allow_kernel_paths() {
+    fn directory_option_is_scalar_and_both_lists_allow_kernel_paths() {
         let default = InheritanceConfig::read(&PluginParameters::default()).unwrap();
-        assert_eq!(default.timing, InheritanceTiming::Build);
+        assert!(default.copy_on_write_build.is_empty());
+        assert!(default.copy_on_write_boot.is_empty());
         assert!(default.directory_subvolume);
         let mut parameters = PluginParameters::default();
-        parameters
-            .lists
-            .insert("RSTAR_INHERITANCE_TIMING".into(), vec!["initramfs".into()]);
         parameters.lists.insert(
             "RSTAR_INHERITANCE_DIRECTORYSUBVOLUME".into(),
             vec!["no".into()],
         );
         parameters.lists.insert(
-            "RSTAR_INHERITANCE_COPYONWRITE".into(),
-            vec!["/boot/".into(), "/usr/lib/modules/".into()],
+            "RSTAR_INHERITANCE_COPYONWRITEBUILD".into(),
+            vec!["/boot/".into()],
+        );
+        parameters.lists.insert(
+            "RSTAR_INHERITANCE_COPYONWRITEBOOT".into(),
+            vec!["/usr/lib/modules/".into()],
         );
         let parsed = InheritanceConfig::read(&parameters).unwrap();
-        assert_eq!(parsed.timing, InheritanceTiming::Initramfs);
         assert!(!parsed.directory_subvolume);
-        assert_eq!(parsed.copy_on_write.len(), 2);
+        assert_eq!(parsed.copy_on_write_build, [PathBuf::from("/boot/")]);
+        assert_eq!(
+            parsed.copy_on_write_boot,
+            [PathBuf::from("/usr/lib/modules/")]
+        );
         for invalid in [
             vec![],
             vec!["".into()],
-            vec!["shutdown".into()],
-            vec!["build".into(), "initramfs".into()],
+            vec!["invalid".into()],
+            vec!["yes".into(), "no".into()],
         ] {
             parameters
                 .lists
-                .insert("RSTAR_INHERITANCE_TIMING".into(), invalid);
+                .insert("RSTAR_INHERITANCE_DIRECTORYSUBVOLUME".into(), invalid);
             assert!(InheritanceConfig::read(&parameters).is_err());
+        }
+    }
+
+    #[test]
+    fn build_and_boot_lists_accept_repeated_multiline_and_empty_assignments() {
+        let document = crate::config::ini::Document::parse(
+            "[Inheritance]\nCopyOnWriteBuild=/etc/hostname\nCopyOnWriteBuild=\n    /opt/app/\n    /usr/local/\nCopyOnWriteBoot=/home/alice/\nCopyOnWriteBoot=\n    /var/lib/myapp/\nMount=/srv/data/\n",
+            Path::new("inherit.conf"),
+        ).unwrap();
+        let config = InheritanceConfig::read(&document.plugin_parameters().unwrap()).unwrap();
+        assert_eq!(
+            config.copy_on_write_build,
+            ["/etc/hostname", "/opt/app/", "/usr/local/"].map(PathBuf::from)
+        );
+        assert_eq!(
+            config.copy_on_write_boot,
+            ["/home/alice/", "/var/lib/myapp/"].map(PathBuf::from)
+        );
+        assert_eq!(config.mounts, [PathBuf::from("/srv/data/")]);
+        for empty in ["CopyOnWriteBuild", "CopyOnWriteBoot"] {
+            let document = crate::config::ini::Document::parse(
+                &format!("[Inheritance]\n{empty}=\n"),
+                Path::new("inherit.conf"),
+            )
+            .unwrap();
+            let config = InheritanceConfig::read(&document.plugin_parameters().unwrap()).unwrap();
+            assert!(config.copy_on_write_build.is_empty());
+            assert!(config.copy_on_write_boot.is_empty());
+        }
+    }
+
+    #[test]
+    fn old_timing_and_unscheduled_copy_keys_require_migration() {
+        for (key, value) in [
+            ("RSTAR_INHERITANCE_TIMING", "build"),
+            ("RSTAR_INHERITANCE_TIMING", "initramfs"),
+            ("RSTAR_INHERITANCE_COPYONWRITE", "/home/alice/"),
+        ] {
+            let parameters = PluginParameters {
+                lists: BTreeMap::from([(key.into(), vec![value.into()])]),
+                ..Default::default()
+            };
+            let error = InheritanceConfig::read(&parameters)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("CopyOnWriteBuild") && error.contains("CopyOnWriteBoot"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_lists_share_duplicate_overlap_and_encoded_name_checks() {
+        let keys = [
+            "RSTAR_INHERITANCE_COPYONWRITEBUILD",
+            "RSTAR_INHERITANCE_COPYONWRITEBOOT",
+            "RSTAR_INHERITANCE_MOUNT",
+        ];
+        for (index, first) in keys.iter().enumerate() {
+            for second in &keys[index + 1..] {
+                for (left, right) in [
+                    ("/home/alice/", "/home/alice/"),
+                    ("/home/", "/home/alice/"),
+                    ("/home/alice/", "/home/"),
+                    ("/a-b/c/", "/a/b-c/"),
+                ] {
+                    let parameters = PluginParameters {
+                        lists: BTreeMap::from([
+                            ((*first).into(), vec![left.into()]),
+                            ((*second).into(), vec![right.into()]),
+                        ]),
+                        ..Default::default()
+                    };
+                    assert!(
+                        InheritanceConfig::read(&parameters).is_err(),
+                        "accepted {first}={left}, {second}={right}"
+                    );
+                }
+            }
         }
     }
 
@@ -291,13 +365,15 @@ mod tests {
         }
         let parameters = PluginParameters {
             lists: BTreeMap::from([(
-                "RSTAR_INHERITANCE_COPYONWRITE".into(),
+                "RSTAR_INHERITANCE_COPYONWRITEBUILD".into(),
                 vec!["\n/home/user/\n/etc/hostname".into()],
             )]),
             ..Default::default()
         };
         assert_eq!(
-            InheritanceConfig::read(&parameters).unwrap().copy_on_write,
+            InheritanceConfig::read(&parameters)
+                .unwrap()
+                .copy_on_write_build,
             [PathBuf::from("/home/user/"), PathBuf::from("/etc/hostname")]
         );
     }

@@ -51,10 +51,10 @@ fn warn_inheritance(store: &ConfigStore, system: Option<&str>) -> super::Result<
         let layout = store.system_layout(&id)?;
         let parameters = crate::config::read_plugin_parameters_at(&layout.config)?;
         let config = crate::config::InheritanceConfig::read(&parameters)?;
-        if !config.copy_on_write.is_empty() {
+        if !config.copy_on_write_build.is_empty() || !config.copy_on_write_boot.is_empty() {
             warnings.push(format!(
-                "警告：系统 {id} 将继承 {:?}；Timing={}，DirectorySubvolume={}。\n继承路径不设黑名单，内容及兼容性由用户负责；initramfs 模式的内核与启动镜像固定为构建时产物。\nWarning: system {id} will inherit the paths above with the listed timing and directory subvolume settings. Inherited content and compatibility are user-managed; initramfs mode uses the kernel and boot image produced by this build.\n",
-                config.copy_on_write, config.timing.as_str(),
+                "警告：系统 {id} 将在构建时继承 {:?}，首次启动时继承 {:?}；DirectorySubvolume={}。\n继承路径不设黑名单，内容及兼容性由用户负责；启动时继承使用的内核与启动镜像固定为构建时产物。\nWarning: system {id} will inherit the paths above at build time and first boot, respectively, with the listed directory subvolume setting. Inherited content and compatibility are user-managed; boot-time inheritance uses the kernel and boot image produced by this build.\n",
+                config.copy_on_write_build, config.copy_on_write_boot,
                 if config.directory_subvolume { "yes" } else { "no" }));
         }
     }

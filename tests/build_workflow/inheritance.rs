@@ -21,7 +21,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nCopyOnWrite={}/\nCopyOnWrite={}\n",
+            "[Inheritance]\nCopyOnWriteBuild={}/\nCopyOnWriteBuild={}\n",
             source.display(),
             file.display()
         ),
@@ -42,7 +42,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
         .unwrap();
     backend
         .check_subvolume(
-            &fixture.cache(&first.version, "inherit").join(relative),
+            &fixture.cache(&first.version, "script").join(relative),
             true,
         )
         .unwrap();
@@ -51,7 +51,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
     assert_eq!(
         fs::read_to_string(
             fixture
-                .cache(&first.version, "inherit")
+                .cache(&first.version, "script")
                 .join(relative)
                 .join("value")
         )
@@ -75,7 +75,7 @@ fn cow_directories_and_files_come_from_live_sources_every_time() {
         fs::read_to_string(first.root.join(relative).join("value")).unwrap(),
         "runtime-edited"
     );
-    assert!(!fixture.cache(&first.version, "inherit").exists());
+    assert!(!fixture.cache(&first.version, "script").exists());
     rstarsleep::controller::clean_with_backend(&fixture.store, "desktop", &first.version, &backend)
         .unwrap();
     assert!(!first.root.exists());
@@ -144,45 +144,127 @@ fn mount_data_is_seeded_once_and_reused_without_overwriting_changes() {
     );
 }
 
-/// Copy failures stop publication but preserve software/script caches and remove scratch subvolumes.
-/// 复制失败阻止发布，但保留软件及脚本缓存并删除临时子卷。
+/// Copy failures preserve software caches, block hooks/scripts, and remove scratch subvolumes.
+/// 复制失败保留软件缓存，阻止后处理及脚本执行，并删除临时子卷。
 /// # Arguments
 /// No parameters. 无参数。
 #[test]
-fn failed_inheritance_keeps_completed_software_and_script_caches() {
-    let fixture = Fixture::new();
-    fixture.system("desktop", &[]);
+fn failed_build_inheritance_keeps_software_cache_and_blocks_hooks_and_scripts() {
+    let fixture = Fixture::with_unified_packages_without_predownload();
+    fixture.system("desktop", &["editor"]);
     let source = fixture.store.root().parent().unwrap().join("running-data");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("value"), "live").unwrap();
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
-        format!("[Inheritance]\nCopyOnWrite={}/\n", source.display()),
+        format!("[Inheritance]\nCopyOnWriteBuild={}/\n", source.display()),
+    )
+    .unwrap();
+    fs::write(
+        layout.config.join("script/check.sh"),
+        "printf executed > \"$RSTAR_ROOT/script-ran\"\n",
     )
     .unwrap();
     let backend = SimulatedBackend::default();
     backend.fail_inheritance_copy.set(true);
     assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
     assert!(fixture.cache("v00000001", "packages").exists());
-    assert!(fixture.cache("v00000001", "script").exists());
+    assert!(!fixture.cache("v00000001", "script").exists());
+    assert!(!fixture.cache("v00000001", "script.toml").exists());
+    assert_eq!(backend.count("post_maintenance"), 0);
+    assert_eq!(backend.count("script"), 0);
     assert!(!layout.versions.join("v00000001/root").exists());
     let scratch = fixture.store.root().join("work/desktop/v00000001");
-    assert!(!scratch.join("inherit-root").exists());
-    assert!(
-        !scratch
-            .join(format!("inherit-{}", inheritance_name(&source).unwrap()))
-            .exists()
+    assert!(!scratch.join("script-root").exists());
+    let retried = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert_eq!(backend.count("post_maintenance"), 1);
+    assert_eq!(backend.count("script"), 1);
+    assert_eq!(
+        fs::read_to_string(retried.root.join("script-ran")).unwrap(),
+        "executed"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            retried
+                .root
+                .join(source.strip_prefix("/").unwrap())
+                .join("value")
+        )
+        .unwrap(),
+        "live"
     );
 }
 
 #[test]
+fn build_inheritance_precedes_hooks_and_scripts_without_entering_software_caches() {
+    let fixture = Fixture::with_unified_packages_without_predownload();
+    fixture.system("desktop", &["editor"]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let source = fixture
+        .store
+        .root()
+        .parent()
+        .unwrap()
+        .join("pre-script-data");
+    fs::create_dir(&source).unwrap();
+    let relative = source.strip_prefix("/").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBuild={}/\n", source.display()),
+    )
+    .unwrap();
+    fs::write(
+        layout.config.join("script/check.sh"),
+        format!(
+            "set -eu\ntest \"$(cat \"$RSTAR_ROOT/.post-maintenance-inherited\")\" = \"$(cat \"$RSTAR_ROOT{0}/value\")\"\nprintf script >> \"$RSTAR_ROOT{0}/value\"\n",
+            source.display(),
+        ),
+    ).unwrap();
+    let backend = SimulatedBackend::default();
+    *backend.post_maintenance_probe.borrow_mut() = Some(relative.join("value"));
+    for content in ["first", "second"] {
+        fs::write(source.join("value"), content).unwrap();
+        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap()
+            .remove(0);
+        for stage in ["base-system", "packages"] {
+            let cache = fixture.cache(&outcome.version, stage);
+            assert!(!cache.join(relative).exists());
+            assert!(!cache.join(".post-maintenance-inherited").exists());
+        }
+        for root in [&outcome.root, &fixture.cache(&outcome.version, "script")] {
+            assert_eq!(
+                fs::read_to_string(root.join(".post-maintenance-inherited")).unwrap(),
+                content
+            );
+            assert_eq!(
+                fs::read_to_string(root.join(relative).join("value")).unwrap(),
+                format!("{content}script")
+            );
+        }
+        assert!(!fixture.cache(&outcome.version, "inherit").exists());
+        assert_eq!(fs::read_to_string(source.join("value")).unwrap(), content);
+    }
+    let events = backend.events.borrow();
+    for operation in ["bootstrap", "base_install"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.system_id == "desktop" && event.operation == operation)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(backend.count("post_maintenance"), 2);
+    assert_eq!(backend.count("script"), 2);
+}
+
+#[test]
 fn inheritance_rejects_mismatched_directory_markers_before_publication() {
-    for (key, timing) in [
-        ("CopyOnWrite", "build"),
-        ("CopyOnWrite", "initramfs"),
-        ("Mount", "build"),
-    ] {
+    for key in ["CopyOnWriteBuild", "CopyOnWriteBoot", "Mount"] {
         for directory in [true, false] {
             let fixture = Fixture::new();
             fixture.system("desktop", &[]);
@@ -196,7 +278,7 @@ fn inheritance_rejects_mismatched_directory_markers_before_publication() {
             fs::write(
                 layout.config.join("build/inherit.conf"),
                 format!(
-                    "[Inheritance]\nTiming={timing}\n{key}={}{}\n",
+                    "[Inheritance]\n{key}={}{}\n",
                     source.display(),
                     if directory { "" } else { "/" },
                 ),
@@ -212,7 +294,7 @@ fn inheritance_rejects_mismatched_directory_markers_before_publication() {
                 } else {
                     "继承文件路径不能以 / 结尾"
                 }),
-                "{key} {timing}: {error}"
+                "{key}: {error}"
             );
             assert!(!layout.versions.join("v00000001/root").exists());
         }

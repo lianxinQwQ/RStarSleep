@@ -1,19 +1,25 @@
 # 首次启动时继承文件
 
-`CopyOnWrite` 可以在构建时执行，也可以延后到目标版本第一次被选中启动时执行。
-旧配置默认使用构建时继承；`Mount` 的初始化及 fstab 生成始终在构建阶段完成。
+`CopyOnWriteBuild` 定义构建时继承的路径列表，`CopyOnWriteBoot` 定义目标版本首次启动时
+继承的路径列表。两份列表可同时存在，各自处理，不使用全局时机开关。
+`Mount` 的首次初始化及 fstab 生成始终在构建阶段完成。
 
 ```ini
 [Inheritance]
-Timing=initramfs
 DirectorySubvolume=yes
-CopyOnWrite=/etc/hostname
-CopyOnWrite=/home/alice/
-CopyOnWrite=/var/lib/myapp/
+CopyOnWriteBuild=/etc/hostname
+CopyOnWriteBoot=/home/alice/
+CopyOnWriteBoot=/var/lib/myapp/
 ```
 
-`Timing` 只接受 `build`、`initramfs`，默认 `build`；`DirectorySubvolume` 只接受
-`yes`、`no`，默认 `yes`。两项均为单次赋值，不支持通过重复赋值覆盖。
+两份列表均默认为空，支持重复赋值和多行值；空列表不触发对应阶段的继承。
+`DirectorySubvolume` 同时作用于两份列表，只接受 `yes`、`no`，默认 `yes`，
+为单次赋值，不支持通过重复赋值覆盖。两份列表与 `Mount` 统一拒绝路径重复、
+父子路径重叠及编码名称冲突。
+
+旧配置迁移：删除 `Timing`，将原 `CopyOnWrite` 按用途改为 `CopyOnWriteBuild`
+（原 `Timing=build` 或未设置时机）或 `CopyOnWriteBoot`（原 `Timing=initramfs`）。
+也可以拆分原列表，分别填入两项。旧的 `Timing` 和 `CopyOnWrite` 会报错并提示迁移。
 
 继承路径必须以 `/` 开头；目录必须以 `/` 结尾，普通文件不能以 `/` 结尾。末尾 `/`
 声明路径类型，构建准备清单和首次启动时均核验，内部挂载的目录映射也保留此标记。
@@ -42,19 +48,22 @@ CopyOnWrite=/var/lib/myapp/
 
 ## 构建和启动流程
 
-构建前先冻结并检查配置。主系统必须满足插件的通用启动声明；主系统启用
-`Timing=initramfs` 且 `CopyOnWrite` 非空时，另检查启动时 CoW 声明和集成动作入口。
+构建前先冻结并检查配置。主系统必须满足插件的通用启动声明；主系统的
+`CopyOnWriteBoot` 非空时，另检查启动时 CoW 声明和集成动作入口。
 声明的包与当前系统在需求收集时得到的安装计划比较，软件组、基础系统包和运行依赖均可满足要求。
 计划缺项即退出，不自动补包；失败不分配目标版本、清理旧目标缓存或预下载目标软件。
 独立解析环境初始化可能下载自己的基础包和工具，查询会刷新仓库元数据并获取 AUR 配方。
 子系统跳过这两组启动要求及镜像集成动作。
 
-主系统构建先完成软件、脚本和 Mount 配置，在可写工作根中安装早期执行器，再由插件重新生成 initramfs，
-随后独立保存只读 `versions/<版本>/prepared-root`。软件阶段清单记录的是继承之前的构建结果；
-启动时不会运行包管理器或插件重新查询继承后的包数据库。
+构建先完成软件安装/维护并提交 `packages` 缓存，再从该缓存创建可写 `script-root`，
+应用 `CopyOnWriteBuild`，然后执行 `post_maintenance` 和用户脚本，成功后提交 `script` 缓存。
+随后完成 Mount 配置。`CopyOnWriteBoot` 非空时，
+主系统在可写工作根中安装早期执行器，再由插件重新生成 initramfs；子系统跳过镜像集成。
+随后独立保存包含构建继承结果的只读 `versions/<版本>/prepared-root`。
+软件阶段清单记录的是继承之前的构建结果；启动时不会运行包管理器或插件重新查询继承后的包数据库。
 
-版本目录保存 `inheritance-pending.toml`，固定来源实际 Btrfs 顶层路径、包含它的子卷 ID、
-来源类型、逻辑目标路径和准备根子卷 ID。内部挂载作为单独来源映射记录，必须同属目标
+版本目录保存 `inheritance-pending.toml`，只登记 `CopyOnWriteBoot` 来源，固定其实际 Btrfs 顶层路径、
+包含它的子卷 ID、来源类型、逻辑目标路径和准备根子卷 ID。内部挂载作为单独来源映射记录，必须同属目标
 Btrfs 文件系统；来源的挂载布局在构建时固定，数据内容在首次启动执行时读取。
 不同文件系统的数据无法直接快照或 reflink，应使用其他数据迁移方式。
 
@@ -67,9 +76,13 @@ rstarsleep.pending=/<Btrfs 顶层内的版本目录>/inheritance-pending.toml
 ```
 
 第一次选择该版本时，initramfs 在设备发现及必要解密之后、正式根挂载之前，以
-`rw,subvolid=5` 挂载管理存储，校验来源身份，从准备根生成 `inheritance-staging`，完成所有
-继承后发布可写 `root`，最后进入正常根挂载和 switch_root。之后每次启动校验清单摘要及根子卷身份，
+`rw,subvolid=5` 挂载管理存储，校验来源身份，从准备根生成 `inheritance-staging`，完成启动列表
+继承后发布可写 `root`，保留准备根中的构建继承结果，最后进入正常根挂载和 switch_root。
+之后每次启动校验清单摘要及根子卷身份，
 允许修改根内文件及子卷布局，不会再读取来源数据或重新继承。即使旧来源已被清理，完成版本仍可启动；待办清单需保留。
+
+子系统由宿主在首次使用该产物的冷启动或 `restart` 准备阶段执行同一继承收尾，
+完成后才创建运行根并启动 nspawn。运行中的子系统不因新构建立即切换产物。
 
 内核和 initramfs 固定为构建时启动产物。继承 `/boot`、内核模块、`/usr` 或其他启动相关
 内容后，用户须确保最终根仍与这些产物兼容；程序不会阻止继承，也不会在早期启动过程中
@@ -103,7 +116,7 @@ Arch 插件的 `prepare_inheritance_initramfs` 动作调用 mkinitcpio，并拥�
 保持根及内部子卷可写并同步文件系统后，将暂存根改名为最终根，同步目录及文件系统，再原子更新
 `state.toml` 为 `complete`。这些步骤并非单个 Btrfs 原子事务，恢复依据提交记录判断进度。
 
-- 最终根尚不存在：递归清理旧暂存根，重新从独立准备根执行继承。
+- 最终根尚不存在：递归清理旧暂存根，从独立准备根重试启动列表；保留构建列表的既有结果，不重新读取其来源。
 - 最终根已存在、状态更新中断：验证摘要、根及全部子卷身份和可写属性，补齐完成状态。
 - 版本已完成：验证摘要及根子卷身份，保留运行时对文件和内部子卷的修改。
 - 来源缺失、身份改变或提交记录不匹配：停止启动，保留待办；复制阶段的错误写入

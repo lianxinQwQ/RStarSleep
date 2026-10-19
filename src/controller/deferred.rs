@@ -50,7 +50,7 @@ pub(super) fn prepare(
         .ok_or_else(|| Error::Invalid("准备版本缺少管理根".into()))?;
     let _pins_lock = super::records::lock_inheritance(manager)?;
     let mut sources = Vec::new();
-    for source in &config.copy_on_write {
+    for source in &config.copy_on_write_boot {
         let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
         let physical = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
         let info = fs::symlink_metadata(&physical).map_err(|e| disk::io(&physical, e))?;

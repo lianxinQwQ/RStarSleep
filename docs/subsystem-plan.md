@@ -97,6 +97,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | 任务 | 执行时机 | 与当前代码的关系 |
 | --- | --- | --- |
 | bootstrap、包安装/更新、现有构建 script | 常规构建阶段 | 保留现有流程，不把包管理任务搬到启动路径 |
+| CopyOnWriteBuild | packages 缓存提交后、post_maintenance 及用户脚本前 | 在新建 script-root 中继承，结果随 script 缓存提交 |
 | Mount 初次初始化及构建 fstab 生成 | 常规构建阶段 | 现有实现仍在构建时完成，不随本次计划迁移 |
 | CoW 来源定位与身份固定、prepared-root/待办发布 | 常规构建阶段 | 复用 `deferred::prepare`；启动时才读取来源内容 |
 | 延后 CoW 继承、完整子卷树封存、最终 root 发布 | 当前产物首次用于启动/重启时 | 复用 `finalize_inheritance` 和提交恢复逻辑 |
@@ -119,8 +120,9 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 
 `stages::inheritance_step` 已把通用的准备根/待办发布与主系统专属的
 早期执行器/mkinitcpio 集成分开。子系统准备不要求 linux、mkinitcpio 或 initramfs，
-仍需具备可引导的 systemd。`Timing=build` 默认和 `Timing=initramfs` 枚举保持兼容，
-后者在子系统场景表示“版本启动前完成”。后续转为主系统时需重新构建并发布启动产物。
+仍需具备可引导的 systemd。`CopyOnWriteBuild` 在 `packages` 缓存提交后、插件后处理及用户脚本前
+继承到 `script-root`，`CopyOnWriteBoot` 在子系统
+启动准备阶段完成，两份列表可同时配置，分别处理。后续转为主系统时需重新构建并发布启动产物。
 
 daemon 必须取得待办清单对应文件系统的 `subvolid=5` 顶层视图，验证 UUID 并以
 正确路径调用收尾接口，不能把普通 `/rstarsleep` 管理子卷挂载当作顶层根。

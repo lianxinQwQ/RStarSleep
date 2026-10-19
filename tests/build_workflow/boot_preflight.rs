@@ -21,18 +21,18 @@ fn main_system(fixture: &Fixture) {
     .unwrap();
 }
 
-fn inheritance(fixture: &Fixture, timing: &str, cow: bool) {
+fn inheritance(fixture: &Fixture, key: &str, cow: bool) {
     let source = fixture.store.root().parent().unwrap().join("live-file");
     fs::write(&source, "live").unwrap();
     let layout = fixture.store.system_layout("desktop").unwrap();
     fs::write(
         layout.config.join("build/inherit.conf"),
         format!(
-            "[Inheritance]\nTiming={timing}\n{}",
+            "[Inheritance]\n{}",
             if cow {
-                format!("CopyOnWrite={}\n", source.display())
+                format!("{key}={}\n", source.display())
             } else {
-                String::new()
+                format!("{key}=\n")
             }
         ),
     )
@@ -117,7 +117,7 @@ fn missing_cow_package_is_reported_from_metadata_before_build() {
             .collect::<Vec<_>>(),
     );
     main_system(&fixture);
-    inheritance(&fixture, "initramfs", true);
+    inheritance(&fixture, "CopyOnWriteBoot", true);
     let backend = SimulatedBackend::default();
     let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap_err()
@@ -152,7 +152,7 @@ fn active_main_system_cow_requires_declaration_and_action() {
         let fixture = Fixture::new();
         fixture.system("desktop", COW);
         main_system(&fixture);
-        inheritance(&fixture, "initramfs", true);
+        inheritance(&fixture, "CopyOnWriteBoot", true);
         change_plugin(&fixture, true, declared, action);
         let backend = SimulatedBackend::default();
         let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
@@ -165,15 +165,15 @@ fn active_main_system_cow_requires_declaration_and_action() {
 
 #[test]
 fn build_time_cow_empty_cow_and_mount_only_skip_initramfs_requirements() {
-    for (timing, cow, mounts) in [
-        ("build", true, false),
-        ("initramfs", false, false),
-        ("initramfs", false, true),
+    for (key, cow, mounts) in [
+        ("CopyOnWriteBuild", true, false),
+        ("CopyOnWriteBoot", false, false),
+        ("CopyOnWriteBoot", false, true),
     ] {
         let fixture = Fixture::new();
         fixture.system("desktop", BOOT);
         main_system(&fixture);
-        inheritance(&fixture, timing, cow);
+        inheritance(&fixture, key, cow);
         if mounts {
             let source = fixture.store.root().parent().unwrap().join("live-mount");
             fs::create_dir(&source).unwrap();
@@ -186,7 +186,7 @@ fn build_time_cow_empty_cow_and_mount_only_skip_initramfs_requirements() {
             fs::write(
                 &path,
                 format!(
-                    "[Inheritance]\nTiming=initramfs\nMount={}/\n",
+                    "[Inheritance]\nCopyOnWriteBoot=\nMount={}/\n",
                     source.display()
                 ),
             )
@@ -204,7 +204,7 @@ fn build_time_cow_empty_cow_and_mount_only_skip_initramfs_requirements() {
 fn subsystem_deferred_cow_needs_no_main_boot_support() {
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
-    inheritance(&fixture, "initramfs", true);
+    inheritance(&fixture, "CopyOnWriteBoot", true);
     change_plugin(&fixture, false, false, false);
     let backend = SimulatedBackend::default();
     let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
@@ -269,7 +269,7 @@ fn active_cow_action_runs_after_scripts_and_failure_blocks_boot_publication() {
         let fixture = Fixture::new();
         fixture.system("desktop", COW);
         main_system(&fixture);
-        inheritance(&fixture, "initramfs", true);
+        inheritance(&fixture, "CopyOnWriteBoot", true);
         let layout = fixture.store.system_layout("desktop").unwrap();
         fs::write(layout.config.join("script/prepare.sh"), "exit 0\n").unwrap();
         let backend = SimulatedBackend::default();
@@ -373,7 +373,7 @@ fn groups_base_packages_and_runtime_dependencies_satisfy_requirements_without_du
             }],
         );
         main_system(&fixture);
-        inheritance(&fixture, "initramfs", true);
+        inheritance(&fixture, "CopyOnWriteBoot", true);
         let backend = SimulatedBackend::default();
         arch_base_dependencies(&backend);
         let packages = ["linux", "mkinitcpio", "btrfs-progs"]
@@ -436,7 +436,7 @@ fn another_systems_package_does_not_satisfy_the_main_system_requirement() {
     fixture.system("desktop", BOOT);
     fixture.system("server", &["btrfs-progs"]);
     main_system(&fixture);
-    inheritance(&fixture, "initramfs", true);
+    inheritance(&fixture, "CopyOnWriteBoot", true);
     let backend = SimulatedBackend::default();
     arch_base_dependencies(&backend);
     let error = build_with_backend(&fixture.store, None, &backend)
@@ -479,7 +479,7 @@ fn old_installed_packages_are_not_counted_as_current_configuration_requirements(
     let fixture = Fixture::with_predownload(true);
     fixture.system("desktop", COW);
     main_system(&fixture);
-    inheritance(&fixture, "initramfs", true);
+    inheritance(&fixture, "CopyOnWriteBoot", true);
     let backend = SimulatedBackend::default();
     arch_base_dependencies(&backend);
     build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
