@@ -165,6 +165,12 @@ RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 ```
 
 省略系统标识默认构建全部系统，逐个执行，个别失败不阻断其他系统。
+可在各参与系统的 `build/config.conf` 中设置 `[Config] DeduplicatePackages=yes`，手动开启
+本批系统间的软件包文件去重，默认关闭。开启要求插件声明 `query_package_files`，否则
+预检查报错；软件维护后、二阶段快照前共享内核校验一致的 Btrfs 数据块，保留独立文件
+及写时复制行为。该功能增加文件查询和比较开销，第三阶段应用导出清单保持原有行为。
+详情见[构建期软件包去重](docs/build-design.md#可选构建期软件包去重)。
+
 临时工作目录默认是管理根下的 `work/`，可通过全局 `work_dir` 覆盖。
 需要 Btrfs 工具、nspawn、插件声明的工具，以及安装系统所需权限。
 插件任务和构建脚本的诊断即时输出到终端；连接终端时通过伪终端保留下载进度条，并传入窗口尺寸。

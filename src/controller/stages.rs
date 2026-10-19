@@ -48,6 +48,8 @@ pub(super) struct Stages<'a, B: BuildBackend> {
     /// Maximum age for directly reusing a completed stage; zero disables skipping.
     /// 直接复用已完成阶段的最长分钟数；零禁用跳过执行。
     pub(super) reuse_minutes: u64,
+    pub(super) deduplicate_packages: bool,
+    pub(super) dedup_sources: &'a [super::dedup::Source],
 }
 
 impl<B: BuildBackend> Stages<'_, B> {
@@ -239,7 +241,38 @@ impl<B: BuildBackend> Stages<'_, B> {
             &self.plugin.archive_sha256,
             &inputs,
         )? {
-            return self.reuse(cached.unwrap());
+            let cached = cached.unwrap();
+            let reused = self.reuse(cached)?;
+            if self.deduplicate_packages {
+                let old_index = super::dedup::read_index(
+                    &cached.root.parent().unwrap().join(super::dedup::INDEX),
+                )?;
+                let index = if let Some(index) = old_index {
+                    index
+                } else {
+                    // Legacy caches need an index from this exact stage, never from script output.
+                    // 旧缓存须查询本阶段索引，绝不借用脚本阶段清单。
+                    let root = self.scratch.join("packages-index-root");
+                    owned.push(root.clone());
+                    self.backend
+                        .snapshot_recursive(&reused.root, &root, false)?;
+                    super::dedup::parse(&self.backend.query_package_files(
+                        self.plugin,
+                        &root,
+                        self.context,
+                    )?)?
+                };
+                super::dedup::write_index(
+                    &self
+                        .attempt
+                        .layout
+                        .cache
+                        .join(&self.attempt.version)
+                        .join(super::dedup::INDEX),
+                    &index,
+                )?;
+            }
+            return Ok(reused);
         }
         let root = self.scratch.join("root");
         owned.push(root.clone());
@@ -297,6 +330,35 @@ impl<B: BuildBackend> Stages<'_, B> {
         } else {
             session.install(&self.config.packages)?
         };
+        if self.deduplicate_packages {
+            progress::message(
+                &self.context.system_id,
+                "生成二阶段包文件索引并执行跨系统去重",
+                "Generate the software-stage file index and deduplicate across systems",
+            );
+            let bytes = self
+                .backend
+                .query_package_files(self.plugin, &root, self.context)?;
+            let index = super::dedup::parse(&bytes)?;
+            super::dedup::write_index(
+                &self
+                    .attempt
+                    .layout
+                    .cache
+                    .join(&self.attempt.version)
+                    .join(super::dedup::INDEX),
+                &index,
+            )?;
+            super::dedup::run(
+                self.backend,
+                self.plugin,
+                &self.context.architecture,
+                &self.context.system_id,
+                &root,
+                &index,
+                self.dedup_sources,
+            )?;
+        }
         self.commit(
             "packages",
             &root,

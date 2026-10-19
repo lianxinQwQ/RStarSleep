@@ -14,6 +14,14 @@ pub(super) struct ScopedBackend<'a, B> {
 }
 
 impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
+    fn deduplicate_file(
+        &self,
+        source: &std::fs::File,
+        target: &std::fs::File,
+    ) -> Result<super::DedupOutcome> {
+        self.backend.deduplicate_file(source, target)
+    }
+
     fn sync_filesystem(&self, path: &Path) -> Result<()> {
         self.backend.sync_filesystem(path)
     }

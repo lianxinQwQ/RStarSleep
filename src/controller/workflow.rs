@@ -69,6 +69,7 @@ pub fn build_with_backend(
         state: store.root().join("persistent-state"),
     };
     let mut outcomes = Vec::new();
+    let mut dedup_sources = Vec::new();
     let mut failures = Vec::new();
     let mut pending = Vec::new();
     let system_count = systems.len();
@@ -209,7 +210,7 @@ pub fn build_with_backend(
             &value.context.system_id,
             format!("构建版本 {}", value.attempt.version),
             format!("Build version {}", value.attempt.version),
-            || build_system(value, &work, &backend, &runtime),
+            || build_system(value, &work, &backend, &runtime, &dedup_sources),
         );
         let built = match value.attempt.log.check() {
             Ok(()) => built,
@@ -221,21 +222,26 @@ pub fn build_with_backend(
                 Err(error)
             }
         };
-        if let Err(error) = &built {
-            if let Err(record_error) = status(
+        if let Err(error) = &built
+            && let Err(record_error) = status(
                 &value.attempt,
                 &value.context.system_id,
                 "failed",
                 Some(error.to_string()),
                 Some(&value.plugin),
-            ) {
-                return Err(Error::Invalid(format!(
-                    "{error}; 失败记录写入失败: {record_error}"
-                )));
-            }
+            )
+        {
+            return Err(Error::Invalid(format!(
+                "{error}; 失败记录写入失败: {record_error}"
+            )));
         }
         match built {
-            Ok(outcome) => outcomes.push(outcome),
+            Ok((outcome, source)) => {
+                if let Some(source) = source {
+                    dedup_sources.push(source);
+                }
+                outcomes.push(outcome);
+            }
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{}: {error}", value.context.system_id)),
         }
@@ -356,6 +362,7 @@ struct Prepared {
     upgrade_packages: Vec<String>,
     package_plan: Option<crate::software::PackagePlan>,
     reuse_minutes: u64,
+    deduplicate_packages: bool,
 }
 
 type DownloadGroup = (
@@ -372,6 +379,7 @@ struct Pending {
     context: BuildContext,
     package_plan: Option<crate::software::PackagePlan>,
     reuse_minutes: u64,
+    deduplicate_packages: bool,
 }
 
 fn collect_plan(
@@ -434,12 +442,19 @@ fn check_system(
     let frozen = inputs.config.path();
     let config = read_build_config_at(frozen)?;
     let reuse_minutes = store.cache_reuse_minutes_at(frozen)?;
+    let deduplicate_packages = crate::config::read_deduplicate_packages_at(frozen)?;
     let architecture = config
         .architecture
         .as_deref()
         .unwrap_or(std::env::consts::ARCH)
         .to_owned();
     let plugin = plugins::find(&store.plugins_path(), &config.system_type, &architecture)?;
+    if deduplicate_packages && !plugin.metadata.query_package_files {
+        return Err(Error::Invalid(format!(
+            "系统 {id} 开启 DeduplicatePackages，但插件 {} 未声明 query_package_files",
+            plugin.metadata.id
+        )));
+    }
     let distribution_options = read_distribution_options_at(frozen)?;
     let input = read_plugin_parameters_at(frozen)?;
     let environment = crate::config::read_environment_at(frozen)?;
@@ -471,7 +486,10 @@ fn check_system(
                 !name.starts_with("RSTAR_INHERITANCE_")
                     && !matches!(
                         name.as_str(),
-                        "RSTAR_CONFIG_CACHEREUSEMINUTES" | "RSTAR_CACHE_REUSE_MINUTES"
+                        "RSTAR_CONFIG_CACHEREUSEMINUTES"
+                            | "RSTAR_CACHE_REUSE_MINUTES"
+                            | "RSTAR_CONFIG_DEDUPLICATEPACKAGES"
+                            | "RSTAR_DEDUPLICATE_PACKAGES"
                     )
             })
             .collect(),
@@ -488,6 +506,7 @@ fn check_system(
         context,
         package_plan: None,
         reuse_minutes,
+        deduplicate_packages,
     })
 }
 
@@ -640,6 +659,7 @@ fn prepare_system(
         mut context,
         package_plan,
         reuse_minutes,
+        deduplicate_packages,
     } = pending;
     let _log = logging::enter([inputs.log.clone()]);
     let id = context.system_id.clone();
@@ -747,6 +767,7 @@ fn prepare_system(
             upgrade_packages,
             package_plan,
             reuse_minutes,
+            deduplicate_packages,
         }),
         Err(error) => {
             status(
@@ -862,7 +883,8 @@ fn build_system(
     work: &Path,
     backend: &impl BuildBackend,
     runtime: &crate::config::RuntimeConfig,
-) -> Result<BuildOutcome> {
+    dedup_sources: &[super::dedup::Source],
+) -> Result<(BuildOutcome, Option<super::dedup::Source>)> {
     let Prepared {
         attempt,
         plugin: loaded,
@@ -924,8 +946,21 @@ fn build_system(
             scratch: &scratch,
             prepare_boot_inheritance: runtime.main_system.as_deref() == Some(id.as_str()),
             reuse_minutes: prepared.reuse_minutes,
+            deduplicate_packages: prepared.deduplicate_packages,
+            dedup_sources,
         };
-        stages.run(base, packages, scripts, &mut owned)
+        let outcome = stages.run(base, packages, scripts, &mut owned)?;
+        let source = if prepared.deduplicate_packages {
+            Some(super::dedup::Source::load(
+                backend,
+                attempt.layout.cache.join(&attempt.version).join("packages"),
+                loaded,
+                &context.architecture,
+            )?)
+        } else {
+            None
+        };
+        Ok((outcome, source))
     })();
     let cleanup = progress::run(
         id,
@@ -941,7 +976,7 @@ fn build_system(
             "{error}; 工作根清理失败: {cleanup}"
         ))),
     };
-    let result = result.and_then(|outcome| {
+    let result = result.and_then(|(outcome, source)| {
         if runtime.main_system.as_deref() == Some(id.as_str()) {
             progress::run(
                 id,
@@ -950,10 +985,10 @@ fn build_system(
                 || backend.publish_boot(&outcome, runtime),
             )?;
         }
-        Ok(outcome)
+        Ok((outcome, source))
     });
     match result {
-        Ok(outcome) => {
+        Ok((outcome, source)) => {
             let state = if outcome
                 .root
                 .file_name()
@@ -977,7 +1012,7 @@ fn build_system(
                     "Build artifacts prepared; inheritance will finish during boot",
                 );
             }
-            Ok(outcome)
+            Ok((outcome, source))
         }
         Err(error) => Err(error),
     }

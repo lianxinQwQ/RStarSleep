@@ -117,6 +117,43 @@ pub fn read_build_config_at(directory: &Path) -> Result<BuildConfig> {
     Ok(config)
 }
 
+/// Read the opt-in package deduplication policy from frozen system inputs.
+/// 从冻结系统配置读取默认关闭的软件包去重策略。
+/// # Arguments
+/// - `directory`: Current or archived configuration root. 当前或留档配置根。
+pub fn read_deduplicate_packages_at(directory: &Path) -> Result<bool> {
+    match Input::read(directory)? {
+        Input::Ini(document) => {
+            let parameters = document.plugin_parameters()?;
+            let Some(values) = parameters.lists.get("RSTAR_CONFIG_DEDUPLICATEPACKAGES") else {
+                return Ok(false);
+            };
+            let [value] = values.as_slice() else {
+                return Err(Error::Invalid(
+                    "DeduplicatePackages 必须恰好配置一个布尔值".into(),
+                ));
+            };
+            match value.to_ascii_lowercase().as_str() {
+                "yes" | "true" | "1" | "on" => Ok(true),
+                "no" | "false" | "0" | "off" => Ok(false),
+                _ => Err(Error::Invalid(
+                    "DeduplicatePackages 必须是 yes/no 或 true/false".into(),
+                )),
+            }
+        }
+        Input::Toml { path, text } => {
+            let value: toml::Value =
+                toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
+            match value.get("deduplicate_packages") {
+                None => Ok(false),
+                Some(value) => value
+                    .as_bool()
+                    .ok_or_else(|| Error::Invalid("deduplicate_packages 必须是布尔值".into())),
+            }
+        }
+    }
+}
+
 /// Read plugin options from [Distribution], preserving names and scalar values.
 /// 从 [Distribution] 读取插件选项，保留名称和标量值。
 ///

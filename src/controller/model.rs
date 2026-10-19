@@ -119,6 +119,18 @@ pub struct BuildOutcome {
 /// Required CoW storage and checked plugin execution operations.
 /// 必需的 CoW 存储和已检查插件执行操作。
 pub trait BuildBackend {
+    /// Share equal file data while preserving independent inodes and metadata.
+    /// 共享一致文件数据，保留独立 inode 和元数据。
+    /// # Arguments
+    /// - `source`, `target`: Pinned regular source and writable destination. 固定普通来源及可写目标。
+    fn deduplicate_file(
+        &self,
+        _source: &std::fs::File,
+        _target: &std::fs::File,
+    ) -> Result<super::DedupOutcome> {
+        Ok(super::DedupOutcome::Unsupported)
+    }
+
     /// Query optional owned-file candidates inside the frozen build environment.
     /// 在冻结构建环境内查询可选所属文件候选项。
     /// # Arguments

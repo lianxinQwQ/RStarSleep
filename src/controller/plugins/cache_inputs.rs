@@ -14,6 +14,8 @@ impl LoadedPlugin {
         for name in [
             "RSTAR_CONFIG_CACHEREUSEMINUTES",
             "RSTAR_CACHE_REUSE_MINUTES",
+            "RSTAR_CONFIG_DEDUPLICATEPACKAGES",
+            "RSTAR_DEDUPLICATE_PACKAGES",
         ] {
             parameters.values.remove(name);
             parameters.lists.remove(name);

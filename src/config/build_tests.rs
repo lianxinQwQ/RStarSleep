@@ -521,3 +521,56 @@ fn resolves_cache_lifetime_and_rejects_invalid_values() {
         );
     }
 }
+
+/// The storage policy is opt-in, typed, and independent of plugin declarations.
+/// 存储策略默认关闭，严格校验类型且不依赖插件声明配置项。
+#[test]
+fn package_deduplication_boolean_policy() {
+    let (_temporary, store) = fixture();
+    let directory = store.root().join("dedup-input");
+    write_build(&directory, "[Config]\nSchemaVersion=1\n");
+    assert!(!read_deduplicate_packages_at(&directory).unwrap());
+    for (value, expected) in [
+        ("yes", true),
+        ("true", true),
+        ("on", true),
+        ("1", true),
+        ("no", false),
+        ("false", false),
+        ("off", false),
+        ("0", false),
+    ] {
+        fs::write(
+            directory.join(BUILD_CONFIG_PATH),
+            format!("[Config]\nDeduplicatePackages={value}\n"),
+        )
+        .unwrap();
+        assert_eq!(read_deduplicate_packages_at(&directory).unwrap(), expected);
+    }
+    for value in ["", "maybe", "2", "yes\nDeduplicatePackages=no"] {
+        fs::write(
+            directory.join(BUILD_CONFIG_PATH),
+            format!("[Config]\nDeduplicatePackages={value}\n"),
+        )
+        .unwrap();
+        assert!(read_deduplicate_packages_at(&directory).is_err());
+    }
+    fs::remove_file(directory.join(BUILD_CONFIG_PATH)).unwrap();
+    for (value, expected) in [
+        ("true", Some(true)),
+        ("false", Some(false)),
+        ("'true'", None),
+        ("1", None),
+    ] {
+        fs::write(
+            directory.join(LEGACY_BUILD_CONFIG_PATH),
+            format!("deduplicate_packages={value}\n"),
+        )
+        .unwrap();
+        let actual = read_deduplicate_packages_at(&directory);
+        match expected {
+            Some(expected) => assert_eq!(actual.unwrap(), expected),
+            None => assert!(actual.is_err()),
+        }
+    }
+}

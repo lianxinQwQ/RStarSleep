@@ -19,8 +19,8 @@ mod store;
 
 pub(crate) use build::normalized_build_config;
 pub use build::{
-    BuildConfig, read_build_config_at, read_distribution_options_at, read_environment_at,
-    read_plugin_parameters_at,
+    BuildConfig, read_build_config_at, read_deduplicate_packages_at, read_distribution_options_at,
+    read_environment_at, read_plugin_parameters_at,
 };
 pub use environment::Environment;
 pub use filesystem::with_current_system_top_level;

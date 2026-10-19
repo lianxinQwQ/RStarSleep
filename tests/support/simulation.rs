@@ -69,6 +69,10 @@ pub struct SimulatedBackend {
     pub collected_package_plan_override: RefCell<Option<String>>,
     pub prepared_package_plans_override: RefCell<Option<String>>,
     pub maintained_software_state_override: RefCell<Option<String>>,
+    pub generate_package_files: Cell<bool>,
+    pub fail_deduplication: Cell<bool>,
+    pub package_file_contents: RefCell<BTreeMap<(String, String), Vec<u8>>>,
+    pub dedup_attempts: RefCell<Vec<(PathBuf, PathBuf)>>,
     generation: Cell<u32>,
 }
 
@@ -272,6 +276,32 @@ fn copy_snapshot_stubs(source: &Path, destination: &Path) {
 }
 
 impl BuildBackend for SimulatedBackend {
+    fn deduplicate_file(
+        &self,
+        source: &fs::File,
+        target: &fs::File,
+    ) -> Result<rstarsleep::controller::DedupOutcome> {
+        use std::os::fd::AsRawFd;
+        if self.fail_deduplication.get() {
+            return Err(Error::Io {
+                path: "deduplication".into(),
+                source: std::io::Error::from_raw_os_error(libc::EIO),
+            });
+        }
+        let source_path = fs::read_link(format!("/proc/self/fd/{}", source.as_raw_fd())).unwrap();
+        let target_path = fs::read_link(format!("/proc/self/fd/{}", target.as_raw_fd())).unwrap();
+        self.dedup_attempts
+            .borrow_mut()
+            .push((source_path.clone(), target_path.clone()));
+        let left = fs::read(source_path).unwrap();
+        let right = fs::read(target_path).unwrap();
+        Ok(if left == right {
+            rstarsleep::controller::DedupOutcome::Shared(left.len() as u64)
+        } else {
+            rstarsleep::controller::DedupOutcome::Different
+        })
+    }
+
     fn publish_boot(
         &self,
         outcome: &rstarsleep::controller::BuildOutcome,
@@ -706,6 +736,23 @@ impl BuildBackend for SimulatedBackend {
             other => panic!("unexpected plugin operation {other}"),
         }
         Self::save(root, &packages);
+        if self.generate_package_files.get()
+            && matches!(
+                operation,
+                "base_install" | "install" | "maintain_packages" | "update"
+            )
+        {
+            fs::create_dir_all(root.join("usr/bin")).unwrap();
+            for name in packages.keys() {
+                let bytes = self
+                    .package_file_contents
+                    .borrow()
+                    .get(&(context.system_id.clone(), name.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| name.as_bytes().repeat(4096));
+                fs::write(root.join("usr/bin").join(name), bytes).unwrap();
+            }
+        }
         Ok(output)
     }
     /// Execute test shell code in the copied payload with a simulated root environment.

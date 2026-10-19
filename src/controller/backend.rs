@@ -80,6 +80,14 @@ fn destination(path: &Path) -> Result<()> {
 }
 
 impl BuildBackend for SystemBackend {
+    fn deduplicate_file(
+        &self,
+        source: &std::fs::File,
+        target: &std::fs::File,
+    ) -> Result<super::DedupOutcome> {
+        super::dedup::share(source, target)
+    }
+
     fn sync_filesystem(&self, path: &Path) -> Result<()> {
         btrfs(&["filesystem".into(), "sync".into(), path.into()])?;
         Ok(())

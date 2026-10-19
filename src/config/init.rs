@@ -34,6 +34,9 @@ SchemaVersion=1\n\
 # Optional override of global cache_reuse_minutes; 0 always executes stages.\n\
 # 可选覆盖全局缓存有效期；0 始终执行各阶段。\n\
 # CacheReuseMinutes=10\n\
+# Opt in to cross-system package deduplication; requires query_package_files.\n\
+# 可选开启跨系统软件包去重；要求插件支持 query_package_files。\n\
+# DeduplicatePackages=no\n\
 \n\
 # Distribution plugin type; selected from archives in the workspace plugins/ directory.\n\
 # 发行版插件类型；从工作目录 plugins/ 内的压缩包自动选择。\n\

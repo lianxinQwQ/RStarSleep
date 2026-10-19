@@ -157,7 +157,10 @@ impl LoadedPlugin {
             !name.starts_with("RSTAR_INHERITANCE_")
                 && !matches!(
                     name.as_str(),
-                    "RSTAR_CONFIG_CACHEREUSEMINUTES" | "RSTAR_CACHE_REUSE_MINUTES"
+                    "RSTAR_CONFIG_CACHEREUSEMINUTES"
+                        | "RSTAR_CACHE_REUSE_MINUTES"
+                        | "RSTAR_CONFIG_DEDUPLICATEPACKAGES"
+                        | "RSTAR_DEDUPLICATE_PACKAGES"
                 )
         });
         self.validate_configuration(&plugin_values)?;

@@ -248,6 +248,12 @@ API 2/3 均可使用这个扩展，不改变已有 `query_packages` 的包名/�
 改变文件，入口导出及运行仍校验固定客体根中的实际对象。已运行子系统使用运行版本
 的清单，未运行时使用当前成功构建产物；显式命令/desktop 导出不依赖此可选能力。
 
+核心可选配置 `[Config] DeduplicatePackages=yes`（默认关闭；旧 TOML 为
+`deduplicate_packages = true`）复用此能力，在二阶段软件维护后另存
+`cache/<版本>/packages-files.tsv`，与本批此前成功且开启的系统二阶段缓存执行
+Btrfs 数据块去重。缺少此插件能力时开启功能会在预检查报错。
+第三阶段 `application-files.tsv` 仍独立生成，用于包含用户脚本变化的应用导出。
+
 ## 挂载继承
 
 插件通过顶层 `mount_inheritance = true` 声明 `mount_inheritance.sh`。

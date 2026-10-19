@@ -57,6 +57,18 @@ pub(super) fn clear_from(
                 fs::remove_file(&sidecar).map_err(|e| disk::io(&sidecar, e))?;
             }
         }
+        if start
+            <= STAGES
+                .iter()
+                .position(|stage| *stage == "packages")
+                .unwrap()
+        {
+            let index = directory.join(super::dedup::INDEX);
+            if disk::exists(&index)? {
+                disk::checked(&index)?;
+                fs::remove_file(&index).map_err(|e| disk::io(&index, e))?;
+            }
+        }
         disk::sync(&directory)?;
         for stage in STAGES[start..].iter().rev() {
             let root = directory.join(stage);
