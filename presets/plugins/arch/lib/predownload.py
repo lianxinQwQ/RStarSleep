@@ -1130,6 +1130,20 @@ class Preparer:
         if database.is_symlink():
             raise PreparationError("repository archive must not be a symlink")
         names = {p["name"] for p in artifacts}
+        receipt_path = self.repo / ".aur-publication.json"
+        expected = {p["name"]: p for p in artifacts}
+        existing = {name: value for name, value in ownership.items() if value["pkgbase"] == base["name"]}
+        try:
+            receipt = json.loads(receipt_path.read_text()) if not receipt_path.is_symlink() else {}
+            if (database.is_file() and existing == expected
+                    and receipt.get("format") == 1 and receipt.get("packages") == ownership
+                    and receipt.get("database") == self.cached_digest(database)
+                    and all((self.repo / p["filename"]).is_file()
+                            and not (self.repo / p["filename"]).is_symlink() for p in artifacts)):
+                log(f"复用 AUR 仓库条目：{base['name']}", f"Reuse AUR repository entry: {base['name']}")
+                return
+        except (OSError, ValueError, AttributeError):
+            pass  # Legacy or interrupted publication is rebuilt once.
         stale = [name for name, value in ownership.items() if value["pkgbase"] == base["name"] and name not in names]
         if stale and database.exists():
             run(["repo-remove", database, *stale])
@@ -1138,6 +1152,7 @@ class Preparer:
         run(["repo-add", database, *[self.repo / p["filename"] for p in artifacts]])
         ownership.update({p["name"]: p for p in artifacts})
         atomic_json(ownership_path, ownership)
+        atomic_json(receipt_path, dict(format=1, database=self.cached_digest(database), packages=ownership))
         self.refresh_repo()
 
     def clean_dependencies(self):
