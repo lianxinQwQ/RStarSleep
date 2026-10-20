@@ -207,6 +207,13 @@ impl LoadedPlugin {
                 "plugin does not advertise query_package_files".into(),
             ));
         }
+        if operation == "query_package_database_paths"
+            && !self.metadata.query_package_database_paths
+        {
+            return Err(Error::Invalid(
+                "plugin does not advertise query_package_database_paths".into(),
+            ));
+        }
         if operation == "prepare_inheritance_initramfs"
             && self.metadata.initramfs_inheritance.is_none()
         {

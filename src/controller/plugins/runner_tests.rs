@@ -36,6 +36,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             mount_inheritance: false,
             query_package_files: false,
             package_database_paths: Vec::new(),
+            query_package_database_paths: false,
             readonly_queries: Vec::new(),
             boot: None,
             initramfs_inheritance: None,

@@ -204,6 +204,11 @@ impl<B: BuildBackend> Stages<'_, B> {
             software,
             cached,
             Some(Receipt::executed(inputs)?),
+            if self.config.packages.is_empty() {
+                self.package_database_paths(&root)
+            } else {
+                None
+            },
         )
     }
 
@@ -365,6 +370,11 @@ impl<B: BuildBackend> Stages<'_, B> {
             software,
             cached,
             Some(Receipt::executed(inputs)?),
+            if self.plugin.metadata.package_maintenance && self.config.packages.is_empty() {
+                previous_step.record.package_database_paths.clone()
+            } else {
+                self.package_database_paths(&root)
+            },
         )
     }
 
@@ -448,10 +458,15 @@ impl<B: BuildBackend> Stages<'_, B> {
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
         // Observe inheritance too: it can replace a database before any script runs.
-        let package_watch = super::package_watch::PackageWatch::start(
-            &root,
-            &self.plugin.metadata.package_database_paths,
-        );
+        // Keep the inventory bound to the database that produced it, including cache hits.
+        let database_paths = if self.plugin.metadata.query_package_database_paths {
+            packages.record.package_database_paths.clone()
+        } else {
+            Some(self.plugin.metadata.package_database_paths.clone())
+        };
+        let package_watch = database_paths
+            .as_ref()
+            .and_then(|paths| super::package_watch::PackageWatch::start(&root, paths));
         let inherited = if let Some(frozen) = &frozen {
             frozen.apply(self.backend, &root)?
         } else {
@@ -469,7 +484,12 @@ impl<B: BuildBackend> Stages<'_, B> {
         }
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
         let changed = (inherited || applied || self.plugin.metadata.post_maintenance)
-            && !package_watch.is_some_and(|watch| watch.unchanged());
+            && !package_watch.is_some_and(|watch| {
+                // Configuration may select a different database after inheritance or scripts.
+                let same_paths = !self.plugin.metadata.query_package_database_paths
+                    || self.package_database_paths(&root) == database_paths;
+                same_paths && watch.unchanged()
+            });
         let software = if changed {
             let session = PackageSession {
                 backend: self.backend,
@@ -512,7 +532,40 @@ impl<B: BuildBackend> Stages<'_, B> {
             software,
             None,
             inputs.map(Receipt::executed).transpose()?,
+            None,
         )
+    }
+
+    fn package_database_paths(&self, root: &Path) -> Option<Vec<PathBuf>> {
+        if !self.plugin.metadata.query_package_database_paths {
+            return Some(self.plugin.metadata.package_database_paths.clone());
+        }
+        let result = progress::run(
+            &self.context.system_id,
+            "解析实际软件数据库监听路径",
+            "Resolve effective package database watch paths",
+            || {
+                let output = self.backend.invoke(
+                    self.plugin,
+                    "query_package_database_paths",
+                    &[],
+                    root,
+                    self.context,
+                )?;
+                Ok(super::package_watch::parse_paths(&output))
+            },
+        );
+        match result {
+            Ok(paths) => paths,
+            Err(_) => {
+                progress::message(
+                    &self.context.system_id,
+                    "数据库监听路径不可用，完整查询软件状态",
+                    "Database watch paths unavailable; query the complete software state",
+                );
+                None
+            }
+        }
     }
 
     /// Prepare persistent mounts and boot-time inheritance before publishing script output.
@@ -646,9 +699,11 @@ impl<B: BuildBackend> Stages<'_, B> {
         software: SoftwareState,
         source: Option<&Cache>,
         reuse: Option<Receipt>,
+        database_paths: Option<Vec<PathBuf>>,
     ) -> Result<Cache> {
         let mut record = self.record(stage, software, source)?;
         record.reuse = reuse;
+        record.package_database_paths = database_paths;
         let directory = self.attempt.layout.cache.join(&self.attempt.version);
         progress::run(
             &self.context.system_id,
@@ -747,6 +802,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             },
             config_sha256: config_hash(&self.attempt.config)?,
             software,
+            package_database_paths: None,
             reuse: None,
         })
     }

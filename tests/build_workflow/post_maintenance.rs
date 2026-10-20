@@ -3,6 +3,84 @@
 use super::*;
 
 #[test]
+fn inotify_reuses_inventory_for_password_only_but_observes_custom_database_changes() {
+    for change in ["none", "database", "path"] {
+        let fixture = Fixture::with_unified_packages_without_predownload();
+        fixture.system("desktop", &["editor"]);
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        if change != "none" {
+            let command = if change == "database" {
+                "printf changed > \"$RSTAR_ROOT/custom-db/local/desc\"\n"
+            } else {
+                "printf other-db/local > \"$RSTAR_ROOT/.database-path\"\n"
+            };
+            fs::write(
+                layout.config.join("script/change.sh"),
+                format!("set -eu\nsed -i 's/^shared\\tdependency$/shared\\texplicit/' \"$RSTAR_ROOT/.simulated-packages\"\n{command}"),
+            ).unwrap();
+        }
+        let backend = SimulatedBackend::default();
+        *backend.watched_database_path.borrow_mut() = Some("custom-db/local".into());
+        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap()
+            .remove(0);
+        let queries = backend
+            .events
+            .borrow()
+            .iter()
+            .filter(|event| {
+                event.operation == "query_packages" && event.root.ends_with("script-root")
+            })
+            .count();
+        assert_eq!(queries, usize::from(change != "none"), "{change}");
+        let state = record(&fixture.cache(&outcome.version, "script.toml"));
+        let shared = state["software"]["installed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["name"].as_str() == Some("shared"))
+            .unwrap();
+        assert_eq!(shared["explicit"].as_bool(), Some(change != "none"));
+    }
+}
+
+#[test]
+fn reused_inventory_keeps_its_original_database_path() {
+    let fixture = Fixture::with_unified_packages_without_predownload();
+    fixture.system("desktop", &["editor"]);
+    fs::write(
+        fixture.store.root().join("config/rstarsleep.toml"),
+        "schema_version = 1\ncache_reuse_minutes = 60\n",
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    *backend.watched_database_path.borrow_mut() = Some("first-db/local".into());
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    let captures = backend.count("query_packages");
+    *backend.watched_database_path.borrow_mut() = Some("second-db/local".into());
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/content.conf"),
+        "[Content]\nRootPassword=changed\n",
+    )
+    .unwrap();
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert!(backend.count("query_packages") > captures);
+    assert!(backend.events.borrow().iter().any(|event| {
+        event.operation == "query_packages" && event.root.ends_with("script-root")
+    }));
+    assert_eq!(
+        record(&fixture.cache(&outcome.version, "packages.toml"))["package_database_paths"]
+            .as_array()
+            .unwrap()[0]
+            .as_str(),
+        Some("first-db/local")
+    );
+}
+
+#[test]
 fn plugin_behavior_precedes_user_scripts_without_changing_software_caches() {
     let fixture = Fixture::with_unified_packages_without_predownload();
     fixture.system("desktop", &["editor"]);

@@ -49,6 +49,7 @@ pub(crate) fn is_query(operation: &str) -> bool {
             | "collect_packages"
             | "list_orphans"
             | "query_package_files"
+            | "query_package_database_paths"
             | "maintain_packages"
     )
 }

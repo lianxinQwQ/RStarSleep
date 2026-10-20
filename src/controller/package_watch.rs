@@ -16,6 +16,26 @@ pub(super) struct PackageWatch {
     identities: Vec<(PathBuf, u64, u64)>,
 }
 
+/// Each line is a target-relative database tree. An empty response disables reuse.
+pub(super) fn parse_paths(output: &str) -> Option<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for line in output.lines() {
+        let path = PathBuf::from(line);
+        if line.is_empty()
+            || line.chars().any(char::is_control)
+            || path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
 impl PackageWatch {
     pub fn start(root: &Path, paths: &[PathBuf]) -> Option<Self> {
         if paths.is_empty() {
@@ -143,6 +163,24 @@ mod tests {
     }
     fn watch(root: &Path) -> PackageWatch {
         PackageWatch::start(root, &["db".into()]).unwrap()
+    }
+    #[test]
+    fn parses_only_target_relative_query_paths() {
+        assert_eq!(
+            parse_paths("custom database/local\n"),
+            Some(vec!["custom database/local".into()])
+        );
+        assert_eq!(parse_paths(""), Some(Vec::new()));
+        for output in [
+            "/db\n",
+            "../db\n",
+            "var/../db\n",
+            "\n",
+            "db\tbad\n",
+            "db\0bad\n",
+        ] {
+            assert_eq!(parse_paths(output), None);
+        }
     }
     #[test]
     fn unrelated_password_updates_and_reads_preserve_queries() {

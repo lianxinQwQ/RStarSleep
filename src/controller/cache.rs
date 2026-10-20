@@ -142,6 +142,9 @@ pub(super) struct Record {
     /// Resolved managed targets and actual installed inventory.
     /// 已解析管理目标和实际安装清单。
     pub software: SoftwareState,
+    /// Effective database paths associated with this inventory; absent in legacy caches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_database_paths: Option<Vec<PathBuf>>,
     /// Optional execution receipt; older records remain valid maintenance donors.
     /// 可选执行凭据；旧记录仍可作为常规维护来源。
     #[serde(default, skip_serializing_if = "Option::is_none")]

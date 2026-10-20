@@ -59,7 +59,10 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for operation in &metadata.readonly_queries {
         if !matches!(
             operation.as_str(),
-            "query_packages" | "list_orphans" | "query_package_files"
+            "query_packages"
+                | "list_orphans"
+                | "query_package_files"
+                | "query_package_database_paths"
         ) {
             return Err(Error::Invalid(
                 "readonly_queries 只支持本地软件数据库查询".into(),
@@ -119,6 +122,9 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     }
     if metadata.query_package_files {
         operation_path(root, "query_package_files")?;
+    }
+    if metadata.query_package_database_paths {
+        operation_path(root, "query_package_database_paths")?;
     }
     metadata.config.validate()?;
     metadata.cache.validate(&metadata.config)?;

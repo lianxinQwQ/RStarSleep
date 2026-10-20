@@ -962,3 +962,23 @@ fn package_database_paths_are_optional_and_confined_to_target() {
     metadata.package_database_paths = vec!["var/lib/pacman/local".into()];
     assert!(validate_metadata(&metadata, plugin.root()).is_ok());
 }
+
+#[test]
+fn dynamic_package_database_paths_require_an_entrypoint() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    assert!(!plugin.metadata.query_package_database_paths);
+    let mut metadata = plugin.metadata.clone();
+    metadata.query_package_database_paths = true;
+    assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    fs::write(
+        plugin.root().join("query_package_database_paths.sh"),
+        "exit 0\n",
+    )
+    .unwrap();
+    metadata.readonly_queries = vec!["query_package_database_paths".into()];
+    assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+    assert!(is_query("query_package_database_paths"));
+}

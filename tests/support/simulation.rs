@@ -69,6 +69,7 @@ pub struct SimulatedBackend {
     pub collected_package_plan_override: RefCell<Option<String>>,
     pub prepared_package_plans_override: RefCell<Option<String>>,
     pub maintained_software_state_override: RefCell<Option<String>>,
+    pub watched_database_path: RefCell<Option<String>>,
     pub generate_package_files: Cell<bool>,
     pub fail_deduplication: Cell<bool>,
     pub package_file_contents: RefCell<BTreeMap<(String, String), Vec<u8>>>,
@@ -694,6 +695,15 @@ impl BuildBackend for SimulatedBackend {
             }
             "query_packages" => {
                 output = fs::read_to_string(root.join(DATABASE)).unwrap_or_default();
+            }
+            "query_package_database_paths" => {
+                // Opt-in fixtures exercise real inotify while the remaining fixtures fall back.
+                if let Some(path) = self.watched_database_path.borrow().as_ref() {
+                    let path = fs::read_to_string(root.join(".database-path"))
+                        .unwrap_or_else(|_| path.clone());
+                    fs::create_dir_all(root.join(&path)).unwrap();
+                    output = format!("{path}\n");
+                }
             }
             "query_package_files" => {
                 output = packages
