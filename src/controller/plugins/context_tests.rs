@@ -694,6 +694,7 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         OsStr::new("/usr/bin"),
         Some(&context),
         resources.path(),
+        false,
         &plugin
             .configuration_environment(&context.parameters, &context.architecture)
             .unwrap(),
@@ -705,6 +706,22 @@ fn container_mounts_use_explicit_relative_target_before_command_delimiter() {
         "/run/rstarsleep/plugin/state/cache"
     );
     assert!(command.get_args().any(|a| a == OsStr::new(&expected)));
+    let readonly = super::super::container::nspawn_from(
+        &plugin,
+        Path::new("/bin/nspawn"),
+        &context.config,
+        OsStr::new("/usr/bin"),
+        Some(&context),
+        resources.path(),
+        true,
+        &plugin
+            .configuration_environment(&context.parameters, &context.architecture)
+            .unwrap(),
+    )
+    .unwrap();
+    let readonly_bind = expected.replacen("--bind=", "--bind-ro=", 1);
+    assert!(readonly.get_args().any(|a| a == OsStr::new(&readonly_bind)));
+    assert!(!readonly.get_args().any(|a| a == OsStr::new(&expected)));
 }
 
 /// Preserve the download exception while every target operation uses canonical parameter names.

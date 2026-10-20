@@ -56,6 +56,16 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
             ));
         }
     }
+    for operation in &metadata.readonly_queries {
+        if !matches!(
+            operation.as_str(),
+            "query_packages" | "list_orphans" | "query_package_files"
+        ) {
+            return Err(Error::Invalid(
+                "readonly_queries 只支持本地软件数据库查询".into(),
+            ));
+        }
+    }
     if (metadata.predownload_plans || metadata.package_maintenance)
         && metadata.package_plan.is_none()
     {

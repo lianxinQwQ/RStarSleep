@@ -18,6 +18,7 @@ post_maintenance = true
 mount_inheritance = true
 query_package_files = true
 package_database_paths = ["var/lib/pacman/local"]
+readonly_queries = ["query_packages", "list_orphans", "query_package_files"]
 # Seed missing data files from default-data without replacing user configuration.
 # 使用前从 default-data 补齐 data 中缺失的文件，保留已有配置。
 persistent_dirs = [

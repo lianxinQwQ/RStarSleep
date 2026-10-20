@@ -126,6 +126,22 @@ impl<B: BuildBackend> ScopedBackend<'_, B> {
         if mappings.is_empty() {
             return self.backend.invoke(plugin, operation, args, root, context);
         }
+        if plugin
+            .metadata
+            .readonly_queries
+            .iter()
+            .any(|name| name == operation)
+        {
+            let published = super::persistent::PersistentRead::begin(
+                self.backend,
+                &self.pool,
+                &self.state,
+                &mappings,
+            )?;
+            let mut context = context.clone();
+            context.persistent_mounts = published.mounts.clone();
+            return self.backend.invoke(plugin, operation, args, root, &context);
+        }
         if report {
             progress::message(
                 &context.system_id,

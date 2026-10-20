@@ -469,3 +469,26 @@ fn dropped_call_keeps_successful_save_without_resuming_its_work() {
     }
     next.rollback(&f.backend).unwrap();
 }
+
+#[test]
+fn readonly_queries_hold_lock_without_snapshots_or_publication() {
+    let f = Fixture::new();
+    f.seed();
+    let view = PersistentRead::begin(&f.backend, &f.pool(), &f.state(), &mappings()).unwrap();
+    assert_eq!(f.backend.snapshots.get(), 0);
+    assert_eq!(view.mounts[0].source, f.pool().join("packages"));
+    assert!(!f.state().join("transaction").exists());
+    assert!(PersistentTransaction::begin(&f.backend, &f.pool(), &f.state(), &mappings()).is_err());
+    drop(view);
+    let mut tx = f.begin();
+    tx.rollback(&f.backend).unwrap();
+}
+
+#[test]
+fn readonly_queries_do_not_publish_missing_volumes() {
+    let f = Fixture::new();
+    let view = PersistentRead::begin(&f.backend, &f.pool(), &f.state(), &mappings()).unwrap();
+    assert!(view.mounts.iter().all(|m| m.source.is_dir()));
+    assert!(!f.pool().join("packages").exists());
+    assert_eq!(f.backend.snapshots.get(), 0);
+}

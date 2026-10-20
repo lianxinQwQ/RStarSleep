@@ -342,6 +342,10 @@ impl LoadedPlugin {
                 host_path,
                 context,
                 visible_root,
+                self.metadata
+                    .readonly_queries
+                    .iter()
+                    .any(|name| name == operation),
                 &configuration,
             )?;
             probe
@@ -377,6 +381,10 @@ impl LoadedPlugin {
                 host_path,
                 context,
                 visible_root,
+                self.metadata
+                    .readonly_queries
+                    .iter()
+                    .any(|name| name == operation),
                 &configuration,
             )?;
             if let Some(control) = &control {

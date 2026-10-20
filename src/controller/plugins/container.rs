@@ -51,6 +51,7 @@ pub(super) fn nspawn(
         host_path,
         context,
         plugin.root(),
+        false,
         &plugin.configuration_environment(
             context
                 .map(|value| &value.parameters)
@@ -70,6 +71,7 @@ pub(super) fn nspawn_from(
     host_path: &OsStr,
     context: Option<&crate::controller::BuildContext>,
     resources: &Path,
+    readonly_persistent: bool,
     configuration: &std::collections::BTreeMap<String, String>,
 ) -> Result<Command> {
     let mut command = crate::controller::container::command(launcher, root);
@@ -98,7 +100,11 @@ pub(super) fn nspawn_from(
         }
         for mount in &context.persistent_mounts {
             command.arg(bind(
-                "--bind=",
+                if readonly_persistent {
+                    "--bind-ro="
+                } else {
+                    "--bind="
+                },
                 &mount.source,
                 &format!("{SYSTEM_PLUGIN}/{}", mount.target.display()),
             )?);

@@ -268,6 +268,9 @@ pub struct Metadata {
     /// 保持软件查询结果有效的目标根相对数据库目录；省略时始终重新查询。
     #[serde(default)]
     pub package_database_paths: Vec<PathBuf>,
+    /// Local queries that promise not to modify plugin persistent data.
+    #[serde(default)]
+    pub readonly_queries: Vec<String>,
     /// Optional main-system boot artifacts and their package requirements.
     /// 可选的主系统启动产物及软件包需求。
     #[serde(default)]

@@ -50,6 +50,84 @@ impl Drop for PersistentTransaction {
         }
     }
 }
+
+/// Hold the publication lock while exposing current data without snapshotting it.
+pub(super) struct PersistentRead {
+    _lock: File,
+    _empty: tempfile::TempDir,
+    pub mounts: Vec<PersistentMount>,
+}
+impl Drop for PersistentRead {
+    fn drop(&mut self) {
+        // Explicit unlock also releases locks inherited briefly by concurrent forks.
+        let _ = self._lock.unlock();
+    }
+}
+impl PersistentRead {
+    pub fn begin(
+        backend: &impl BuildBackend,
+        pool: &Path,
+        state: &Path,
+        mappings: &[PersistentDirectory],
+    ) -> Result<Self> {
+        let lock = lock_pool(pool, state)?;
+        recover(backend, pool, &state.join("save"))?;
+        recover(backend, pool, &state.join("transaction"))?;
+        let empty = tempfile::tempdir_in(state).map_err(|e| disk::io(state, e))?;
+        let mut mounts = Vec::new();
+        for mapping in mappings {
+            let source = pool.join(&mapping.name);
+            disk::checked(&source)?;
+            let source = if disk::exists(&source)? {
+                backend.check_subvolume(&source, false)?;
+                backend.check_no_nested_subvolumes(&source)?;
+                source
+            } else {
+                let path = empty.path().join(&mapping.name);
+                disk::directory(&path)?;
+                path
+            };
+            mounts.push(PersistentMount {
+                source,
+                target: mapping.target.clone(),
+            });
+        }
+        Ok(Self {
+            _lock: lock,
+            _empty: empty,
+            mounts,
+        })
+    }
+}
+
+fn lock_pool(pool: &Path, state: &Path) -> Result<File> {
+    disk::checked(pool)?;
+    disk::checked(state)?;
+    if pool.starts_with(state) || state.starts_with(pool) {
+        return Err(Error::Invalid("持久数据与事务记录必须独立".into()));
+    }
+    disk::directory(pool)?;
+    disk::directory(state)?;
+    let lock_path = state.join("lock");
+    disk::checked(&lock_path)?;
+    if disk::exists(&lock_path)?
+        && !fs::symlink_metadata(&lock_path)
+            .map_err(|e| disk::io(&lock_path, e))?
+            .is_file()
+    {
+        return Err(Error::Invalid("持久锁必须是普通文件".into()));
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| disk::io(&lock_path, e))?;
+    lock.try_lock()
+        .map_err(|e| Error::Invalid(format!("全局持久目录正在使用: {e}")))?;
+    Ok(lock)
+}
 impl PersistentTransaction {
     pub fn begin(
         backend: &impl BuildBackend,
@@ -57,31 +135,7 @@ impl PersistentTransaction {
         state: &Path,
         mappings: &[PersistentDirectory],
     ) -> Result<Self> {
-        disk::checked(pool)?;
-        disk::checked(state)?;
-        if pool.starts_with(state) || state.starts_with(pool) {
-            return Err(Error::Invalid("持久数据与事务记录必须独立".into()));
-        }
-        disk::directory(pool)?;
-        disk::directory(state)?;
-        let lock_path = state.join("lock");
-        disk::checked(&lock_path)?;
-        if disk::exists(&lock_path)?
-            && !fs::symlink_metadata(&lock_path)
-                .map_err(|e| disk::io(&lock_path, e))?
-                .is_file()
-        {
-            return Err(Error::Invalid("持久锁必须是普通文件".into()));
-        }
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|e| disk::io(&lock_path, e))?;
-        lock.try_lock()
-            .map_err(|e| Error::Invalid(format!("全局持久目录正在使用: {e}")))?;
+        let lock = lock_pool(pool, state)?;
         let root = state.join("transaction");
         recover(backend, pool, &state.join("save"))?;
         recover(backend, pool, &root)?;

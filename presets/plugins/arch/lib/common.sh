@@ -133,7 +133,9 @@ write_pacman_configuration() {
     local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line
     [[ -n $resources ]] || { log 'Missing plugin resource directory'; return 64; }
     resources=$(cd -- "$resources" && pwd -P) || return
-    prepare_plugin_data "$resources" || return
+    if [[ ${rstar_local_query:-0} != 1 ]]; then
+        prepare_plugin_data "$resources" || return
+    fi
     [[ -f $resources/data/pacman.conf.in && -f $resources/data/mirrorlist ]] || {
         log 'Missing plugin pacman template or mirrorlist'; return 1;
     }
@@ -189,6 +191,11 @@ run_configured_pacman() {
     local -a args=("$@")
     local -a cache_options=()
     local repository_keyrings_refreshed=0 keyring_mode=reuse
+    # Local queries need neither writable shared caches nor synchronized repositories.
+    if [[ ${args[0]:-} == -Q* ]]; then
+        command pacman --config "$configuration" "${args[@]}"
+        return
+    fi
     if [[ -d $cache ]]; then
         prepare_shared_cache "$cache" "$repository" || return
         cache_options=(--cachedir "$cache")
@@ -224,7 +231,8 @@ run_configured_pacman() {
 # One configuration source for every operation, including calls without caches.
 # 所有操作使用同一配置来源，包括未挂载共享缓存时的调用。
 pacman() {
-    local directory status=0 cleanup_status=0
+    local directory status=0 cleanup_status=0 rstar_local_query=0
+    [[ ${1:-} != -Q* ]] || rstar_local_query=1
     directory=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-pacman.XXXXXXXX") || return
     if write_pacman_configuration "$directory" && run_configured_pacman "$directory/pacman.conf" "$@"; then
         :
