@@ -119,6 +119,6 @@ software = []
 host = ["bash", "curl", "tar", "zstd", "gpg", "gpgv", "cp", "rm", "mktemp", "cat", "dirname", "mkdir", "sha256sum", "chmod"]
 # Required tools are checked inside the target system before system operations.
 # 系统内操作前，在目标系统检查的必需工具。
-system = ["bash", "pacman", "pacman-key", "pacman-conf", "gpg", "timeout", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod", "stat", "find"]
+system = ["bash", "pacman", "pacman-key", "pacman-conf", "gpg", "timeout", "chpasswd", "awk", "cat", "rm", "mktemp", "dirname", "cp", "mkdir", "mv", "chmod", "stat", "find", "sha256sum"]
 
 predownload = ["python3", "git", "makepkg", "repo-add", "repo-remove", "bsdtar", "vercmp", "runuser", "gpg"]

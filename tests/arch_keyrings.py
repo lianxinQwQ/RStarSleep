@@ -415,15 +415,32 @@ class RepositoryKeyrings(unittest.TestCase):
                          {"base": True, "base-dependency": False, "desktop": True,
                           "custom-keyring": True, "keyring-dependency": False})
         populates = self.operations("pacman-key", "--populate")
-        self.assertEqual(len(populates), 2)
+        self.assertEqual(len(populates), 1)
         transactions = [(index, arguments) for index, arguments in self.operations("pacman", "-S")
                         if "desktop" in arguments]
         self.assertEqual(len(transactions), 1)
         self.assertLess(populates[0][0], transactions[0][0])
         self.assertIn("custom/custom-keyring", transactions[0][1])
         upgrade, = self.operations("pacman", "-Su")
-        self.assertLess(transactions[0][0], populates[1][0])
-        self.assertLess(populates[1][0], upgrade[0])
+        self.assertLess(transactions[0][0], upgrade[0])
+
+    def test_unchanged_prepared_keyrings_are_reused_and_trust_changes_invalidate(self):
+        self.assert_success(self.run_helper("reuse"))
+        (self.root / "trace").write_text("")
+        self.assert_success(self.run_helper("reuse"))
+        self.assertFalse(self.operations("pacman-key", "--populate"))
+        self.assertFalse(self.operations("pacman-key", "--lsign-key"))
+        (self.root / "isolated gnupg/trustdb.gpg").write_bytes(b"changed trust")
+        (self.root / "trace").write_text("")
+        self.assert_success(self.run_helper("reuse"))
+        self.assertTrue(self.operations("pacman-key", "--populate"))
+
+    def test_cached_keyrings_still_refresh_repositories_once(self):
+        self.assert_success(self.run_helper("reuse"))
+        (self.root / "trace").write_text("")
+        self.assert_success(self.run_helper("refresh"))
+        self.assertEqual(len(self.operations("pacman", "-Sy")), 1)
+        self.assertFalse(self.operations("pacman-key", "--populate"))
 
     def test_explicit_user_keyring_target_remains_requested(self):
         self.inventory()

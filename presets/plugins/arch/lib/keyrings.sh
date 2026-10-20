@@ -109,6 +109,25 @@ repository_key_status() {
     return 1
 }
 
+# The receipt covers effective keys/trust, installed and selected keyring packages,
+# bundled keyring files and configured bootstrap policy. It survives root snapshots.
+repository_keyring_state() (
+    local configuration=$1 gpgdir=$2 resources=$3 path
+    shift 3
+    {
+        printf 'repository-keyrings-v1\n'
+        cat -- "$resources/data/repository-keyrings.conf" || exit
+        command pacman --config "$configuration" -Q -- "${packages[@]}" || exit
+        command pacman --config "$configuration" -Si -- "${targets[@]}" || exit
+        gpg --no-options --homedir "$gpgdir" --batch --with-colons --fixed-list-mode --with-fingerprint --list-keys || exit
+        for path in "$gpgdir"/pubring.kbx "$gpgdir"/pubring.gpg "$gpgdir"/trustdb.gpg \
+            "$gpgdir"/gpg.conf "$gpgdir"/common.conf "$gpgdir"/tofu.db \
+            "$gpgdir"/public-keys.d/pubring.db /usr/share/pacman/keyrings/*; do
+            [[ ! -f $path ]] || sha256sum -- "$path" || exit
+        done
+    } | sha256sum
+)
+
 prepare_repository_keyrings() {
     local configuration=$1 mode=${2:-reuse} resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}}
     local -a keyring_repositories=() targets=() packages=() active_repositories=() fingerprints=() keyrings=() cache_options=()
@@ -140,6 +159,20 @@ prepare_repository_keyrings() {
     gpgdir=$(pacman-conf --config "$configuration" GPGDir) || return
     [[ $gpgdir == /* && $gpgdir != *$'\n'* ]] || { log 'Repository keyring preparation requires one absolute GPGDir'; return 64; }
     key_options=(--config "$configuration" --gpgdir "$gpgdir")
+    local receipt=$gpgdir/.rstarsleep-repository-keyrings-v1 state
+    if [[ -f $receipt ]] && state=$(repository_keyring_state "$configuration" "$gpgdir" "$resources" 2>/dev/null) &&
+        [[ $(<"$receipt") == "$state" ]]; then
+        if [[ $mode == refresh ]]; then
+            [[ ! -d $resources/state/packages ]] || cache_options=(--cachedir "$resources/state/packages")
+            command pacman --config "$configuration" "${cache_options[@]}" --logfile /dev/null -Sy --needed --noconfirm -- "${targets[@]}" >&2 || return
+            repository_keyrings_refreshed=1
+            state=$(repository_keyring_state "$configuration" "$gpgdir" "$resources" 2>/dev/null) || state=
+        fi
+        if [[ -n $state && $(<"$receipt") == "$state" ]]; then
+            log 'Reusing prepared repository signing keyrings'
+            return 0
+        fi
+    fi
     log 'Preparing explicitly configured repository signing keyrings'
     pacman-key "${key_options[@]}" --init >&2 || return
     key_cache=$resources/state/repository/bootstrap-keys
@@ -180,7 +213,7 @@ prepare_repository_keyrings() {
     done
     [[ ! -d $resources/state/packages ]] || cache_options=(--cachedir "$resources/state/packages")
     local sync=-S
-    [[ $mode != refresh ]] || sync=-Sy
+    if [[ $mode == refresh ]] && (( ! repository_keyrings_refreshed )); then sync=-Sy; fi
     # Bypass the wrapper to avoid recursion. Keep all configured signature checks.
     command pacman --config "$configuration" "${cache_options[@]}" --logfile /dev/null "$sync" --needed --noconfirm -- "${targets[@]}" >&2 || return
     for package in "${packages[@]}"; do
@@ -199,5 +232,9 @@ prepare_repository_keyrings() {
     (( ${#keyrings[@]} )) || { log 'Configured keyring packages own no /usr/share/pacman/keyrings/*.gpg files'; return 1; }
     pacman-key "${key_options[@]}" --populate "${keyrings[@]}" >&2 || return
     [[ $mode != refresh ]] || repository_keyrings_refreshed=1
+    if state=$(repository_keyring_state "$configuration" "$gpgdir" "$resources" 2>/dev/null); then
+        temporary=$(mktemp "$gpgdir/.rstar-keyrings.XXXXXXXX") || return
+        printf '%s\n' "$state" >"$temporary" && mv -f -- "$temporary" "$receipt" || { rm -f -- "$temporary"; return 1; }
+    fi
     return 0
 }
