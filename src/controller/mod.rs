@@ -23,6 +23,7 @@ mod logging;
 mod model;
 mod mounts;
 mod output;
+mod package_watch;
 mod persistent;
 mod predownload;
 pub(crate) mod progress;

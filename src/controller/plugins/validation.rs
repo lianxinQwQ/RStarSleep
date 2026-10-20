@@ -45,6 +45,17 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     for package in &metadata.protected_packages {
         crate::software::valid_name(package).map_err(|error| Error::Invalid(error.to_string()))?;
     }
+    for path in &metadata.package_database_paths {
+        if path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(Error::Invalid(
+                "package_database_paths 必须是目标根内的相对目录".into(),
+            ));
+        }
+    }
     if (metadata.predownload_plans || metadata.package_maintenance)
         && metadata.package_plan.is_none()
     {

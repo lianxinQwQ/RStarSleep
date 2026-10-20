@@ -945,3 +945,20 @@ fn package_collection_requires_explicit_capability_and_safe_resolver_lifecycle()
     assert!(validate_metadata(&metadata, plugin.root()).is_err());
     assert!(is_query("collect_packages"));
 }
+
+#[test]
+fn package_database_paths_are_optional_and_confined_to_target() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    assert!(plugin.metadata.package_database_paths.is_empty());
+    for value in ["", "/var/lib/pacman", "../db", "var/../db"] {
+        let mut metadata = plugin.metadata.clone();
+        metadata.package_database_paths = vec![value.into()];
+        assert!(validate_metadata(&metadata, plugin.root()).is_err());
+    }
+    let mut metadata = plugin.metadata.clone();
+    metadata.package_database_paths = vec!["var/lib/pacman/local".into()];
+    assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+}

@@ -447,6 +447,11 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
+        // Observe inheritance too: it can replace a database before any script runs.
+        let package_watch = super::package_watch::PackageWatch::start(
+            &root,
+            &self.plugin.metadata.package_database_paths,
+        );
         let inherited = if let Some(frozen) = &frozen {
             frozen.apply(self.backend, &root)?
         } else {
@@ -463,7 +468,9 @@ impl<B: BuildBackend> Stages<'_, B> {
                 .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
         }
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
-        let software = if inherited || applied || self.plugin.metadata.post_maintenance {
+        let changed = (inherited || applied || self.plugin.metadata.post_maintenance)
+            && !package_watch.is_some_and(|watch| watch.unchanged());
+        let software = if changed {
             let session = PackageSession {
                 backend: self.backend,
                 plugin: self.plugin,

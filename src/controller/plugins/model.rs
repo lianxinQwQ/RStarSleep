@@ -264,6 +264,10 @@ pub struct Metadata {
     /// 可选已安装包文件索引；无参数查询全部所属项。
     #[serde(default)]
     pub query_package_files: bool,
+    /// Target-relative database trees whose unchanged contents preserve package query results.
+    /// 保持软件查询结果有效的目标根相对数据库目录；省略时始终重新查询。
+    #[serde(default)]
+    pub package_database_paths: Vec<PathBuf>,
     /// Optional main-system boot artifacts and their package requirements.
     /// 可选的主系统启动产物及软件包需求。
     #[serde(default)]
