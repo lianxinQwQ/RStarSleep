@@ -19,7 +19,6 @@ class LocalQueries(unittest.TestCase):
             binary.chmod(0o755)
             env = dict(os.environ, PATH=str(root)+':'+os.environ['PATH'], RSTAR_PLUGIN_ROOT=str(plugin), QUERY_TRACE=str(root/'trace'))
             script = '''source "$1"
-prepare_plugin_data "$RSTAR_PLUGIN_ROOT"
 prepare_plugin_data() { echo unexpected-config-write >&2; return 71; }
 prepare_shared_cache() { echo unexpected-cache-write >&2; return 72; }
 prepare_repository_keyrings() { echo unexpected-keyring-write >&2; return 73; }
@@ -31,6 +30,7 @@ pacman -Ql
             self.assertEqual(result.returncode,0,result.stderr)
             lines=(root/'trace').read_text().splitlines()
             self.assertEqual(len(lines),3)
+            self.assertEqual(list((plugin/'data').iterdir()), [])
             self.assertTrue(all('--cachedir' not in line for line in lines))
 
 if __name__ == '__main__': unittest.main()

@@ -103,7 +103,10 @@ prepare_shared_cache() {
     local -a artifacts=()
     for directory in "$@"; do
         [[ -d $directory ]] || continue
-        [[ ! -f $directory/.rstarsleep-public-permissions-v1 ]] || continue
+        if [[ -f $directory/.rstarsleep-public-permissions-v1 &&
+            $(<"$directory/.rstarsleep-public-permissions-v1") == "$(stat -c %y -- "$directory")" ]]; then
+            continue
+        fi
         chmod 0755 -- "$directory" || return
         artifacts=()
         for artifact in "$directory"/*.pkg.tar.* "$directory"/rstarsleep.db* "$directory"/rstarsleep.files*; do
@@ -112,6 +115,7 @@ prepare_shared_cache() {
         done
         if (( ${#artifacts[@]} )); then chmod 0644 -- "${artifacts[@]}" || return; fi
         : >"$directory/.rstarsleep-public-permissions-v1" || return
+        stat -c %y -- "$directory" >"$directory/.rstarsleep-public-permissions-v1" || return
     done
 }
 
@@ -148,13 +152,19 @@ prepare_plugin_data() {
 # Arguments: writable output directory; paths in Include must be absolute.
 # 参数：可写输出目录；Include 中的路径必须为绝对路径。
 write_pacman_configuration() {
-    local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line
+    local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line template mirror_file
     [[ -n $resources ]] || { log 'Missing plugin resource directory'; return 64; }
     resources=$(cd -- "$resources" && pwd -P) || return
     if [[ ${rstar_local_query:-0} != 1 ]]; then
         prepare_plugin_data "$resources" || return
     fi
-    [[ -f $resources/data/pacman.conf.in && -f $resources/data/mirrorlist ]] || {
+    template=$resources/data/pacman.conf.in
+    mirror_file=$resources/data/mirrorlist
+    if [[ ${rstar_local_query:-0} == 1 ]]; then
+        [[ -f $template ]] || template=$resources/default-data/pacman.conf.in
+        [[ -f $mirror_file ]] || mirror_file=$resources/default-data/mirrorlist
+    fi
+    [[ -f $template && -f $mirror_file ]] || {
         log 'Missing plugin pacman template or mirrorlist'; return 1;
     }
     mirror=${RSTAR_DISTRIBUTION_MIRROR:-${RSTAR_MIRROR:-}}
@@ -169,7 +179,7 @@ write_pacman_configuration() {
     if [[ -n $mirror ]]; then
         printf 'Server = %s\n' "$mirror" >"$directory/mirrorlist" || return
     else
-        cp -- "$resources/data/mirrorlist" "$directory/mirrorlist" || return
+        cp -- "$mirror_file" "$directory/mirrorlist" || return
     fi
     # Quoted literal replacement keeps ampersands, backslashes and pacman's
     # $repo/$arch variables intact; no configuration is evaluated as shell code.
@@ -178,7 +188,7 @@ write_pacman_configuration() {
         line=${line//@MIRRORLIST@/"$directory/mirrorlist"}
         line=${line//@PLUGIN_ROOT@/"$resources"}
         printf '%s\n' "$line" || return
-    done <"$resources/data/pacman.conf.in" >"$directory/pacman.conf" || return
+    done <"$template" >"$directory/pacman.conf" || return
     chmod 0755 -- "$directory" || return
     chmod 0644 -- "$directory/pacman.conf" "$directory/mirrorlist"
 }
