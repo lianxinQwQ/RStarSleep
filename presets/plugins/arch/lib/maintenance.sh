@@ -68,6 +68,47 @@ maintenance_reasons() {
     fi
 }
 
+# Remember an explicitly selected source after it has been applied once. Local
+# descriptor timestamps detect subsequent reinstalls, including same-version ones.
+source_target_identity() (
+    local package=$1 source=$2 root=${RSTAR_ROOT:-} installed version selected selected_version descriptor
+    [[ $root == /* && -d $root ]] || exit 1
+    installed=$(pacman -Q -- "$package") || exit
+    [[ $installed == "$package "* && $installed != *$'\n'* ]] || exit 1
+    version=${installed#"$package "}
+    [[ $version != */* && -n $version ]] || exit 1
+    selected=$(pacman -Si -- "$source") || exit
+    selected_version=$(awk '$1 == "Version" && $2 == ":" {print $3}' <<<"$selected")
+    [[ $version == "$selected_version" ]] || exit 1
+    descriptor=${root%/}/var/lib/pacman/local/$package-$version/desc
+    [[ -f $descriptor && ! -L $descriptor ]] || exit 1
+    {
+        printf '%s\n%s\n' "$source" "$selected"
+        stat -c '%s:%y:%z' -- "$descriptor" || exit
+        sha256sum -- "$descriptor" || exit
+    } | sha256sum
+)
+
+source_target_matches() {
+    local package=$1 source=$2 root=${RSTAR_ROOT:-} identity receipt
+    receipt=${root%/}/var/lib/pacman/.rstarsleep-sources/$package
+    [[ -n $root && -f $receipt && ! -L $receipt ]] || return 1
+    identity=$(source_target_identity "$package" "$source") || return 1
+    [[ $(<"$receipt") == "$identity" ]]
+}
+
+save_source_target() {
+    local package=$1 source=$2 root=${RSTAR_ROOT:-} identity directory temporary
+    # Unknown/custom DB paths retain conservative reinstallation semantics.
+    identity=$(source_target_identity "$package" "$source") || return 0
+    directory=${root%/}/var/lib/pacman/.rstarsleep-sources
+    mkdir -p -- "$directory" || return
+    temporary=$(mktemp "$directory/.source.XXXXXXXX") || return
+    printf '%s\n' "$identity" >"$temporary" && mv -f -- "$temporary" "$directory/$package" || {
+        rm -f -- "$temporary"; return 1;
+    }
+}
+
 maintain_packages() {
     local package output separator explicit requested_output
     local -a plan=() targets=() roots=() requested=() installed=() keyring_targets=()
@@ -134,12 +175,14 @@ maintain_packages() {
     clean_orphan_dependencies >&2 || return
     maintenance_prune || return
     # Compare after cleanup, since an orphan needed by a new root may have been
-    # removed. Reinstall source-qualified roots even at the same version.
-    # 清理后再比较；新目标所需的孤儿允许重装，限定来源仍支持同版本切换。
+    # removed. Apply changed sources at the same version; reuse unchanged receipts.
+    # 清理后再比较；新目标所需的孤儿允许重装，限定来源变化仍支持同版本切换。
     for package in "${installed[@]}"; do installed_names[$package]=1; done
     for package in "${roots[@]}"; do
         if [[ -n ${source_targets[$package]:-} ]]; then
-            install_targets+=("${source_targets[$package]}")
+            if ! source_target_matches "$package" "${source_targets[$package]}"; then
+                install_targets+=("${source_targets[$package]}")
+            fi
         elif [[ -z ${installed_names[$package]:-} ]]; then
             install_targets+=("$package")
         fi
@@ -176,6 +219,10 @@ maintain_packages() {
         [[ ${root_names[$package]:-} == "${explicit_names[$package]:-}" ]] || {
             log "Incorrect installation reason after maintenance: $package"; return 1;
         }
+    done
+
+    for package in "${!source_targets[@]}"; do
+        save_source_target "$package" "${source_targets[$package]}" || return
     done
 
     # Validated package names need no JSON escaping. Only this final state goes
