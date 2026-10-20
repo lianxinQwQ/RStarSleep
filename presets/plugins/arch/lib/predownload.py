@@ -354,7 +354,7 @@ class Preparer:
         self.bases, self.states, self.artifacts = {}, {}, {}
         self.stack, self.files, self.resolutions = [], set(), {}
         self.official_metadata = {}
-        self.verification = official_cache.OfficialPackageCache(self.repo, self.arch, self.official_conf, run, self.file_digest)
+        self.verification = official_cache.OfficialPackageCache(self.repo, self.arch, self.official_conf, run, self.cached_digest)
         self.planned_transactions = {}
         self.aur_devel, self.aur_rebuild = self.cache_options()
         self.cache_records = None
@@ -825,7 +825,7 @@ class Preparer:
                         architecture=fields["arch"][0], provides=fields.get("provides", []),
                         dependencies=fields.get("depend", []), conflicts=fields.get("conflict", []),
                         filename=package.name, pkgbase=base["name"], commit=base["commit"],
-                        sha256=self.file_digest(package))
+                        sha256=self.cached_digest(package))
         for value in artifact["dependencies"] + artifact["provides"] + artifact["conflicts"]:
             spec(value)
         return artifact
@@ -837,6 +837,24 @@ class Preparer:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def cached_digest(self, path):
+        """Reuse this invocation's hash only while the observed file is unchanged."""
+        path = Path(path)
+        def identity():
+            info = path.stat(follow_symlinks=False)
+            if path.is_symlink() or not path.is_file():
+                raise PreparationError(f"not a regular cached file: {path}")
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        before = identity()
+        if not hasattr(self, "digest_cache"):
+            self.digest_cache = {}
+        if before not in self.digest_cache:
+            digest = self.file_digest(path)
+            if identity() != before:
+                raise PreparationError(f"cached file changed during checksum calculation: {path}")
+            self.digest_cache[before] = digest
+        return self.digest_cache[before]
 
     def cached_artifacts(self, base, revisions, visiting=()):
         name = base["name"]
@@ -868,7 +886,7 @@ class Preparer:
                 return None, "invalid artifact identity"
             copies = [directory / filename for directory in (self.repo, self.cache)]
             good = next((path for path in copies if path.is_file() and not path.is_symlink()
-                         and self.file_digest(path) == artifact["sha256"]), None)
+                         and self.cached_digest(path) == artifact["sha256"]), None)
             if good is None:
                 return None, "artifact missing or checksum changed"
             try:
@@ -877,7 +895,7 @@ class Preparer:
             except (PreparationError, OSError, ValueError):
                 return None, "invalid cached binary metadata"
             for path in copies:
-                if path != good and (path.is_symlink() or not path.is_file() or self.file_digest(path) != artifact["sha256"]):
+                if path != good and (path.is_symlink() or not path.is_file() or self.cached_digest(path) != artifact["sha256"]):
                     atomic_copy(good, path)
         names = [p["name"] for p in artifacts]
         if len(set(names)) != len(names) or set(base["packages"]) - set(names):
@@ -1152,11 +1170,7 @@ class Preparer:
         hashes = {}
         with checksum_progress() as progress:
             for index, name in enumerate(sorted(files), 1):
-                digest = hashlib.sha256()
-                with (self.cache / name).open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                hashes[name] = digest.hexdigest()
+                hashes[name] = self.cached_digest(self.cache / name)
                 if name in self.files:
                     metadata = self.official_metadata.get(name)
                     if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
