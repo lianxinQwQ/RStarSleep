@@ -2,6 +2,8 @@
 """Prepare shared official package closures and a locally built AUR repository."""
 import codecs
 import hashlib
+import functools
+import time
 import importlib.util
 import json
 import os
@@ -295,6 +297,20 @@ def package_info(text):
     return fields
 
 
+def timed_operation(chinese, english):
+    def decorate(operation):
+        @functools.wraps(operation)
+        def measured(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return operation(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - started
+                log(f"耗时：{chinese}（{elapsed:.3f} 秒）", f"Timing: {english} ({elapsed:.3f} s)")
+        return measured
+    return decorate
+
+
 class Preparer:
     def __init__(self, workspace):
         if os.geteuid() != 0:
@@ -393,6 +409,7 @@ class Preparer:
                     path.chmod(0o644)
         self.build_conf.write_text(config)
 
+    @timed_operation("解析环境初始化", "Initialize resolver")
     def initialize(self, planning=False):
         # Runs for restored environments as well, before baseline capture or
         # package verification. Keyring roots are retained by every target plan.
@@ -855,12 +872,16 @@ class Preparer:
         if not hasattr(self, "digest_cache"):
             self.digest_cache = {}
         if before not in self.digest_cache:
+            started = time.perf_counter()
             digest = self.file_digest(path)
+            self.digest_seconds = getattr(self, "digest_seconds", 0.0) + time.perf_counter() - started
+            self.digest_bytes = getattr(self, "digest_bytes", 0) + before[2]
             if identity() != before:
                 raise PreparationError(f"cached file changed during checksum calculation: {path}")
             self.digest_cache[before] = digest
         return self.digest_cache[before]
 
+    @timed_operation("AUR 缓存产物检查", "Check cached AUR artifacts")
     def cached_artifacts(self, base, revisions, visiting=()):
         name = base["name"]
         if name in visiting:
@@ -1122,6 +1143,7 @@ class Preparer:
         log(f"AUR 软件包准备完成：{name}，共 {len(artifacts)} 个产物",
             f"AUR package ready: {name}, {len(artifacts)} artifacts")
 
+    @timed_operation("AUR 本地仓库发布", "Publish local AUR repository")
     def publish(self, base, artifacts):
         log(f"发布 {base['name']} 到共享 AUR 本地仓库", f"Publish {base['name']} to the shared local AUR repository")
         database = self.repo / f"{REPO}.db.tar.gz"
@@ -1168,6 +1190,7 @@ class Preparer:
         if set(self.pacman(["-Qq"], capture=True).stdout.splitlines()) != self.baseline:
             raise PreparationError("AUR dependency cleanup changed environment baseline")
 
+    @timed_operation("最终校验及清单发布", "Verify and publish prepared manifest")
     def finish(self, requested):
         counts = getattr(self, "cache_counts", dict(reused=0, built=0))
         log(f"AUR 构建汇总：复用 {counts['reused']}，重建 {counts['built']} 个 pkgbase",
@@ -1201,6 +1224,8 @@ class Preparer:
         if self.files and (self.verification.read_context() != self.verification.context
                            or any(self.verification.expired(name) for name in self.files)):
             raise PreparationError("Signing trust changed during package verification; retry preparation")
+        log(f"本次实际摘要计算：{getattr(self, 'digest_bytes', 0)} 字节，{getattr(self, 'digest_seconds', 0.0):.3f} 秒",
+            f"Actual checksum reads: {getattr(self, 'digest_bytes', 0)} bytes, {getattr(self, 'digest_seconds', 0.0):.3f} s")
         self.save_sync()
         atomic_json(self.verification.path, self.verification.value())
         atomic_json(self.repo / ".prepared.json", dict(format=1, architecture=self.arch, requested=requested, packages=hashes, aur=self.artifacts))

@@ -92,7 +92,10 @@ class MetadataIndex:
         now = self.clock()
         try:
             if not self.cache.is_symlink() and 0 <= now - self.cache.stat().st_mtime < AUR_TTL:
+                started = time.perf_counter()
                 self.aur_names, self.aur_provides = self.decode(self.cache.read_bytes())
+                self.report(f'AUR 缓存索引耗时：{time.perf_counter() - started:.3f} 秒',
+                            f'AUR cached index time: {time.perf_counter() - started:.3f} s')
                 self.aur_available = True
                 self.report(f'复用 AUR 统一元数据：{len(self.aur_names)} 个包',
                             f'Reuse unified AUR metadata: {len(self.aur_names)} packages')
@@ -101,8 +104,12 @@ class MetadataIndex:
             pass
         try:
             self.report('下载 AUR 统一元数据并建立索引', 'Download and index unified AUR metadata')
+            started = time.perf_counter()
             payload = self.fetch(AUR_URL)
+            downloaded = time.perf_counter()
             self.aur_names, self.aur_provides = self.decode(payload)
+            self.report(f'AUR 元数据下载 {downloaded - started:.3f} 秒，索引 {time.perf_counter() - downloaded:.3f} 秒',
+                        f'AUR metadata download: {downloaded - started:.3f} s; indexing: {time.perf_counter() - downloaded:.3f} s')
         except (OSError, ValueError, TypeError, UnicodeError, EOFError):
             self.report('AUR 统一元数据不可用，回退 RPC 查询', 'Unified AUR metadata unavailable; fall back to RPC')
             return  # An expired or unavailable dump must not prove absence.

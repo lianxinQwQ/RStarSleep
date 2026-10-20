@@ -482,26 +482,29 @@ impl<B: BuildBackend> Stages<'_, B> {
             packages.record.software.clone()
         };
         if self.plugin.metadata.query_package_files {
-            progress::message(
+            progress::run(
                 &self.context.system_id,
                 "生成软件包文件归属清单",
                 "Generate the package file ownership inventory",
-            );
-            let bytes = self
-                .backend
-                .query_package_files(self.plugin, &root, self.context)?;
-            let records = crate::subsystem::package_files::parse(&bytes)
-                .map_err(|e| super::Error::Invalid(e.to_string()))?;
-            let canonical = records
-                .into_iter()
-                .map(|(owner, path)| format!("{owner}\t{path}\n"))
-                .collect::<String>();
-            crate::subsystem::atomic_write(
-                &self.attempt.directory.join("application-files.tsv"),
-                canonical.as_bytes(),
-                0o600,
-            )
-            .map_err(|e| super::Error::Invalid(e.to_string()))?;
+                || {
+                    let bytes =
+                        self.backend
+                            .query_package_files(self.plugin, &root, self.context)?;
+                    let records = crate::subsystem::package_files::parse(&bytes)
+                        .map_err(|e| super::Error::Invalid(e.to_string()))?;
+                    let canonical = records
+                        .into_iter()
+                        .map(|(owner, path)| format!("{owner}\t{path}\n"))
+                        .collect::<String>();
+                    crate::subsystem::atomic_write(
+                        &self.attempt.directory.join("application-files.tsv"),
+                        canonical.as_bytes(),
+                        0o600,
+                    )
+                    .map_err(|e| super::Error::Invalid(e.to_string()))?;
+                    Ok(())
+                },
+            )?;
         }
         self.commit(
             "script",
