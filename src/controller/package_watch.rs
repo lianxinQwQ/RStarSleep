@@ -83,9 +83,9 @@ impl PackageWatch {
         Ok(())
     }
 
-    fn tree(&mut self, path: &Path) -> io::Result<()> {
+    fn observe(&self, path: &Path, directory: bool) -> io::Result<()> {
         let name = CString::new(path.as_os_str().as_bytes())?;
-        let mask = libc::IN_MODIFY
+        let mut mask = libc::IN_MODIFY
             | libc::IN_ATTRIB
             | libc::IN_CLOSE_WRITE
             | libc::IN_CREATE
@@ -95,11 +95,18 @@ impl PackageWatch {
             | libc::IN_DELETE_SELF
             | libc::IN_MOVE_SELF
             | libc::IN_UNMOUNT
-            | libc::IN_ONLYDIR
             | libc::IN_DONT_FOLLOW;
+        if directory {
+            mask |= libc::IN_ONLYDIR;
+        }
         if unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), name.as_ptr(), mask) } < 0 {
             return Err(io::Error::last_os_error());
         }
+        Ok(())
+    }
+
+    fn tree(&mut self, path: &Path) -> io::Result<()> {
+        self.observe(path, true)?;
         self.remember(path)?;
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -114,6 +121,10 @@ impl PackageWatch {
                 return Err(io::Error::other(
                     "database entry cannot be observed reliably",
                 ));
+            } else {
+                // An alias created later outside the tree does not notify its parent watch.
+                // Observe the inode too, so link changes and writes through aliases invalidate.
+                self.observe(&entry.path(), false)?;
             }
         }
         Ok(())
@@ -210,6 +221,19 @@ mod tests {
         fs::rename(temp.path().join("db"), temp.path().join("old-db")).unwrap();
         fs::create_dir_all(temp.path().join("db/pkg")).unwrap();
         assert!(!w.unchanged());
+    }
+    #[test]
+    fn detects_new_external_hardlinks_and_writes_through_them() {
+        for write in [false, true] {
+            let temp = fixture();
+            let w = watch(temp.path());
+            let alias = temp.path().join("outside-desc");
+            fs::hard_link(temp.path().join("db/pkg/desc"), &alias).unwrap();
+            if write {
+                fs::write(alias, "dependency").unwrap();
+            }
+            assert!(!w.unchanged());
+        }
     }
     #[test]
     fn unavailable_or_symlinked_databases_require_queries() {

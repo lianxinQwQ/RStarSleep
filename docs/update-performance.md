@@ -6,6 +6,8 @@
 
 缺失、链接、外部硬链接、注册失败、目录替换、监听失效和事件队列溢出均保守回退到完整查询。监听不跨构建保存；未声明能力的旧插件保持原有查询行为。该能力针对正常包管理器写入与文件系统操作，不作为限制特权脚本的安全沙箱。文件所属清单仍单独生成。
 
+目录和已有普通数据库文件均注册监听，后续新建树外硬链接及经其写入也会使复用失效。Linux inotify 不报告 mmap 写入，具有此类数据库写入方式的插件应省略此能力并保持完整查询。
+
 可选 `query_package_database_paths = true` 操作优先于静态目录声明，每行返回一个目标根相对目录。Arch 使用同一临时 pacman 配置及 `pacman-conf DBPath` 解析实际目录，兼容自定义 DBPath、RootDir 和 Include；软件清单完成后将路径与清单一起保存，脚本阶段监听此路径，完成后再次解析，路径一致且监听无事件才复用。旧缓存缺少路径依据时完整查询，避免跨构建修改 DBPath 后沿用旧清单。路径解析单独计时，失败、空结果或无效路径均保守查询。
 
 ## 同次预下载摘要复用
@@ -18,7 +20,7 @@
 
 ## 本地查询只读持久数据
 
-新增可选 `readonly_queries` 声明，仅允许 query_packages、list_orphans、query_package_files。此类调用持有全局持久锁并先恢复中断事务，随后直接只读绑定已发布卷，不创建、提交 CoW 工作卷；缺失卷使用本次调用的临时空目录。旧插件和需要写缓存的 collect_packages/resolve_packages 仍使用事务。
+新增可选 `readonly_queries` 声明，仅允许 query_packages、list_orphans、query_package_files、query_package_database_paths。此类调用持有全局持久锁并先恢复中断事务，随后直接只读绑定已发布卷，不创建、提交 CoW 工作卷；缺失卷使用本次调用的临时空目录。旧插件和需要写缓存的 collect_packages/resolve_packages 仍使用事务。
 
 Arch 的 -Q 类命令不再修复共享缓存权限、复制同步数据库或补齐持久配置，只生成临时配置后读取目标本地数据库。
 
