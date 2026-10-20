@@ -103,15 +103,27 @@ prepare_shared_cache() {
     local -a artifacts=()
     for directory in "$@"; do
         [[ -d $directory ]] || continue
+        [[ ! -f $directory/.rstarsleep-public-permissions-v1 ]] || continue
         chmod 0755 -- "$directory" || return
+        artifacts=()
         for artifact in "$directory"/*.pkg.tar.* "$directory"/rstarsleep.db* "$directory"/rstarsleep.files*; do
             [[ -f $artifact && ! -L $artifact ]] || continue
             artifacts+=("$artifact")
         done
+        if (( ${#artifacts[@]} )); then chmod 0644 -- "${artifacts[@]}" || return; fi
+        : >"$directory/.rstarsleep-public-permissions-v1" || return
     done
-    if (( ${#artifacts[@]} )); then
-        chmod 0644 -- "${artifacts[@]}"
+}
+
+# Prepared metadata is immutable for a target build. Preserve its generation timestamp
+# so later queries/transactions reuse the installed copy without rereading its contents.
+copy_prepared_database() {
+    local source=$1 destination=$2
+    if [[ -f $destination && ! $source -nt $destination && ! $destination -nt $source ]] &&
+        [[ $(stat -c %s -- "$source") == "$(stat -c %s -- "$destination")" ]]; then
+        return 0
     fi
+    cp --preserve=timestamps --remove-destination -- "$source" "$destination"
 }
 
 # Fill the mounted data directory without replacing existing configuration.
@@ -120,8 +132,14 @@ prepare_plugin_data() {
     local resources=${1:-${RSTAR_PLUGIN_ROOT:-${plugin_root:-}}}
     [[ -d $resources/data ]] || { log 'Missing persistent data mount'; return 1; }
     if [[ -d $resources/default-data ]]; then
-        cp -r --preserve=mode --update=none -- "$resources/default-data/." "$resources/data/" || return
-        chmod 0755 -- "$resources/data" || return
+        local entry missing=0
+        while IFS= read -r -d '' entry; do
+            [[ -e $resources/data/${entry#"$resources/default-data/"} ]] || { missing=1; break; }
+        done < <(find "$resources/default-data/" -type f -print0)
+        if (( missing )); then
+            cp -r --preserve=mode --update=none -- "$resources/default-data/." "$resources/data/" || return
+            chmod 0755 -- "$resources/data" || return
+        fi
     fi
 }
 
@@ -207,7 +225,7 @@ run_configured_pacman() {
         local database database_count=0
         for database in "$repository"/official-sync/*.db "$repository"/official-sync/*.db.sig; do
             [[ -f $database ]] || continue
-            cp --remove-destination -- "$database" "/var/lib/pacman/sync/${database##*/}" || return
+            copy_prepared_database "$database" "/var/lib/pacman/sync/${database##*/}" || return
             [[ $database != *.db ]] || (( database_count += 1 ))
         done
         (( database_count )) || { log 'Prepared official repository databases are missing'; return 1; }
@@ -216,7 +234,7 @@ run_configured_pacman() {
     if [[ -f $repository/rstarsleep.db.tar.gz ]]; then
         printf '\n[rstarsleep]\nSigLevel = Optional TrustAll\nServer = file://%s\n' "$repository" >>"$configuration" || return
         mkdir -p /var/lib/pacman/sync || return
-        cp --remove-destination -- "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db || return
+        copy_prepared_database "$repository/rstarsleep.db.tar.gz" /var/lib/pacman/sync/rstarsleep.db || return
     fi
     case ${args[0]:-} in
         -S|-Su|-Syu|-Sy|-Syyu|-Syy|-Sw)

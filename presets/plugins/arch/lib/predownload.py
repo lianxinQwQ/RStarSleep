@@ -386,6 +386,11 @@ class Preparer:
             if database.is_symlink():
                 raise PreparationError("repository archive must not be a symlink")
             atomic_copy(database, sync / f"{REPO}.db")
+        # New repo-add outputs must remain readable even after the one-time permission migration.
+        for pattern in ("rstarsleep.db*", "rstarsleep.files*"):
+            for path in self.repo.glob(pattern):
+                if path.is_file() and not path.is_symlink():
+                    path.chmod(0o644)
         self.build_conf.write_text(config)
 
     def initialize(self, planning=False):
