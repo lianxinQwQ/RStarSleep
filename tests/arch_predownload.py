@@ -224,6 +224,10 @@ class BuildSpaceFallback(unittest.TestCase):
         self.addCleanup(self.scratch.close)
         self.p = p = arch.Preparer.__new__(arch.Preparer)
         p.scratch = self.scratch
+        p.arch = "x86_64"
+        p.repo = self.root / "repository"
+        p.repo.mkdir()
+        p.save_progress = Mock()
         p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
         p.builds, p.outputs = self.root / "build", self.root / "packages"
         self.output = p.outputs / "sample"
@@ -246,11 +250,20 @@ class BuildSpaceFallback(unittest.TestCase):
                                    "tmpfs" if Path(path).is_relative_to(self.root) else "btrfs")
         self.mounts.start()
         self.addCleanup(self.mounts.stop)
+        self.budget = 7 * 1024 ** 3
+        self.capacity = patch.object(arch.shutil, "disk_usage", side_effect=lambda path:
+                                     Mock(free=self.budget if Path(path).is_relative_to(self.root) else 1 << 40))
+        self.capacity.start()
+        self.addCleanup(self.capacity.stop)
 
-    def test_retry_moves_both_paths_cleans_only_failed_package_and_keeps_later_builds_on_disk(self):
+    def test_retry_moves_only_failed_package_and_restores_paths_for_later_builds(self):
+        original = self.p.builds, self.p.outputs, self.p.makepkg_conf
+        configurations = []
+
         def compile(checkout, arguments):
             if self.p.makepkg.call_count == 1:
                 raise self.error
+            configurations.append(self.p.makepkg_conf.read_text())
             self.assertFalse(self.output.exists())
             self.assertFalse((self.root / "build/sample").exists())
             self.assertTrue((self.root / "packages/other/keep").is_file())
@@ -266,8 +279,9 @@ class BuildSpaceFallback(unittest.TestCase):
         self.assertEqual(len(list(output.glob("*.pkg.tar.zst"))), 3)
         self.assertFalse(output.is_relative_to(self.root))
         self.assertIn("retry once on disk", diagnostics.getvalue())
-        self.assertIn(f"BUILDDIR={self.p.builds}", self.p.makepkg_conf.read_text())
-        self.assertTrue(self.p.makepkg_conf.read_text().endswith(f"PKGDEST={output}\n"))
+        self.assertIn(f"BUILDDIR={output.parent.parent / 'build'}", configurations[0])
+        self.assertTrue(configurations[0].endswith(f"PKGDEST={output}\n"))
+        self.assertEqual((self.p.builds, self.p.outputs, self.p.makepkg_conf), original)
         self.assertEqual(self.p.config_sha256, "unchanged build identity")
         disk = output.parent.parent
         later = self.p.outputs / "later"
@@ -275,7 +289,7 @@ class BuildSpaceFallback(unittest.TestCase):
         self.p.makepkg.reset_mock(side_effect=True)
         self.assertEqual(self.p.compile_package(dict(name="later", checkout=self.base["checkout"]), later), later)
         self.p.makepkg.assert_called_once()
-        self.assertEqual(later.parent.parent, disk)
+        self.assertEqual(later.parent, self.root / "packages")
         self.scratch.close()
         self.assertFalse(disk.exists())
 
@@ -291,23 +305,36 @@ class BuildSpaceFallback(unittest.TestCase):
                 self.assertIs(failure.exception, error)
                 self.p.makepkg.assert_called_once()
                 self.assertTrue(self.output.exists())
+                self.assertFalse((self.p.repo / ".aur-space-failures.json").exists())
+                self.p.save_progress.assert_not_called()
 
     def test_retry_failure_reports_both_attempts_and_never_retries_a_third_time(self):
-        self.p.makepkg = Mock(side_effect=[self.error, arch.PreparationError("compiler failed on disk")])
+        original = self.p.builds, self.p.outputs, self.p.makepkg_conf
+        disks = []
+
+        def compile(checkout, arguments):
+            if self.p.makepkg.call_count == 1:
+                raise self.error
+            disks.append(self.p.builds.parent)
+            raise arch.PreparationError("compiler failed on disk")
+
+        self.p.makepkg = Mock(side_effect=compile)
         with redirect_stderr(StringIO()), self.assertRaises(arch.PreparationError) as failure:
             self.p.compile_package(self.base, self.output)
         self.assertIn("No space left on device", str(failure.exception))
         self.assertIn("compiler failed on disk", str(failure.exception))
         self.assertEqual(self.p.makepkg.call_count, 2)
-        disk = self.p.builds.parent
+        self.assertEqual((self.p.builds, self.p.outputs, self.p.makepkg_conf), original)
+        self.assertEqual(self.p.space_failures()["architectures"][self.p.arch]["sample"]["failed_budget_bytes"], self.budget)
         self.scratch.close()
-        self.assertFalse(disk.exists())
+        self.assertFalse(disks[0].exists())
 
     def test_memory_backed_or_full_fallback_is_rejected_without_retry(self):
         for kind, free, message in (("tmpfs", 1 << 40, "memory-backed"),
                                     ("ramfs", 1 << 40, "memory-backed"),
                                     ("btrfs", 0, "insufficient disk fallback space")):
             with self.subTest(kind=kind, free=free):
+                (self.p.repo / ".aur-space-failures.json").unlink(missing_ok=True)
                 self.p.makepkg = Mock(side_effect=self.error)
                 with patch.object(arch, "filesystem_type", side_effect=lambda path:
                                   "tmpfs" if Path(path).is_relative_to(self.root) else kind), \
@@ -324,6 +351,125 @@ class BuildSpaceFallback(unittest.TestCase):
         with redirect_stderr(StringIO()):
             self.p.compile_package(self.base, self.output)
         self.assertEqual((self.p.distfiles / "archive.tar.gz").read_text(), "verified source")
+
+    def test_records_starting_budget_before_retry_and_preserves_largest_failure(self):
+        starting = self.budget
+        saved = []
+        self.p.save_progress.side_effect = lambda: saved.append(
+            self.p.space_failures()["architectures"][self.p.arch]["sample"]["failed_budget_bytes"])
+
+        def compile(checkout, arguments):
+            if self.p.makepkg.call_count == 1:
+                self.budget = 0  # Space remaining at failure must not become the hint.
+                raise self.error
+            self.assertEqual(saved, [starting])
+
+        self.p.makepkg = Mock(side_effect=compile)
+        with redirect_stderr(StringIO()):
+            self.p.compile_package(self.base, self.output)
+        self.p.remember_space_failure("sample", starting // 2)
+        self.assertEqual(saved, [starting, starting])
+        self.p.remember_space_failure("sample", starting * 2)
+        self.assertEqual(saved[-1], starting * 2)
+
+    def test_fresh_invocation_uses_saved_hint_until_budget_exceeds_margin(self):
+        failed = self.budget
+        self.p.remember_space_failure("sample", failed)
+        reloaded = arch.Preparer.__new__(arch.Preparer)
+        reloaded.__dict__.update(self.p.__dict__)
+        original = reloaded.builds, reloaded.outputs, reloaded.makepkg_conf
+        for available in (failed // 2, failed, failed + failed // 10):
+            with self.subTest(available=available):
+                self.budget = available
+                self.output.mkdir(exist_ok=True)
+                reloaded.makepkg = Mock(side_effect=lambda *args:
+                    self.assertFalse(reloaded.builds.is_relative_to(self.root)))
+                with redirect_stderr(StringIO()) as diagnostics:
+                    output = reloaded.compile_package(self.base, self.output)
+                reloaded.makepkg.assert_called_once()
+                self.assertIn("build directly on disk", diagnostics.getvalue())
+                self.assertFalse(output.is_relative_to(self.root))
+                self.assertEqual((reloaded.builds, reloaded.outputs, reloaded.makepkg_conf), original)
+        # A small failed budget still requires an additional 64 MiB before retry.
+        reloaded.remember_space_failure("small", 1024)
+        self.budget = 1024 + 64 * 1024 * 1024
+        self.output.mkdir(exist_ok=True)
+        reloaded.makepkg.reset_mock()
+        with redirect_stderr(StringIO()):
+            reloaded.compile_package(dict(name="small", checkout=self.base["checkout"]), self.output)
+        reloaded.makepkg.assert_called_once()
+
+    def test_larger_budget_retries_tmpfs_and_updates_hint_only_if_it_fails(self):
+        failed = self.budget
+        self.p.remember_space_failure("sample", failed)
+        self.budget = failed + failed // 10 + 1
+        self.p.makepkg = Mock(side_effect=lambda *args: self.assertEqual(self.p.builds, self.root / "build"))
+        self.assertEqual(self.p.compile_package(self.base, self.output), self.output)
+        self.p.makepkg.assert_called_once()
+        self.assertEqual(self.p.space_failures()["architectures"][self.p.arch]["sample"]["failed_budget_bytes"], failed)
+        self.p.makepkg = Mock(side_effect=[self.error, None])
+        with redirect_stderr(StringIO()):
+            self.p.compile_package(self.base, self.output)
+        self.assertEqual(self.p.makepkg.call_count, 2)
+        self.assertEqual(self.p.space_failures()["architectures"][self.p.arch]["sample"]["failed_budget_bytes"], self.budget)
+
+    def test_direct_disk_failure_does_not_retry_and_restores_original_paths(self):
+        self.p.remember_space_failure("sample", self.budget)
+        original = self.p.builds, self.p.outputs, self.p.makepkg_conf
+        history = (self.p.repo / ".aur-space-failures.json").read_bytes()
+        self.p.makepkg = Mock(side_effect=self.error)
+        with redirect_stderr(StringIO()), self.assertRaises(arch.CommandError):
+            self.p.compile_package(self.base, self.output)
+        self.p.makepkg.assert_called_once()
+        self.assertEqual((self.p.builds, self.p.outputs, self.p.makepkg_conf), original)
+        self.assertEqual((self.p.repo / ".aur-space-failures.json").read_bytes(), history)
+
+    def test_hints_are_scoped_to_architecture_and_pkgbase_and_ignore_disk_workspaces(self):
+        self.p.remember_space_failure("sample", self.budget)
+        other = self.p.outputs / "unseen"
+        other.mkdir()
+        self.p.makepkg = Mock(side_effect=lambda *args: self.assertEqual(self.p.builds, self.root / "build"))
+        self.assertEqual(self.p.compile_package(dict(name="unseen", checkout=self.base["checkout"]), other), other)
+        self.p.arch = "aarch64"
+        self.assertEqual(self.p.compile_package(self.base, self.output), self.output)
+        self.p.remember_space_failure("sample", self.budget * 2)
+        entries = self.p.space_failures()["architectures"]
+        self.assertEqual(entries["x86_64"]["sample"]["failed_budget_bytes"], self.budget)
+        self.assertEqual(entries["aarch64"]["sample"]["failed_budget_bytes"], self.budget * 2)
+        with patch.object(arch, "filesystem_type", return_value="btrfs"):
+            self.assertEqual(self.p.compile_package(self.base, self.output), self.output)
+        self.assertEqual(self.p.makepkg.call_count, 3)
+
+    def test_malformed_hints_are_ignored_without_invalidating_binary_cache(self):
+        path = self.p.repo / ".aur-space-failures.json"
+        binary = self.p.repo / ".aur-builds.json"
+        binary.write_text("existing binary cache")
+        invalid = ["{", json.dumps(dict(format=9, architectures={})),
+                   json.dumps(dict(format=1, architectures=[]))]
+        for value in (-1, True, 1.5, None):
+            invalid.append(json.dumps(dict(format=1, architectures={"x86_64": {
+                "sample": dict(failed_budget_bytes=value)}})))
+        self.p.makepkg = Mock()
+        for text in invalid:
+            with self.subTest(text=text):
+                path.write_text(text)
+                with redirect_stderr(StringIO()) as diagnostics:
+                    self.assertEqual(self.p.compile_package(self.base, self.output), self.output)
+                self.assertIn("Ignore invalid AUR space-failure index", diagnostics.getvalue())
+                self.assertEqual(binary.read_text(), "existing binary cache")
+                self.assertEqual(path.read_text(), text)
+
+    def test_hint_symlink_is_not_read_or_written_through(self):
+        outside = self.root / "outside.json"
+        outside.write_text('{"keep":true}')
+        path = self.p.repo / ".aur-space-failures.json"
+        path.symlink_to(outside)
+        with redirect_stderr(StringIO()):
+            self.assertEqual(self.p.space_failures(), dict(format=1, architectures={}))
+            self.p.remember_space_failure("sample", self.budget)
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(outside.read_text(), '{"keep":true}')
+        self.assertEqual(self.p.space_failures()["architectures"][self.p.arch]["sample"]["failed_budget_bytes"], self.budget)
 
 
 class BuildDiagnostics(unittest.TestCase):
@@ -724,7 +870,8 @@ class Protocol(unittest.TestCase):
             p.config_sha256, p.cache_counts = "fixture", dict(reused=0, built=0)
             p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
             p.outputs, p.repo, p.cache = root / "outputs", root / "repo", root / "cache"
-            for directory in (p.outputs, p.repo, p.cache):
+            p.builds = root / "build"
+            for directory in (p.outputs, p.repo, p.cache, p.builds):
                 directory.mkdir()
             p.makepkg_conf = root / "makepkg.conf"
             p.makepkg_conf.write_text("# configuration\n")

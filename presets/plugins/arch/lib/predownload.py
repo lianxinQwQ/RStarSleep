@@ -1004,20 +1004,80 @@ class Preparer:
 
     def compile_package(self, base, output):
         arguments = ["--force", "--cleanbuild", "--clean", "--holdver", "--nodeps", "--noconfirm"]
+        original = self.builds, self.outputs, self.makepkg_conf
+        # Snapshot available space before makepkg consumes it, not after ENOSPC.
+        budget = self.tmpfs_budget(output)
         try:
-            self.makepkg(base["checkout"], arguments)
-            return output
-        except CommandError as first:
-            if not first.no_space or not any(filesystem_type(path) == "tmpfs" for path in (self.builds, output)):
-                raise
-            log(f"{base['name']} 构建时 tmpfs 空间不足，切换硬盘重试一次",
-                f"tmpfs ran out of space while building {base['name']}; retry once on disk")
+            if budget is not None:
+                previous = self.space_failures()["architectures"].get(self.arch, {}).get(base["name"])
+                if previous is not None:
+                    failed = previous["failed_budget_bytes"]
+                    margin = max(64 * 1024 * 1024, failed // 10)
+                    if budget <= failed + margin:
+                        log(f"{base['name']} 曾在 {failed // (1024 * 1024)} MiB 可用空间下失败，"
+                            f"当前 {budget // (1024 * 1024)} MiB，直接使用硬盘",
+                            f"{base['name']} previously exhausted tmpfs with {failed // (1024 * 1024)} MiB free; "
+                            f"currently {budget // (1024 * 1024)} MiB free; build directly on disk")
+                        output = self.disk_build_workspace(base["name"], output)
+                        self.makepkg(base["checkout"], arguments)
+                        return output
             try:
-                output = self.disk_build_workspace(base["name"], output)
                 self.makepkg(base["checkout"], arguments)
-            except (PreparationError, OSError) as second:
-                raise PreparationError(f"Initial tmpfs build failed:\n{first}\nDisk fallback failed:\n{second}") from second
+            except CommandError as first:
+                if not first.no_space or budget is None:
+                    raise
+                log(f"{base['name']} 构建时 tmpfs 空间不足，记录起始预算并切换硬盘重试一次",
+                    f"tmpfs ran out of space while building {base['name']}; record starting budget and retry once on disk")
+                try:
+                    self.remember_space_failure(base["name"], budget)
+                    output = self.disk_build_workspace(base["name"], output)
+                    self.makepkg(base["checkout"], arguments)
+                except (PreparationError, OSError) as second:
+                    raise PreparationError(f"Initial tmpfs build failed:\n{first}\nDisk fallback failed:\n{second}") from second
             return output
+        finally:
+            # Placement is per pkgbase. Other packages retain their normal workspace.
+            self.builds, self.outputs, self.makepkg_conf = original
+
+    def tmpfs_budget(self, output):
+        available = [shutil.disk_usage(path).free for path in (self.builds, output)
+                     if filesystem_type(path) == "tmpfs"]
+        # Build and output usually share a mount; never add their free-space values.
+        return min(available) if available else None
+
+    def space_failures(self):
+        """Placement hints are independent of binary-cache validity and recipe versions."""
+        index = dict(format=1, architectures={})
+        path = self.repo / ".aur-space-failures.json"
+        try:
+            if path.is_symlink():
+                raise ValueError("space-failure index must not be a symlink")
+            if not path.exists():
+                return index
+            value = json.loads(path.read_text())
+            if (not isinstance(value, dict) or value.get("format") != 1
+                    or not isinstance(value.get("architectures"), dict)):
+                raise ValueError("unsupported space-failure index")
+            for architecture, entries in value["architectures"].items():
+                if not NAME.fullmatch(architecture) or not isinstance(entries, dict):
+                    raise ValueError("invalid architecture in space-failure index")
+                for name, entry in entries.items():
+                    if (not NAME.fullmatch(name) or not isinstance(entry, dict)
+                            or type(entry.get("failed_budget_bytes")) is not int or entry["failed_budget_bytes"] < 0):
+                        raise ValueError("invalid failed tmpfs budget")
+            return value
+        except (ValueError, OSError) as error:
+            log(f"忽略无效 AUR 空间失败记录：{error}", f"Ignore invalid AUR space-failure index: {error}")
+            return index
+
+    def remember_space_failure(self, name, budget):
+        index = self.space_failures()
+        entries = index["architectures"].setdefault(self.arch, {})
+        previous = entries.get(name, {}).get("failed_budget_bytes", 0)
+        entries[name] = dict(failed_budget_bytes=max(previous, budget))
+        atomic_json(self.repo / ".aur-space-failures.json", index)
+        # Publish this hint before disk setup/retry: it must survive a second failure.
+        self.save_progress()
 
     def disk_build_workspace(self, name, output):
         # /var/tmp belongs to the disposable predownload root, not a source/cache volume.
@@ -1052,10 +1112,9 @@ class Preparer:
                 path.unlink()
             elif path.exists():
                 shutil.rmtree(path)
-        # Keep all following pkgbase builds on disk for the rest of this invocation.
         self.builds, self.outputs, self.makepkg_conf = builds, outputs, configuration
-        log(f"硬盘构建目录：{directory}，可用空间 {free // (1024 * 1024)} MiB；本轮后续构建使用硬盘",
-            f"Disk build workspace: {directory}, {free // (1024 * 1024)} MiB free; subsequent builds use disk")
+        log(f"{name} 的硬盘构建目录：{directory}，可用空间 {free // (1024 * 1024)} MiB；其他包单独判断",
+            f"Disk build workspace for {name}: {directory}, {free // (1024 * 1024)} MiB free; other packages decide independently")
         return outputs / name
 
     def build(self, base):

@@ -122,7 +122,7 @@ class Incremental(unittest.TestCase):
             self.assertEqual(first.cache_counts, dict(reused=0, built=1))
             self.assertEqual(len(first.artifacts["sample"]), 2)
             self.assertEqual(sum("--verifysource" in call.args[1] for call in first.makepkg.call_args_list), 1)
-            disk = first.builds.parent
+            disk = builds[1].parent
         self.assertFalse(disk.exists())
         second = self.preparer()
         second.build(self.recipe())
