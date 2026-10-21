@@ -5,6 +5,7 @@
 //! 全局角色与子系统运行设置目前只保留模板，读取逻辑由后续模块实现。
 #![doc = include_str!("layout.md")]
 
+mod accounts;
 mod build;
 mod environment;
 mod filesystem;
@@ -17,6 +18,7 @@ mod presets;
 mod runtime;
 mod store;
 
+pub use accounts::{AccountDriftPolicy, AccountInheritanceConfig};
 pub(crate) use build::normalized_build_config;
 pub use build::{
     BuildConfig, read_build_config_at, read_deduplicate_packages_at, read_distribution_options_at,

@@ -1,5 +1,7 @@
 # RStarSleep 工作目录
 
+账户声明、插件协议和统一预检见 [账户继承说明](../../docs/account-inheritance.md)。
+
 RStarSleep 的工作目录属于整个管理体系，不依附任何被管理系统的 `/etc`。
 在 Btrfs 顶层（subvolid=5）创建专用子卷 `@RStarSleep`，建议运行时挂载到
 `/rstarsleep`。存储路径与挂载路径指向同一份数据；显式路径初始化接口不执行挂载。

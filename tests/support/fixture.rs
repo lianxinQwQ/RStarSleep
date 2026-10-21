@@ -39,6 +39,40 @@ impl Fixture {
         Self::with_package_interfaces(false, true)
     }
 
+    /// Install a small host-side account protocol to exercise orchestration independently of NSS.
+    #[allow(dead_code)]
+    pub fn account_plugin(&self, input: &Path, preflight: &str, result: &str) {
+        let source = self._temporary.path().join("plugin-source");
+        let metadata = source.join("plugin.toml");
+        let mut parsed: toml::Value =
+            toml::from_str(&fs::read_to_string(&metadata).unwrap()).unwrap();
+        let mut account = toml::Table::new();
+        account.insert("workdir".into(), "account-inheritance".into());
+        account.insert(
+            "paths".into(),
+            toml::Value::Array(vec![input.to_str().unwrap().into()]),
+        );
+        account.insert("tools".into(), toml::Value::Array(vec![]));
+        parsed
+            .as_table_mut()
+            .unwrap()
+            .insert("account_inheritance".into(), account.into());
+        fs::write(metadata, toml::to_string(&parsed).unwrap()).unwrap();
+        fs::write(source.join("account-preflight.json"), preflight).unwrap();
+        fs::write(source.join("account-result.json"), result).unwrap();
+        fs::write(source.join("account_check.sh"), "set -eu\nif [ \"${3:-}\" = --preflight ]; then cat \"$RSTAR_PLUGIN_ROOT/account-preflight.json\"; else cat \"$RSTAR_PLUGIN_ROOT/account-result.json\"; fi\n").unwrap();
+        fs::write(
+            source.join("account_prepare.sh"),
+            "set -eu\ntest -d \"$2/old\"\ntest -d \"$2/new\"\ntest -d \"$2/output\"\n",
+        )
+        .unwrap();
+        fs::write(source.join("account_apply.sh"), "set -eu\ntest ! -e \"$RSTAR_ROOT/.post-maintenance\"\nprintf inherited > \"$RSTAR_ROOT/.accounts\"\n").unwrap();
+        let file = fs::File::create(self.store.plugins_path().join("arch.tar")).unwrap();
+        let mut archive = tar::Builder::new(file);
+        archive.append_dir_all(".", source).unwrap();
+        archive.finish().unwrap();
+    }
+
     fn with_package_interfaces(enabled: bool, unified: bool) -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("manager");
@@ -72,7 +106,9 @@ impl Fixture {
                     "tools = []",
                 );
         }
-        fs::write(&metadata, text).unwrap();
+        let mut parsed: toml::Value = toml::from_str(&text).unwrap();
+        parsed.as_table_mut().unwrap().remove("account_inheritance");
+        fs::write(&metadata, toml::to_string(&parsed).unwrap()).unwrap();
         let file = fs::File::create(root.join("plugins/arch.tar")).unwrap();
         let mut archive = tar::Builder::new(file);
         archive.append_dir_all(".", &source).unwrap();

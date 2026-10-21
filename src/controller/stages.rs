@@ -397,6 +397,13 @@ impl<B: BuildBackend> Stages<'_, B> {
         cached: Option<&Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
+        let account_inputs = super::accounts::fingerprint(self.plugin)?;
+        let account_config = crate::config::AccountInheritanceConfig::read(
+            &crate::config::read_plugin_parameters_at(&self.context.config)?,
+        )?;
+        // Assess reads live boot/Mount sources; never reuse a previous scan result.
+        let allow_reuse = self.plugin.metadata.account_inheritance.is_none()
+            || account_config.drift_policy != crate::config::AccountDriftPolicy::Assess;
         let frozen = if self.reuse_minutes > 0 {
             Some(super::inheritance_inputs::freeze(
                 self.backend,
@@ -416,11 +423,12 @@ impl<B: BuildBackend> Stages<'_, B> {
                     &config_hash(&self.attempt.config)?,
                     self.context,
                     Some(packages),
-                    frozen.sha256.as_bytes(),
+                    format!("{}:{account_inputs}", frozen.sha256).as_bytes(),
                 ))
             })
             .transpose()?;
-        if let Some(inputs) = &inputs
+        if allow_reuse
+            && let Some(inputs) = &inputs
             && reuse::matches(
                 cached,
                 self.reuse_minutes,
@@ -459,6 +467,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
+        super::accounts::capture_new(self.plugin, &root)?;
         // Observe inheritance too: it can replace a database before any script runs.
         // Keep the inventory bound to the database that produced it, including cache hits.
         let database_paths = if self.plugin.metadata.query_package_database_paths {
@@ -479,18 +488,26 @@ impl<B: BuildBackend> Stages<'_, B> {
                 &self.attempt.layout.root,
             )?
         };
+        let accounts_changed = super::accounts::apply(
+            self.backend,
+            self.plugin,
+            self.context,
+            &root,
+            &self.attempt.layout.root,
+        )?;
         if self.plugin.metadata.post_maintenance {
             self.backend
                 .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
         }
         let applied = super::scripts::apply(self.backend, &root, self.context)?;
-        let changed = (inherited || applied || self.plugin.metadata.post_maintenance)
-            && !package_watch.is_some_and(|watch| {
-                // Configuration may select a different database after inheritance or scripts.
-                let same_paths = !self.plugin.metadata.query_package_database_paths
-                    || self.package_database_paths(&root) == database_paths;
-                same_paths && watch.unchanged()
-            });
+        let changed =
+            (inherited || applied || accounts_changed || self.plugin.metadata.post_maintenance)
+                && !package_watch.is_some_and(|watch| {
+                    // Configuration may select a different database after inheritance or scripts.
+                    let same_paths = !self.plugin.metadata.query_package_database_paths
+                        || self.package_database_paths(&root) == database_paths;
+                    same_paths && watch.unchanged()
+                });
         let software = if changed {
             let session = PackageSession {
                 backend: self.backend,

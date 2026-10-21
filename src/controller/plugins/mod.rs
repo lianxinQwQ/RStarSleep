@@ -1,5 +1,6 @@
 //! Archive and directory distribution plugins.
 //! 压缩包及目录形式的发行版插件。
+mod accounts;
 mod cache_inputs;
 mod commands;
 pub(crate) mod configuration;
@@ -15,9 +16,9 @@ mod validation;
 pub use discovery::{find, for_system};
 pub use loader::load;
 pub use model::{
-    ActionRequirements, BootArtifact, BootArtifactKind, BootRequirements, CacheRequirements,
-    ConfigRequirements, Error, LoadedPlugin, Metadata, PackagePlanRequirements, Result,
-    ToolRequirements, ValueConstraint,
+    AccountInheritanceRequirements, ActionRequirements, BootArtifact, BootArtifactKind,
+    BootRequirements, CacheRequirements, ConfigRequirements, Error, LoadedPlugin, Metadata,
+    PackagePlanRequirements, Result, ToolRequirements, ValueConstraint,
 };
 pub use persistent::PersistentDirectory;
 /// Operations shared by API 2 and 3, provided as <operation>.sh or <operation>.
@@ -51,6 +52,14 @@ pub(crate) fn is_query(operation: &str) -> bool {
             | "query_package_files"
             | "query_package_database_paths"
             | "maintain_packages"
+            | "account_check"
+    )
+}
+
+pub(crate) fn is_account_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "account_prepare" | "account_check" | "account_apply"
     )
 }
 use validation::{identifier, io_error};

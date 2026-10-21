@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.16.2"
+version = "0.17.0"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -28,6 +28,12 @@ persistent_dirs = [
     "arch-repository:state/repository",
     "arch-sources:state/sources",
 ]
+
+# Account semantics are distribution-owned; all three actions run on the host.
+[account_inheritance]
+workdir = "account-inheritance"
+paths = ["/etc/passwd", "/etc/group", "/etc/shadow", "/etc/gshadow"]
+tools = ["python3"]
 
 # Target installation closure, collected before target build allocation.
 # 分配目标构建版本前收集的目标安装闭包。

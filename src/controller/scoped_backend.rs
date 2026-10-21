@@ -94,6 +94,9 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
         root: &Path,
         context: &BuildContext,
     ) -> Result<String> {
+        if plugins::is_account_operation(operation) {
+            return self.backend.invoke(plugin, operation, args, root, context);
+        }
         let query = plugins::is_query(operation) && operation != "maintain_packages";
         let execute = || self.invoke_transaction(plugin, operation, args, root, context, !query);
         if query {

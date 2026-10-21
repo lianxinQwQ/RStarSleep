@@ -90,7 +90,7 @@ pub fn build_with_backend_and_warning(
     let mut dedup_sources = Vec::new();
     let mut failures = Vec::new();
     let mut pending = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = super::preflight::Report::default();
     let system_count = systems.len();
     for (index, id) in systems.into_iter().enumerate() {
         let checked = (|| {
@@ -112,6 +112,7 @@ pub fn build_with_backend_and_warning(
             Err(error) => failures.push(format!("{id}: {error}")),
         }
     }
+    let warnings = warnings.messages();
     if !warnings.is_empty() {
         warning(&warnings)?;
     }
@@ -459,7 +460,7 @@ fn check_system(
     inputs: Preflight,
     backend: &impl BuildBackend,
     work: &Path,
-    warnings: &mut Vec<String>,
+    warnings: &mut super::preflight::Report,
 ) -> Result<Pending> {
     progress::message(
         id,
@@ -488,16 +489,20 @@ fn check_system(
     plugin.validate_parameter_lists(&input)?;
     let inheritance = crate::config::InheritanceConfig::read(&input)?;
     validate_boot_capabilities(id, runtime, &inheritance, &plugin)?;
-    let source_root = super::inheritance_preflight::inspect(
+    let mut inheritance_warnings = Vec::new();
+    let source_root = super::preflight::inheritance::inspect(
         backend,
         id,
         &inheritance,
         &store.system_layout(id)?.root,
         work,
-        warnings,
+        &mut inheritance_warnings,
     )?;
+    for message in inheritance_warnings {
+        warnings.warn(id, "inheritance", message);
+    }
     for warning in &plugin.discovery_warnings {
-        logging::diagnostic(warning);
+        warnings.warn(id, "plugin-discovery", warning);
     }
     progress::message(
         id,
@@ -519,6 +524,7 @@ fn check_system(
             .into_iter()
             .filter(|(name, _)| {
                 !name.starts_with("RSTAR_INHERITANCE_")
+                    && !name.starts_with("RSTAR_ACCOUNTINHERITANCE_")
                     && !matches!(
                         name.as_str(),
                         "RSTAR_CONFIG_CACHEREUSEMINUTES"
@@ -534,6 +540,7 @@ fn check_system(
         environment,
         inherited_mounts: Vec::new(),
     };
+    super::accounts::preflight(&plugin, &context, warnings)?;
     Ok(Pending {
         inputs,
         plugin,

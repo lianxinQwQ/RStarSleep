@@ -252,6 +252,10 @@ impl ConfigStore {
             ENVIRONMENT_DEFAULT,
         )?;
         write_default(
+            &layout.config.join("build/accounts.conf"),
+            "# Explicit account inheritance; runs only when the distribution plugin registers it.\n# 仅注册该能力的发行版插件执行账户继承。UID/GID 漂移只检测，不自动修复。\n[AccountInheritance]\n# Users=alice\n# Groups=wheel\n# DriftPolicy=warn\n# silent | warn | error | assess\n",
+        )?;
+        write_default(
             &layout.config.join("subsystem/config.toml"),
             SUBSYSTEM_DEFAULT,
         )?;

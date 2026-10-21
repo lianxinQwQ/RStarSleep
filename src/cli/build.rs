@@ -31,7 +31,7 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
         &store,
         system.as_deref(),
         &crate::controller::SystemBackend,
-        warn_inheritance,
+        warn_preflight,
     )? {
         println!(
             "{}: {} -> {}",
@@ -44,7 +44,7 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
 }
 
 /// Warn before the controller allocates versions or invalidates caches.
-fn warn_inheritance(warnings: &[String]) -> crate::controller::Result<()> {
+fn warn_preflight(warnings: &[String]) -> crate::controller::Result<()> {
     use std::io::Write;
     let report = || -> std::io::Result<()> {
         if !warnings.is_empty() {

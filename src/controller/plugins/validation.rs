@@ -82,6 +82,44 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     if metadata.post_maintenance {
         operation_path(root, "post_maintenance")?;
     }
+    if let Some(accounts) = &metadata.account_inheritance {
+        if accounts.workdir.as_os_str().is_empty()
+            || accounts.workdir.to_str().is_none_or(|path| {
+                path.chars().any(char::is_control)
+                    || path
+                        .split('/')
+                        .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            })
+            || accounts
+                .workdir
+                .components()
+                .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(Error::Invalid(
+                "账户工作目录必须是临时目录下的规范相对路径".into(),
+            ));
+        }
+        let mut paths = Vec::new();
+        for path in &accounts.paths {
+            crate::config::inheritance_name(path)?;
+            if paths
+                .iter()
+                .any(|other: &&PathBuf| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(Error::Invalid("账户输入路径不能重复或重叠".into()));
+            }
+            paths.push(path);
+        }
+        if paths.is_empty() {
+            return Err(Error::Invalid("账户输入路径不能为空".into()));
+        }
+        for tool in &accounts.tools {
+            tool_requirement(tool)?;
+        }
+        for operation in ["account_prepare", "account_check", "account_apply"] {
+            operation_path(root, operation)?;
+        }
+    }
     if let Some(plan) = &metadata.package_plan {
         if metadata.api_version != 3 {
             return Err(Error::Invalid(

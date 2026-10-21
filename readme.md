@@ -3,6 +3,7 @@ RStarSleep 的系统构建配置采用 mkosi 风格的 INI 分节格式，仅保
 软件包可以在 `Packages=` 下缩进列出，每行一个，便于维护大量软件包。
 
 工作目录、初始化方式和软件包配置读取接口见 [src/config/layout.md](src/config/layout.md)。
+账户继承、漂移策略和集中预检见 [账户继承说明](docs/account-inheritance.md)。
 
 ## 初始化工作目录
 

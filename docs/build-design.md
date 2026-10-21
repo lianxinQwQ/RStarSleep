@@ -49,6 +49,8 @@ RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
 
 ## 模块职责
 
+账户继承及集中预检见 [账户继承与统一构建预检](account-inheritance.md)。
+
 | 模块 | 职责 |
 | --- | --- |
 | `src/controller/` | 系统选择、构建锁、版本分配、配置留档、缓存选择与校验、Btrfs CoW、插件解包及运行、nspawn 执行、完成状态 |
@@ -479,7 +481,7 @@ Packages=
 加载结果。当前支持 tar、gzip、xz 和 zstd；解包和操作文件检查不执行脚本。
 链接目标也必须为不含 `..` 的相对路径。
 
-`LoadedPlugin::invoke()` 提供检查后的 Bash 任务调用，bootstrap 在宿主运行，
+`LoadedPlugin::invoke()` 提供检查后的插件任务调用，bootstrap 和可选账户操作在宿主运行，
 其他任务通过 nspawn 执行，所需工具检查与实际调用采用同一环境。
 `LoadedPlugin::invoke_for_build()` 另接收冻结配置和系统标识，传入 `RSTAR_CONFIG_DIR`
 和 `RSTAR_SYSTEM_ID`。配置在容器内只读绑定到 `/run/rstarsleep/config`。

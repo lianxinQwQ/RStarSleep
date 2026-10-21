@@ -17,9 +17,9 @@ impl LoadedPlugin {
     /// Check all applicable dependencies, then invoke the plugin and capture its output.
     /// 检查全部适用依赖，再调用插件并捕获输出。
     ///
-    /// Bootstrap runs on the host; every other task runs through nspawn. No plugin code
+    /// Bootstrap and account tasks run on the host; other tasks run through nspawn. No plugin code
     /// is executed when a required tool is missing. This does not create versions or caches.
-    /// bootstrap 在宿主运行；其他任务通过 nspawn 运行。缺失工具时不执行插件代码。
+    /// bootstrap 和账户任务在宿主运行；其他任务通过 nspawn 运行。缺失工具时不执行插件代码。
     /// 此方法不创建版本或缓存。
     ///
     /// # Arguments
@@ -192,6 +192,16 @@ impl LoadedPlugin {
         save: Option<&mut dyn FnMut() -> crate::controller::Result<()>>,
     ) -> Result<Output> {
         let (host_path, context) = environment;
+        if super::is_account_operation(operation) {
+            return self.invoke_account(
+                operation,
+                arguments,
+                root,
+                architecture,
+                host_path,
+                context,
+            );
+        }
         if operation == "post_maintenance" && !self.metadata.post_maintenance {
             return Err(Error::Invalid(
                 "plugin does not advertise post_maintenance".into(),

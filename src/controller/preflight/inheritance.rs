@@ -1,9 +1,11 @@
 //! Diagnose the current view once, before allocating versions or running build operations.
-use super::{BuildBackend, Result, deferred::InheritanceRoot, fs as disk, inheritance};
+use super::super::{
+    BuildBackend, Error, Result, deferred::InheritanceRoot, fs as disk, inheritance,
+};
 use crate::config::{InheritanceConfig, NocowHandling, validate_inheritance_type};
 use std::{fs, path::Path};
 
-pub(super) fn inspect(
+pub(in crate::controller) fn inspect(
     backend: &impl BuildBackend,
     id: &str,
     config: &InheritanceConfig,
@@ -45,10 +47,10 @@ pub(super) fn inspect(
             let (uuid, _) = backend.filesystem_location(&resolved)?;
             match &target_uuid {
                 Ok(target) if *target == uuid => Ok(()),
-                Ok(_) => Err(super::Error::Invalid(
+                Ok(_) => Err(Error::Invalid(
                     "当前视图下来源与目标 Btrfs UUID 不一致".into(),
                 )),
-                Err(error) => Err(super::Error::Invalid(error.to_string())),
+                Err(error) => Err(Error::Invalid(error.to_string())),
             }
         })();
         if let Err(error) = check {

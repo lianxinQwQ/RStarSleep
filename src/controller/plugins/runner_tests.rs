@@ -52,6 +52,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             predownload_plans: false,
             package_maintenance: false,
             post_maintenance: false,
+            account_inheritance: None,
             package_plan: None,
             persistent_dirs: vec![],
             cache: super::super::CacheRequirements {
@@ -130,6 +131,72 @@ fn post_maintenance_requires_an_advertised_capability() {
             .contains("does not advertise post_maintenance")
     );
     assert!(!plugin.root().join("launcher-argv").exists());
+}
+
+#[test]
+fn account_checks_run_on_host_without_container_or_shared_persistent_state() {
+    let mut plugin = fixture(&["missing-bootstrap-tool"], &["missing-target-tool"]);
+    plugin.metadata.account_inheritance = Some(super::super::AccountInheritanceRequirements {
+        workdir: "accounts".into(),
+        paths: vec!["/etc/passwd".into()],
+        tools: vec![],
+    });
+    plugin.metadata.persistent_dirs = vec!["shared:state".into()];
+    fs::write(
+        plugin.root().join("account_check.sh"),
+        "printf '{\"schema_version\":1,\"consistent\":true}'\n",
+    )
+    .unwrap();
+    let output = plugin
+        .invoke_with_path(
+            "account_check",
+            &[],
+            &plugin.temporary.path().join("target"),
+            "x86_64",
+            plugin.temporary.path().join("host-bin").as_os_str(),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["consistent"],
+        true
+    );
+    assert!(!plugin.root().join("launcher-argv").exists());
+}
+
+#[test]
+fn registered_account_capability_requires_all_entries_and_bounded_paths() {
+    let mut plugin = fixture(&[], &[]);
+    plugin.metadata.account_inheritance = Some(super::super::AccountInheritanceRequirements {
+        workdir: "accounts".into(),
+        paths: vec!["/etc/passwd".into()],
+        tools: vec![],
+    });
+    assert!(super::super::validation::validate_metadata(&plugin.metadata, plugin.root()).is_err());
+    for op in ["account_prepare", "account_check", "account_apply"] {
+        fs::write(plugin.root().join(format!("{op}.sh")), "exit 0\n").unwrap();
+    }
+    super::super::validation::validate_metadata(&plugin.metadata, plugin.root()).unwrap();
+    plugin
+        .metadata
+        .account_inheritance
+        .as_mut()
+        .unwrap()
+        .workdir = "../escape".into();
+    assert!(super::super::validation::validate_metadata(&plugin.metadata, plugin.root()).is_err());
+    plugin
+        .metadata
+        .account_inheritance
+        .as_mut()
+        .unwrap()
+        .workdir = "accounts".into();
+    plugin
+        .metadata
+        .account_inheritance
+        .as_mut()
+        .unwrap()
+        .paths
+        .push("/etc/".into());
+    assert!(super::super::validation::validate_metadata(&plugin.metadata, plugin.root()).is_err());
 }
 
 /// Verify all missing host tools are reported and the entry script is never invoked.

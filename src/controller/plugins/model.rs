@@ -245,6 +245,9 @@ pub struct Metadata {
     /// 可选的软件维护后行为，在单系统用户脚本之前执行。
     #[serde(default)]
     pub post_maintenance: bool,
+    /// Optional host-side prepare/check/apply account protocol.
+    #[serde(default)]
+    pub account_inheritance: Option<AccountInheritanceRequirements>,
     /// Optional query of configured targets, base packages and runtime dependencies.
     /// 可选的配置目标、基础包及运行依赖查询。
     #[serde(default)]
@@ -283,6 +286,16 @@ pub struct Metadata {
     /// 可选的启动阶段继承准备需求。
     #[serde(default)]
     pub initramfs_inheritance: Option<ActionRequirements>,
+}
+
+/// Files and host tools used by optional distribution-specific account operations.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountInheritanceRequirements {
+    pub workdir: PathBuf,
+    pub paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 /// A loaded plugin whose temporary files live until this value is dropped.

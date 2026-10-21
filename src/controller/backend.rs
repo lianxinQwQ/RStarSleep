@@ -370,7 +370,9 @@ impl BuildBackend for SystemBackend {
         root: &Path,
         context: &BuildContext,
     ) -> Result<String> {
-        self.check_subvolume(root, false)?;
+        if !super::plugins::is_account_operation(operation) {
+            self.check_subvolume(root, false)?;
+        }
         let args: Vec<_> = args.iter().map(OsString::from).collect();
         let output = plugin.invoke_for_build(operation, &args, root, context)?;
         if super::plugins::is_query(operation)

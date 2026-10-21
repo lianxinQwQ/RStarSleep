@@ -5,6 +5,7 @@
 /// 查找并冻结 Bash 发行版插件压缩包或目录。
 pub mod plugins;
 
+mod accounts;
 mod backend;
 mod boot;
 mod cache;
@@ -19,7 +20,6 @@ mod identity;
 mod inheritance;
 mod inheritance_inputs;
 mod inheritance_migration;
-mod inheritance_preflight;
 mod initramfs;
 mod logging;
 mod model;
@@ -29,6 +29,7 @@ mod output;
 mod package_watch;
 mod persistent;
 mod predownload;
+mod preflight;
 pub(crate) mod progress;
 mod records;
 mod resources;
