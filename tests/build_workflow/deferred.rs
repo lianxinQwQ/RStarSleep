@@ -639,6 +639,13 @@ fn deferred_targets_follow_guest_directory_symlinks_inside_the_new_root() {
         .unwrap()
         .join("inheritance-pending.toml");
     let mut value: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    // Legacy manifests carry physical source-to-target mappings.
+    value["schema_version"] = toml::Value::Integer(1);
+    value.as_table_mut().unwrap().remove("source_root");
+    value["sources"][0].as_table_mut().unwrap().insert(
+        "subvolume_id".into(),
+        toml::Value::String("simulated-id".into()),
+    );
     value["sources"][0]["target"] = toml::Value::String("/lib/rstarsleep-user-test".into());
     fs::write(&manifest, toml::to_string(&value).unwrap()).unwrap();
     finalize(&outcome, &backend).unwrap();
@@ -685,6 +692,12 @@ fn boot_nocow_policy_is_frozen_and_legacy_manifests_keep_strict_default() {
         let mut manifest = record(&manifest_path);
         assert_eq!(manifest["nocow_handling"].as_str(), Some("copy"));
         if legacy {
+            manifest["schema_version"] = toml::Value::Integer(1);
+            manifest.as_table_mut().unwrap().remove("source_root");
+            manifest["sources"][0].as_table_mut().unwrap().insert(
+                "subvolume_id".into(),
+                toml::Value::String("simulated-id".into()),
+            );
             manifest.as_table_mut().unwrap().remove("nocow_handling");
             fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
         }
@@ -762,4 +775,321 @@ fn unfinished_source_migration_pins_the_source_version_during_clean() {
     .to_string();
     assert!(error.contains("继承引用"), "{error}");
     assert!(source.exists());
+}
+
+#[test]
+fn missing_boot_source_is_warned_once_and_only_scanned_at_first_boot() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let source = fixture
+        .store
+        .root()
+        .parent()
+        .unwrap()
+        .join("not-yet-created");
+    let configured = format!("{}/", source.display());
+    let config = layout.config.join("build/inherit.conf");
+    fs::write(
+        &config,
+        format!("[Inheritance]\nCopyOnWriteBoot={configured}\n"),
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    let mut reports = 0;
+    let outcome =
+        build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |warnings| {
+            reports += 1;
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains("当前视图检查未通过") && w.contains(&configured))
+            );
+            assert!(!layout.root.join("version-counter").exists());
+            assert!(backend.events.borrow().is_empty());
+            // The report and task must both use the frozen configuration.
+            fs::write(&config, "[Inheritance]\nNocowHandling=invalid\n").unwrap();
+            Ok(())
+        })
+        .unwrap()
+        .remove(0);
+    assert_eq!(reports, 1);
+    assert!(
+        !backend
+            .nested_scans
+            .borrow()
+            .iter()
+            .any(|p| p.starts_with(&source))
+    );
+    let manifest = record(
+        &outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-pending.toml"),
+    );
+    assert_eq!(manifest["schema_version"].as_integer(), Some(2));
+    assert_eq!(manifest["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        manifest["sources"][0]["path"].as_str(),
+        Some(configured.as_str())
+    );
+    assert!(finalize(&outcome, &backend).is_err());
+    assert!(
+        !outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-staging")
+            .exists()
+    );
+
+    fs::create_dir(&source).unwrap();
+    backend.create_subvolume(&source.join("nested")).unwrap();
+    backend
+        .create_subvolume(&source.join("nested/deep"))
+        .unwrap();
+    fs::write(source.join("nested/deep/data"), "created after build").unwrap();
+    finalize(&outcome, &backend).unwrap();
+    let target = outcome
+        .root
+        .parent()
+        .unwrap()
+        .join("root")
+        .join(source.strip_prefix("/").unwrap());
+    backend
+        .check_subvolume(&target.join("nested/deep"), false)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(target.join("nested/deep/data")).unwrap(),
+        "created after build"
+    );
+}
+
+#[test]
+fn boot_uuid_warning_keeps_raw_path_and_reads_below_the_fixed_source_root() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    let old_root = fixture.store.root().parent().unwrap().join("source-root");
+    backend.create_subvolume(&old_root).unwrap();
+    fs::create_dir(old_root.join("var")).unwrap();
+    fs::write(old_root.join("var/data"), "underlying data").unwrap();
+    backend
+        .filesystem_locations
+        .borrow_mut()
+        .insert("/".into(), ("simulated-uuid".into(), old_root.clone()));
+    backend.filesystem_locations.borrow_mut().insert(
+        "/var".into(),
+        ("overlay-uuid".into(), "/mounted-overlay".into()),
+    );
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        "[Inheritance]\nCopyOnWriteBoot=/var/\n",
+    )
+    .unwrap();
+    let mut reports = 0;
+    let outcome =
+        build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |warnings| {
+            reports += 1;
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains("/var/") && w.contains("UUID 不一致"))
+            );
+            Ok(())
+        })
+        .unwrap()
+        .remove(0);
+    assert_eq!(reports, 1);
+    let manifest = record(
+        &outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-pending.toml"),
+    );
+    assert_eq!(manifest["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["sources"][0]["path"].as_str(), Some("/var/"));
+    assert!(
+        !toml::to_string(&manifest)
+            .unwrap()
+            .contains("mounted-overlay")
+    );
+    assert_eq!(
+        backend
+            .filesystem_inspections
+            .borrow()
+            .iter()
+            .filter(|p| **p == Path::new("/var"))
+            .count(),
+        1
+    );
+    assert!(
+        !backend
+            .nested_scans
+            .borrow()
+            .iter()
+            .any(|p| p.starts_with(&old_root))
+    );
+    finalize(&outcome, &backend).unwrap();
+    assert_eq!(
+        fs::read_to_string(outcome.root.parent().unwrap().join("root/var/data")).unwrap(),
+        "underlying data"
+    );
+}
+
+#[test]
+fn boot_manifest_does_not_expand_existing_descendant_mounts() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    // /proc has real descendant mounts in the test host's current view.
+    let outcome = pending(&fixture, &backend, Path::new("/proc"), true);
+    let manifest = record(
+        &outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-pending.toml"),
+    );
+    assert_eq!(manifest["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["sources"][0]["path"].as_str(), Some("/proc/"));
+    assert!(
+        !backend
+            .nested_scans
+            .borrow()
+            .iter()
+            .any(|p| p.starts_with("/proc"))
+    );
+}
+
+#[test]
+fn fixed_boot_root_identity_and_source_symlinks_are_rejected_before_staging() {
+    for replace_root in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let backend = SimulatedBackend::default();
+        let old_root = fixture.store.root().parent().unwrap().join("source-root");
+        backend.create_subvolume(&old_root).unwrap();
+        backend
+            .filesystem_locations
+            .borrow_mut()
+            .insert("/".into(), ("simulated-uuid".into(), old_root.clone()));
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/inherit.conf"),
+            "[Inheritance]\nCopyOnWriteBoot=/var/\n",
+        )
+        .unwrap();
+        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap()
+            .remove(0);
+        if replace_root {
+            backend
+                .source_ids
+                .borrow_mut()
+                .insert(old_root.clone(), "replacement-id".into());
+        } else {
+            std::os::unix::fs::symlink("/var", old_root.join("var")).unwrap();
+        }
+        let error = finalize(&outcome, &backend).unwrap_err().to_string();
+        assert!(
+            error.contains(if replace_root {
+                "来源根身份已改变"
+            } else {
+                "路径不能经过链接"
+            }),
+            "{error}"
+        );
+        assert!(
+            !outcome
+                .root
+                .parent()
+                .unwrap()
+                .join("inheritance-staging")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn cleanup_pins_resolve_configuration_paths_below_the_fixed_source_root() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    fs::create_dir(first.root.join("var")).unwrap();
+    backend
+        .filesystem_locations
+        .borrow_mut()
+        .insert("/".into(), ("simulated-uuid".into(), first.root.clone()));
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        "[Inheritance]\nCopyOnWriteBoot=/var/\n",
+    )
+    .unwrap();
+    let second = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    let error = rstarsleep::controller::clean_with_backend(
+        &fixture.store,
+        "desktop",
+        &first.version,
+        &backend,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("继承引用"), "{error}");
+    assert!(first.root.exists());
+    finalize(&second, &backend).unwrap();
+}
+
+#[test]
+fn boot_source_root_on_a_different_filesystem_warns_then_refuses_finalization() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    backend
+        .filesystem_locations
+        .borrow_mut()
+        .insert("/".into(), ("foreign-root-uuid".into(), "/old-root".into()));
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        "[Inheritance]\nCopyOnWriteBoot=/var/\n",
+    )
+    .unwrap();
+    let outcome =
+        build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |warnings| {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains("来源根与目标 Btrfs UUID 不一致"))
+            );
+            Ok(())
+        })
+        .unwrap()
+        .remove(0);
+    // At boot, / models the target filesystem's top-level mount, not the running root.
+    backend
+        .filesystem_locations
+        .borrow_mut()
+        .remove(Path::new("/"));
+    let error = finalize(&outcome, &backend).unwrap_err().to_string();
+    assert!(error.contains("来源根与目标 Btrfs UUID 不一致"), "{error}");
+    assert!(
+        !outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-staging")
+            .exists()
+    );
 }

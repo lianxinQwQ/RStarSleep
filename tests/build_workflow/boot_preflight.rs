@@ -549,3 +549,69 @@ fn main_system_without_package_collection_capability_fails_before_environment_se
     no_attempt(&fixture, &backend);
     assert!(backend.events.borrow().is_empty());
 }
+
+#[test]
+fn build_inheritance_missing_or_cross_filesystem_sources_fail_before_any_attempt() {
+    for exists in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("source-file");
+        let backend = SimulatedBackend::default();
+        if exists {
+            fs::write(&source, "data").unwrap();
+            backend
+                .filesystem_locations
+                .borrow_mut()
+                .insert(source.clone(), ("other-uuid".into(), source.clone()));
+        }
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/inherit.conf"),
+            format!("[Inheritance]\nCopyOnWriteBuild={}\n", source.display()),
+        )
+        .unwrap();
+        let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+        if exists {
+            assert!(error.to_string().contains("同一 Btrfs"), "{error}");
+        }
+        no_attempt(&fixture, &backend);
+        assert!(backend.events.borrow().is_empty());
+    }
+}
+
+#[test]
+fn build_inheritance_filesystem_check_runs_once_before_operations() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let source = fixture.store.root().parent().unwrap().join("source-file");
+    fs::write(&source, "data").unwrap();
+    let backend = SimulatedBackend::default();
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBuild={}\n", source.display()),
+    )
+    .unwrap();
+    let mut reports = 0;
+    build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |_| {
+        reports += 1;
+        assert_eq!(
+            backend.cow_checks.borrow().as_slice(),
+            std::slice::from_ref(&source)
+        );
+        no_attempt(&fixture, &backend);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(reports, 1);
+    assert_eq!(
+        backend
+            .cow_checks
+            .borrow()
+            .iter()
+            .filter(|p| **p == source)
+            .count(),
+        1
+    );
+}

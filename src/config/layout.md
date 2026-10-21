@@ -50,7 +50,7 @@ Btrfs 顶层/
             │       ├── config/         # 构建时配置留档，结构同当前 config/
             │       ├── application-files.tsv # 可选，包所属文件候选索引
             │       ├── prepared-root/  # 可选，首次启动继承前的独立只读根
-            │       ├── inheritance-pending.toml # 可选，固定来源及目标身份
+            │       ├── inheritance-pending.toml # 可选，原配置路径、来源根及目标身份
             │       ├── inheritance-commit.toml  # 可选，最终根及全部子卷提交记录
             │       └── root/           # 可写系统父根及全部内部子卷
             ├── cache/
@@ -423,6 +423,9 @@ Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn �
 CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，在新建的 `script-root` 中继承当前运行系统，
 随后才执行 `post_maintenance` 和用户脚本，结果保存在 `script` 缓存；CopyOnWriteBoot 在版本首次启动时继承。
 两份列表可同时配置，分别执行，按 Btrfs UUID 检查同一文件系统。
+构建开始先按冻结配置检查：CopyOnWriteBuild 失败立即退出；CopyOnWriteBoot 的显式路径在
+当前视图中不存在、类型不符或 UUID 不一致仅警告。继承提示共用一次三秒取消等待，
+不在后续构建阶段重复当前视图检查。
 目录默认子卷化，已有来源子卷直接递归快照；`DirectorySubvolume=no` 可关闭最外层子卷化。
 保存阶段缓存、恢复及发布根均显式处理全部内部子卷；缓存封存为只读，工作根与最终版本根可写。
 `NocowHandling=error|reflink|copy|move-snapshot` 是统一枚举，默认 `error`，策略之间不会自动降级。
@@ -433,7 +436,9 @@ CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，在新�
 策略固定在构建输入和启动清单中，详情见 [首次启动继承](../../docs/initramfs-inheritance.md)。
 
 CopyOnWriteBoot 非空时，构建继承结果保存在准备根中，启动列表单独写入清单，在主系统首次
-启动的 initramfs 或子系统启动准备阶段完成继承；准备根与清单随版本保存，
+启动的 initramfs 或子系统启动准备阶段完成继承。新清单逐项保留配置原路径并固定当前来源根身份，
+生成时不扫描来源目录或展开后代挂载；实际启动才在来源根的底层视图解析路径，发现并递归快照
+嵌套子卷，子卷无需分别挂载。准备根与清单随版本保存，
 不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见
 [首次启动继承](../../docs/initramfs-inheritance.md)。
 

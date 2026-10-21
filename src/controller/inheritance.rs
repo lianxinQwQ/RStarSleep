@@ -24,13 +24,11 @@ pub(super) struct Inherited {
 /// - `backend`: CoW and plugin backend. CoW 及插件后端。
 /// - `context`: Frozen current build inputs. 冻结的当前构建输入。
 /// - `root`: Writable pre-script root. 脚本前的可写根。
-/// - `scratch`: Current attempt scratch directory. 当前尝试的临时目录。
 /// - `system`: Owning managed-system directory. 所属被管理系统目录。
 pub(super) fn apply_build(
     backend: &impl BuildBackend,
     context: &BuildContext,
     root: &Path,
-    scratch: &Path,
     system: &Path,
 ) -> Result<bool> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
@@ -54,7 +52,6 @@ pub(super) fn apply_build(
         let resolved = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
         let directory = check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
-        backend.check_cow_source(&resolved, scratch)?;
         if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
             super::inheritance_migration::prepare(backend, &resolved, manager, "build", None)?;
         }

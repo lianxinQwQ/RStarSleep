@@ -27,8 +27,12 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
     }
     let (root, system) = parse(arguments)?;
     let store = ConfigStore::new(root)?;
-    warn_inheritance(&store, system.as_deref())?;
-    for outcome in crate::controller::build(&store, system.as_deref())? {
+    for outcome in crate::controller::build_with_backend_and_warning(
+        &store,
+        system.as_deref(),
+        &crate::controller::SystemBackend,
+        warn_inheritance,
+    )? {
         println!(
             "{}: {} -> {}",
             outcome.system_id,
@@ -40,41 +44,28 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
 }
 
 /// Warn before the controller allocates versions or invalidates caches.
-fn warn_inheritance(store: &ConfigStore, system: Option<&str>) -> super::Result<()> {
+fn warn_inheritance(warnings: &[String]) -> crate::controller::Result<()> {
     use std::io::Write;
-    let systems = match system {
-        Some(id) => vec![id.to_owned()],
-        None => store.list_systems()?,
-    };
-    let mut warnings = Vec::new();
-    for id in systems {
-        let layout = store.system_layout(&id)?;
-        let parameters = crate::config::read_plugin_parameters_at(&layout.config)?;
-        let config = crate::config::InheritanceConfig::read(&parameters)?;
-        if !config.copy_on_write_build.is_empty() || !config.copy_on_write_boot.is_empty() {
-            warnings.push(format!(
-                "警告：系统 {id} 将在构建时继承 {:?}，首次启动时继承 {:?}；DirectorySubvolume={}，NocowHandling={}。\n继承路径不设黑名单，内容及兼容性由用户负责；启动时继承使用的内核与启动镜像固定为构建时产物。\nWarning: system {id} will inherit the paths above at build time and first boot, respectively, with the listed directory subvolume setting. Inherited content and compatibility are user-managed; boot-time inheritance uses the kernel and boot image produced by this build.\n",
-                config.copy_on_write_build, config.copy_on_write_boot,
-                if config.directory_subvolume { "yes" } else { "no" }, config.nocow_handling));
-            if config.nocow_handling == crate::config::NocowHandling::MoveSnapshot {
-                warnings.push("NocowHandling=move-snapshot 会将普通来源目录转换为子卷，并可能进行完整复制。该操作修改实际来源，要求来源离线且已停止写入。 / Converts actual offline source directories into subvolumes; migration may fully copy data.\n".into());
+    let report = || -> std::io::Result<()> {
+        if !warnings.is_empty() {
+            let mut stderr = std::io::stderr().lock();
+            for warning in warnings {
+                writeln!(stderr, "{warning}")?;
             }
+            writeln!(
+                stderr,
+                "将在 3 秒后开始构建；按 Ctrl+C 取消。 / Build starts in 3 seconds; press Ctrl+C to cancel."
+            )?;
+            stderr.flush()?;
+            drop(stderr);
+            std::thread::sleep(std::time::Duration::from_secs(3));
         }
-    }
-    if !warnings.is_empty() {
-        let mut stderr = std::io::stderr().lock();
-        for warning in warnings {
-            write!(stderr, "{warning}")?;
-        }
-        writeln!(
-            stderr,
-            "将在 3 秒后开始构建；按 Ctrl+C 取消。 / Build starts in 3 seconds; press Ctrl+C to cancel."
-        )?;
-        stderr.flush()?;
-        drop(stderr);
-        std::thread::sleep(std::time::Duration::from_secs(3));
-    }
-    Ok(())
+        Ok(())
+    };
+    report().map_err(|source| crate::controller::Error::Io {
+        path: "stderr".into(),
+        source,
+    })
 }
 
 /// Validate selection while preserving native bytes in an optional manager path.

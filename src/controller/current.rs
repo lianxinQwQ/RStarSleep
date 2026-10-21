@@ -51,14 +51,8 @@ fn validate_state(system: &Path, current: &CurrentBuild) -> Result<()> {
         Some("complete") => directory.join("root"),
         Some("pending-inheritance") => {
             let manifest = directory.join("inheritance-pending.toml");
-            disk::checked(&manifest)?;
-            let pending: super::deferred::PendingInheritance =
-                toml::from_str(&fs::read_to_string(&manifest).map_err(|e| disk::io(&manifest, e))?)
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-            if pending.schema_version != 1
-                || pending.system_id != current.system_id
-                || pending.version != current.version
-            {
+            let pending = super::deferred::read_manifest(&manifest)?;
+            if pending.system_id != current.system_id || pending.version != current.version {
                 return Err(Error::Invalid("当前产物待办身份不匹配".into()));
             }
             directory.join("prepared-root")

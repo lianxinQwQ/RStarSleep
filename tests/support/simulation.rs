@@ -46,6 +46,11 @@ pub struct SnapshotEvent {
 
 #[derive(Default)]
 pub struct SimulatedBackend {
+    pub filesystem_locations: RefCell<BTreeMap<PathBuf, (String, PathBuf)>>,
+    pub source_ids: RefCell<BTreeMap<PathBuf, String>>,
+    pub filesystem_inspections: RefCell<Vec<PathBuf>>,
+    pub nested_scans: RefCell<Vec<PathBuf>>,
+    pub cow_checks: RefCell<Vec<PathBuf>>,
     pub events: RefCell<Vec<Event>>,
     pub running_root: RefCell<Option<PathBuf>>,
     pub fail_inheritance_copy: Cell<bool>,
@@ -326,7 +331,15 @@ impl BuildBackend for SimulatedBackend {
         Ok(())
     }
     fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
-        Ok(("simulated-uuid".into(), path.to_path_buf()))
+        self.filesystem_inspections
+            .borrow_mut()
+            .push(path.to_path_buf());
+        Ok(self
+            .filesystem_locations
+            .borrow()
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| ("simulated-uuid".into(), path.to_path_buf())))
     }
     fn copy_inherited(&self, source: &Path, target: &Path, _force_cow: bool) -> Result<()> {
         if self.fail_inheritance_copy.replace(false) {
@@ -352,16 +365,26 @@ impl BuildBackend for SimulatedBackend {
         self.inheritance_policies.borrow_mut().push(policy);
         self.copy_inherited(source, target, true)
     }
-    fn check_cow_source(&self, _source: &Path, _parent: &Path) -> Result<()> {
+    fn check_cow_source(&self, source: &Path, parent: &Path) -> Result<()> {
+        self.cow_checks.borrow_mut().push(source.to_path_buf());
+        if self.filesystem_location(source)?.0 != self.filesystem_location(parent)?.0 {
+            return Err(Error::Invalid("CoW 继承必须位于同一 Btrfs 文件系统".into()));
+        }
         Ok(())
     }
-    fn source_subvolume_id(&self, _path: &Path) -> Result<String> {
-        Ok("simulated-id".into())
+    fn source_subvolume_id(&self, path: &Path) -> Result<String> {
+        Ok(self
+            .source_ids
+            .borrow()
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| "simulated-id".into()))
     }
     fn prepare_inheritance_initramfs(&self, _root: &Path) -> Result<()> {
         Ok(())
     }
     fn nested_subvolumes(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.nested_scans.borrow_mut().push(path.to_path_buf());
         let mut pending = vec![path.to_path_buf()];
         let mut found = Vec::new();
         while let Some(directory) = pending.pop() {

@@ -859,6 +859,7 @@ mod tests {
         backend.set_readonly(&prepared, true).unwrap();
         let manifest = PendingInheritance {
             schema_version: 1,
+            source_root: None,
             system_id: "desktop".into(),
             version: version.into(),
             filesystem_uuid: "test-uuid".into(),
@@ -886,68 +887,89 @@ mod tests {
 
     #[test]
     fn boot_migration_retries_only_with_original_manifest_and_preserves_readonly_children() {
-        let Some(fixture) = Fixture::new() else {
-            return;
-        };
-        let backend = TestBackend::default();
-        let child = fixture.source.join("nested");
-        backend.create_subvolume(&child).unwrap();
-        fs::write(child.join("data"), "nested subvolume data").unwrap();
-        backend.set_readonly(&child, true).unwrap();
-        let manifest = pending_fixture(&fixture, &backend, "v00000001");
-        let original = fs::read_to_string(&manifest).unwrap();
-        backend.fail_after_exchange.set(true);
-        let first_error = super::super::deferred::finalize_inheritance_with_backend(
-            &manifest,
-            Path::new("/"),
-            &backend,
-        )
-        .unwrap_err();
-        assert!(
-            first_error
-                .to_string()
-                .contains("injected failure after exchange"),
-            "{first_error}"
-        );
-        assert!(!manifest.parent().unwrap().join("root").exists());
-        backend.check_subvolume(&fixture.source, false).unwrap();
-        backend.check_subvolume(&child, true).unwrap();
-        fs::write(&manifest, format!("{original}\n# edited task\n")).unwrap();
-        assert!(
+        for schema in [1, 2] {
+            let Some(fixture) = Fixture::new() else {
+                return;
+            };
+            let backend = TestBackend::default();
+            let child = fixture.source.join("nested");
+            backend.create_subvolume(&child).unwrap();
+            fs::write(child.join("data"), "nested subvolume data").unwrap();
+            backend.set_readonly(&child, true).unwrap();
+            let manifest = pending_fixture(&fixture, &backend, "v00000001");
+            if schema == 2 {
+                use super::super::deferred::{InheritanceRoot, PendingInheritance};
+                let mut task: PendingInheritance =
+                    toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+                task.schema_version = 2;
+                task.source_root = Some(InheritanceRoot {
+                    filesystem_uuid: "test-uuid".into(),
+                    path: fixture.root.clone(),
+                    subvolume_id: backend.source_subvolume_id(&fixture.root).unwrap(),
+                });
+                task.sources[0].path = "/source/".into();
+                task.sources[0].target = "/source/".into();
+                task.sources[0].subvolume_id.clear();
+                disk::write(&manifest, &task).unwrap();
+            }
+            let original = fs::read_to_string(&manifest).unwrap();
+            backend.fail_after_exchange.set(true);
+            let first_error = super::super::deferred::finalize_inheritance_with_backend(
+                &manifest,
+                Path::new("/"),
+                &backend,
+            )
+            .unwrap_err();
+            assert!(
+                first_error
+                    .to_string()
+                    .contains("injected failure after exchange"),
+                "{first_error}"
+            );
+            assert!(!manifest.parent().unwrap().join("root").exists());
+            backend.check_subvolume(&fixture.source, false).unwrap();
+            backend.check_subvolume(&child, true).unwrap();
+            fs::write(&manifest, format!("{original}\n# edited task\n")).unwrap();
+            assert!(
+                super::super::deferred::finalize_inheritance_with_backend(
+                    &manifest,
+                    Path::new("/"),
+                    &backend
+                )
+                .is_err()
+            );
+            fs::write(&manifest, &original).unwrap();
             super::super::deferred::finalize_inheritance_with_backend(
                 &manifest,
                 Path::new("/"),
-                &backend
+                &backend,
             )
-            .is_err()
-        );
-        fs::write(&manifest, &original).unwrap();
-        super::super::deferred::finalize_inheritance_with_backend(
-            &manifest,
-            Path::new("/"),
-            &backend,
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
-        let inherited = manifest.parent().unwrap().join("root/var");
-        backend.check_subvolume(&inherited, false).unwrap();
-        backend
-            .check_subvolume(&inherited.join("nested"), false)
             .unwrap();
-        assert_eq!(
-            fs::read(inherited.join("nested/data")).unwrap(),
-            b"nested subvolume data"
-        );
-        // Fixture cleanup includes prepared/final native readonly subvolumes.
-        for child in backend
-            .nested_subvolumes(&fixture.manager)
-            .unwrap()
-            .iter()
-            .rev()
-        {
+            assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
+            let inherited = manifest.parent().unwrap().join(if schema == 1 {
+                "root/var"
+            } else {
+                "root/source"
+            });
+            backend.check_subvolume(&inherited, false).unwrap();
             backend
-                .set_readonly(&fixture.manager.join(child), false)
+                .check_subvolume(&inherited.join("nested"), false)
                 .unwrap();
+            assert_eq!(
+                fs::read(inherited.join("nested/data")).unwrap(),
+                b"nested subvolume data"
+            );
+            // Fixture cleanup includes prepared/final native readonly subvolumes.
+            for child in backend
+                .nested_subvolumes(&fixture.manager)
+                .unwrap()
+                .iter()
+                .rev()
+            {
+                backend
+                    .set_readonly(&fixture.manager.join(child), false)
+                    .unwrap();
+            }
         }
     }
 

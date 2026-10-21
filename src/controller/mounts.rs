@@ -117,28 +117,6 @@ fn check_mount_tree(source: &Path, include_self: bool) -> Result<()> {
     Ok(())
 }
 
-/// Preserve mount overlays as separately pinned offline sources.
-pub(super) fn descendant_mounts(source: &Path) -> Result<Vec<PathBuf>> {
-    let text = std::fs::read_to_string("/proc/self/mountinfo")
-        .map_err(|e| fs::io(Path::new("/proc/self/mountinfo"), e))?;
-    let mut result = Vec::new();
-    for line in text.lines() {
-        let target = line
-            .split_whitespace()
-            .nth(4)
-            .ok_or_else(|| Error::Invalid("mountinfo 响应无效".into()))?
-            .replace("\\040", " ")
-            .replace("\\011", "\t")
-            .replace("\\012", "\n")
-            .replace("\\134", "\\");
-        let target = PathBuf::from(target);
-        if target != source && target.starts_with(source) {
-            result.push(target);
-        }
-    }
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

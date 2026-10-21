@@ -94,7 +94,6 @@ pub(super) fn freeze(
             let source = fs::canonicalize(unmarked).map_err(|e| disk::io(target, e))?;
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
-            backend.check_cow_source(&source, scratch)?;
             if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
                 super::inheritance_migration::prepare(backend, &source, manager, "build", None)?;
             }

@@ -46,6 +46,18 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
         self.backend.copy_inherited(source, target, force_cow)
     }
+    fn copy_inherited_with_policy(
+        &self,
+        source: &Path,
+        target: &Path,
+        policy: crate::config::NocowHandling,
+    ) -> Result<()> {
+        self.backend
+            .copy_inherited_with_policy(source, target, policy)
+    }
+    fn check_migration_source(&self, source: &Path) -> Result<()> {
+        self.backend.check_migration_source(source)
+    }
     fn check_cow_source(&self, source: &Path, parent: &Path) -> Result<()> {
         self.backend.check_cow_source(source, parent)
     }

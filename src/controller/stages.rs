@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 /// Shared immutable inputs for the independently committed stage workflows.
 /// 独立提交阶段流程共享的不可变输入。
 pub(super) struct Stages<'a, B: BuildBackend> {
+    /// Stable root view captured without traversing boot inheritance sources.
+    pub(super) source_root: Option<&'a super::deferred::InheritanceRoot>,
     /// Required CoW storage and checked execution.
     /// 必需 CoW 存储和经检查执行。
     pub(super) backend: &'a B,
@@ -474,7 +476,6 @@ impl<B: BuildBackend> Stages<'_, B> {
                 self.backend,
                 self.context,
                 &root,
-                self.scratch,
                 &self.attempt.layout.root,
             )?
         };
@@ -630,7 +631,13 @@ impl<B: BuildBackend> Stages<'_, B> {
                 "Save the read-only prepared snapshot and boot-time inheritance task",
             );
             self.backend.snapshot_recursive(&root, &prepared, true)?;
-            super::deferred::prepare(self.backend, self.context, &config, &prepared)?;
+            super::deferred::prepare(
+                self.backend,
+                self.context,
+                &config,
+                &prepared,
+                self.source_root,
+            )?;
             return Ok(BuildOutcome {
                 system_id: self.context.system_id.clone(),
                 version: self.attempt.version.clone(),

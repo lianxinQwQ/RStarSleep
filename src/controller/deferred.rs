@@ -21,7 +21,18 @@ pub struct PendingInheritance {
     pub directory_subvolume: bool,
     #[serde(default)]
     pub nocow_handling: NocowHandling,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root: Option<InheritanceRoot>,
     pub sources: Vec<InheritanceSource>,
+}
+
+/// Fixed root view; configured paths are resolved below it only at first boot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InheritanceRoot {
+    pub filesystem_uuid: String,
+    pub path: PathBuf,
+    pub subvolume_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,6 +40,7 @@ pub struct PendingInheritance {
 pub struct InheritanceSource {
     pub path: PathBuf,
     pub target: PathBuf,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub subvolume_id: String,
     pub directory: bool,
 }
@@ -38,6 +50,7 @@ pub(super) fn prepare(
     context: &BuildContext,
     config: &InheritanceConfig,
     prepared: &Path,
+    source_root: Option<&InheritanceRoot>,
 ) -> Result<()> {
     let (uuid, prepared_root) = backend.filesystem_location(prepared)?;
     let directory = prepared
@@ -51,59 +64,20 @@ pub(super) fn prepare(
         .and_then(Path::parent)
         .ok_or_else(|| Error::Invalid("准备版本缺少管理根".into()))?;
     let _pins_lock = super::records::lock_inheritance(manager)?;
-    let mut sources = Vec::new();
-    for source in &config.copy_on_write_boot {
-        let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-        let physical = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
-        let info = fs::symlink_metadata(&physical).map_err(|e| disk::io(&physical, e))?;
-        validate_inheritance_type(source, info.is_dir())?;
-        let mut paths = vec![physical.clone()];
-        paths.extend(super::mounts::descendant_mounts(&physical)?);
-        paths.sort_by_key(|p| (p.components().count(), p.clone()));
-        paths.dedup();
-        for path in paths {
-            disk::checked(&path)?;
-            let info = fs::symlink_metadata(&path).map_err(|e| disk::io(&path, e))?;
-            if !info.is_file() && !info.is_dir() {
-                return Err(Error::Invalid(format!(
-                    "继承来源必须为普通文件或目录: {}",
-                    path.display()
-                )));
-            }
-            let (source_uuid, location) = backend.filesystem_location(&path)?;
-            if uuid != source_uuid {
-                return Err(Error::Invalid(format!(
-                    "CoW 继承必须位于同一 Btrfs 文件系统: {}",
-                    path.display()
-                )));
-            }
-            if location.starts_with(&final_root) || final_root.starts_with(&location) {
-                return Err(Error::Invalid("继承来源与候选版本存储重叠".into()));
-            }
-            let mut target = {
-                let relative = path
-                    .strip_prefix(&physical)
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-                if relative.as_os_str().is_empty() {
-                    source.clone()
-                } else {
-                    source.join(relative)
-                }
-            };
-            // Generated mappings for descendant mounts carry the same type syntax.
-            if info.is_dir() {
-                target.push("");
-            }
-            sources.push(InheritanceSource {
-                path: location,
-                target,
-                subvolume_id: backend.source_subvolume_id(&path)?,
-                directory: info.is_dir(),
-            });
-        }
-    }
+    // Never inspect configured sources here: missing paths and today's mount overlays
+    // do not describe the clean source tree that will be available at first boot.
+    let sources = config
+        .copy_on_write_boot
+        .iter()
+        .map(|source| InheritanceSource {
+            path: source.clone(),
+            target: source.clone(),
+            subvolume_id: String::new(),
+            directory: source.as_os_str().as_encoded_bytes().ends_with(b"/"),
+        })
+        .collect();
     let manifest = PendingInheritance {
-        schema_version: 1,
+        schema_version: 2,
         system_id: context.system_id.clone(),
         version: directory
             .file_name()
@@ -116,12 +90,13 @@ pub(super) fn prepare(
         final_root: final_root.join("root"),
         directory_subvolume: config.directory_subvolume,
         nocow_handling: config.nocow_handling,
+        source_root: source_root.cloned(),
         sources,
     };
     disk::write(&directory.join("inheritance-pending.toml"), &manifest)
 }
 
-fn top_path(top: &Path, location: &Path) -> Result<PathBuf> {
+fn validate_top_location(location: &Path) -> Result<()> {
     if !location.is_absolute()
         || location
             .components()
@@ -129,12 +104,17 @@ fn top_path(top: &Path, location: &Path) -> Result<PathBuf> {
     {
         return Err(Error::Invalid("继承清单中的文件系统路径无效".into()));
     }
+    Ok(())
+}
+
+fn top_path(top: &Path, location: &Path) -> Result<PathBuf> {
+    validate_top_location(location)?;
     let path = top.join(location.strip_prefix("/").unwrap());
     disk::checked(&path)?;
     Ok(path)
 }
 
-fn read_manifest(path: &Path) -> Result<PendingInheritance> {
+pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
     disk::checked(path)?;
     if !fs::symlink_metadata(path)
         .map_err(|e| disk::io(path, e))?
@@ -145,8 +125,28 @@ fn read_manifest(path: &Path) -> Result<PendingInheritance> {
     let text = fs::read_to_string(path).map_err(|e| disk::io(path, e))?;
     let manifest: PendingInheritance =
         toml::from_str(&text).map_err(|e| Error::Invalid(e.to_string()))?;
-    if manifest.schema_version != 1 || manifest.sources.is_empty() {
+    if !matches!(manifest.schema_version, 1 | 2) || manifest.sources.is_empty() {
         return Err(Error::Invalid("待继承清单格式或来源无效".into()));
+    }
+    if manifest.schema_version == 1 && manifest.source_root.is_some() {
+        return Err(Error::Invalid("旧继承清单不能指定来源根".into()));
+    }
+    if manifest.schema_version == 2 {
+        if let Some(root) = &manifest.source_root {
+            validate_top_location(&root.path)?;
+            if root.filesystem_uuid.is_empty() || root.subvolume_id.is_empty() {
+                return Err(Error::Invalid("来源根身份无效".into()));
+            }
+        }
+        for source in &manifest.sources {
+            crate::config::inheritance_name(&source.path)?;
+            validate_inheritance_type(&source.target, source.directory)?;
+            if source.path.as_os_str() != source.target.as_os_str()
+                || !source.subvolume_id.is_empty()
+            {
+                return Err(Error::Invalid("启动清单必须保留配置原路径".into()));
+            }
+        }
     }
     if manifest.nocow_handling == NocowHandling::MoveSnapshot && !manifest.directory_subvolume {
         return Err(Error::Invalid(
@@ -269,19 +269,42 @@ pub fn finalize_inheritance_locked(
     if disk::exists(&staging)? {
         backend.delete_subvolume_recursive(&staging)?;
     }
+    let source_root = if manifest.schema_version == 2 {
+        let root = manifest.source_root.as_ref().ok_or_else(|| {
+            Error::Invalid("构建时无法固定启动继承来源根，请在 Btrfs 来源根环境重新构建".into())
+        })?;
+        if root.filesystem_uuid != manifest.filesystem_uuid {
+            return Err(Error::Invalid(
+                "启动继承来源根与目标 Btrfs UUID 不一致".into(),
+            ));
+        }
+        let path = top_path(filesystem_root, &root.path)?;
+        if !path.is_dir() || backend.source_subvolume_id(&path)? != root.subvolume_id {
+            return Err(Error::Invalid("启动继承来源根身份已改变".into()));
+        }
+        Some(path)
+    } else {
+        None
+    };
     // Validate every source before creating or modifying a destination.
     let mut sources = Vec::new();
     for source in &manifest.sources {
         crate::config::inheritance_name(&source.target)?;
         validate_inheritance_type(&source.target, source.directory)?;
-        let path = top_path(filesystem_root, &source.path)?;
+        let path = if let Some(root) = &source_root {
+            top_path(root, &source.path)?
+        } else {
+            top_path(filesystem_root, &source.path)?
+        };
         if path.starts_with(directory) || directory.starts_with(&path) {
             return Err(Error::Invalid("继承来源与候选版本存储重叠".into()));
         }
         let info = fs::symlink_metadata(&path).map_err(|e| disk::io(&path, e))?;
-        if info.is_dir() != source.directory
-            || (!info.is_dir() && !info.is_file())
-            || !(if manifest.nocow_handling == NocowHandling::MoveSnapshot && source.directory {
+        validate_inheritance_type(&source.target, info.is_dir())?;
+        // Schema 1 pins each resolved source; schema 2 pins only its root view.
+        // Sources (including newly created subvolumes) are discovered at first boot.
+        let identity_valid = manifest.schema_version == 2
+            || if manifest.nocow_handling == NocowHandling::MoveSnapshot && source.directory {
                 super::inheritance_migration::validates_identity(
                     backend,
                     &path,
@@ -291,7 +314,10 @@ pub fn finalize_inheritance_locked(
                 )?
             } else {
                 backend.source_subvolume_id(&path)? == source.subvolume_id
-            })
+            };
+        if info.is_dir() != source.directory
+            || (!info.is_dir() && !info.is_file())
+            || !identity_valid
         {
             return Err(Error::Invalid(format!(
                 "来源类型或子卷身份已改变: {}",
@@ -449,10 +475,21 @@ pub(super) fn pinned_sources_one(directory: &Path) -> Result<Vec<PathBuf>> {
     ) {
         return Ok(Vec::new());
     }
-    Ok(read_manifest(&directory.join("inheritance-pending.toml"))?
+    let manifest = read_manifest(&directory.join("inheritance-pending.toml"))?;
+    if manifest.schema_version == 1 {
+        return Ok(manifest.sources.into_iter().map(|s| s.path).collect());
+    }
+    let Some(root) = manifest.source_root else {
+        return Ok(Vec::new());
+    };
+    if root.filesystem_uuid != manifest.filesystem_uuid {
+        return Ok(Vec::new()); // No source on this filesystem; boot will reject the mismatch.
+    }
+    // Lexical resolution only: these paths belong to the top-level view, not today's mounts.
+    Ok(manifest
         .sources
         .into_iter()
-        .map(|s| s.path)
+        .map(|s| root.path.join(s.path.strip_prefix("/").unwrap()))
         .collect())
 }
 

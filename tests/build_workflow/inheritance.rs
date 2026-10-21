@@ -285,9 +285,23 @@ fn inheritance_rejects_mismatched_directory_markers_before_publication() {
             )
             .unwrap();
             let backend = SimulatedBackend::default();
-            let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            let result = build_with_backend(&fixture.store, Some("desktop"), &backend);
+            let error = if key == "CopyOnWriteBoot" {
+                let outcome = result.unwrap().remove(0);
+                rstarsleep::controller::finalize_inheritance_with_backend(
+                    &outcome
+                        .root
+                        .parent()
+                        .unwrap()
+                        .join("inheritance-pending.toml"),
+                    std::path::Path::new("/"),
+                    &backend,
+                )
                 .unwrap_err()
-                .to_string();
+                .to_string()
+            } else {
+                result.unwrap_err().to_string()
+            };
             assert!(
                 error.contains(if directory {
                     "继承目录路径必须以 / 结尾"

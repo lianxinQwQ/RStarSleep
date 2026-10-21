@@ -19,6 +19,7 @@ mod identity;
 mod inheritance;
 mod inheritance_inputs;
 mod inheritance_migration;
+mod inheritance_preflight;
 mod initramfs;
 mod logging;
 mod model;
@@ -44,7 +45,7 @@ pub use dedup::DedupOutcome;
 pub use deferred::finalize_inheritance_locked;
 pub use deferred::{finalize_inheritance, finalize_inheritance_with_backend};
 pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount, Result};
-pub use workflow::{build, build_with_backend};
+pub use workflow::{build, build_with_backend, build_with_backend_and_warning};
 
 /// Acquire the shared build, startup and cleanup system lock.
 /// 获取构建、启动和清理共用的系统锁。

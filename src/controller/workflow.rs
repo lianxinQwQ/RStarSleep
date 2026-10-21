@@ -49,6 +49,24 @@ pub fn build_with_backend(
     system: Option<&str>,
     backend: &impl BuildBackend,
 ) -> Result<Vec<BuildOutcome>> {
+    build_with_backend_and_warning(store, system, backend, |warnings| {
+        for warning in warnings {
+            logging::diagnostic(warning);
+        }
+        Ok(())
+    })
+}
+
+/// Build with a single warning callback after frozen-input preflight and before any attempt.
+/// 在冻结配置预检后、分配任何构建版本前统一报告警告；调用者可在此等待或取消。
+/// # Errors
+/// Returns preflight, warning callback or build failures.
+pub fn build_with_backend_and_warning(
+    store: &ConfigStore,
+    system: Option<&str>,
+    backend: &impl BuildBackend,
+    mut warning: impl FnMut(&[String]) -> Result<()>,
+) -> Result<Vec<BuildOutcome>> {
     let systems = if let Some(id) = system {
         store.system_layout(id)?;
         vec![id.to_owned()]
@@ -72,6 +90,7 @@ pub fn build_with_backend(
     let mut dedup_sources = Vec::new();
     let mut failures = Vec::new();
     let mut pending = Vec::new();
+    let mut warnings = Vec::new();
     let system_count = systems.len();
     for (index, id) in systems.into_iter().enumerate() {
         let checked = (|| {
@@ -84,7 +103,7 @@ pub fn build_with_backend(
                     "Prepare configuration and check caches ({}/{system_count})",
                     index + 1
                 ),
-                || check_system(store, &id, &runtime, inputs),
+                || check_system(store, &id, &runtime, inputs, &backend, &work, &mut warnings),
             )
         })();
         match checked {
@@ -92,6 +111,9 @@ pub fn build_with_backend(
             Err(error) if system.is_some() => return Err(error),
             Err(error) => failures.push(format!("{id}: {error}")),
         }
+    }
+    if !warnings.is_empty() {
+        warning(&warnings)?;
     }
     let collection_failures = collect_plans(store, &backend, &runtime, &mut pending);
     let mut rejected = std::collections::BTreeSet::new();
@@ -363,6 +385,7 @@ struct Prepared {
     package_plan: Option<crate::software::PackagePlan>,
     reuse_minutes: u64,
     deduplicate_packages: bool,
+    source_root: Option<super::deferred::InheritanceRoot>,
 }
 
 type DownloadGroup = (
@@ -380,6 +403,7 @@ struct Pending {
     package_plan: Option<crate::software::PackagePlan>,
     reuse_minutes: u64,
     deduplicate_packages: bool,
+    source_root: Option<super::deferred::InheritanceRoot>,
 }
 
 fn collect_plan(
@@ -433,6 +457,9 @@ fn check_system(
     id: &str,
     runtime: &crate::config::RuntimeConfig,
     inputs: Preflight,
+    backend: &impl BuildBackend,
+    work: &Path,
+    warnings: &mut Vec<String>,
 ) -> Result<Pending> {
     progress::message(
         id,
@@ -461,6 +488,14 @@ fn check_system(
     plugin.validate_parameter_lists(&input)?;
     let inheritance = crate::config::InheritanceConfig::read(&input)?;
     validate_boot_capabilities(id, runtime, &inheritance, &plugin)?;
+    let source_root = super::inheritance_preflight::inspect(
+        backend,
+        id,
+        &inheritance,
+        &store.system_layout(id)?.root,
+        work,
+        warnings,
+    )?;
     for warning in &plugin.discovery_warnings {
         logging::diagnostic(warning);
     }
@@ -507,6 +542,7 @@ fn check_system(
         package_plan: None,
         reuse_minutes,
         deduplicate_packages,
+        source_root,
     })
 }
 
@@ -660,6 +696,7 @@ fn prepare_system(
         package_plan,
         reuse_minutes,
         deduplicate_packages,
+        source_root,
     } = pending;
     let _log = logging::enter([inputs.log.clone()]);
     let id = context.system_id.clone();
@@ -768,6 +805,7 @@ fn prepare_system(
             package_plan,
             reuse_minutes,
             deduplicate_packages,
+            source_root,
         }),
         Err(error) => {
             status(
@@ -948,6 +986,7 @@ fn build_system(
             reuse_minutes: prepared.reuse_minutes,
             deduplicate_packages: prepared.deduplicate_packages,
             dedup_sources,
+            source_root: prepared.source_root.as_ref(),
         };
         let outcome = stages.run(base, packages, scripts, &mut owned)?;
         let source = if prepared.deduplicate_packages {
