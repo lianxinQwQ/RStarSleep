@@ -4,7 +4,8 @@ use super::{
     BuildBackend, BuildContext, Error, Result, fs as disk, plugins::LoadedPlugin, progress,
 };
 use crate::config::{
-    DEFAULT_MOUNT_POINT, InheritanceConfig, inheritance_name, validate_inheritance_type,
+    DEFAULT_MOUNT_POINT, InheritanceConfig, NocowHandling, inheritance_name,
+    validate_inheritance_type,
 };
 use std::{
     fs,
@@ -34,6 +35,15 @@ pub(super) fn apply_build(
 ) -> Result<bool> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
+    let manager = system
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("继承缺少管理根".into()))?;
+    let _migration_lock = if config.nocow_handling == NocowHandling::MoveSnapshot {
+        Some(super::records::lock_inheritance(manager)?)
+    } else {
+        None
+    };
     for source in &config.copy_on_write_build {
         progress::message(
             &context.system_id,
@@ -45,11 +55,15 @@ pub(super) fn apply_build(
         let directory = check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
         backend.check_cow_source(&resolved, scratch)?;
+        if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
+            super::inheritance_migration::prepare(backend, &resolved, manager, "build", None)?;
+        }
         inherit_path(
             backend,
             &resolved,
             &disk::guest_path(root, source)?,
             config.directory_subvolume,
+            config.nocow_handling,
         )?;
     }
     Ok(!config.copy_on_write_build.is_empty())
@@ -316,6 +330,11 @@ fn replace_target(backend: &impl BuildBackend, target: &Path) -> Result<()> {
     )
 }
 
+/// Remove only a validated owned tree, including any nested subvolumes.
+pub(super) fn remove_tree(backend: &impl BuildBackend, target: &Path) -> Result<()> {
+    replace_target(backend, target)
+}
+
 /// Seed a missing persistent object atomically; allow full copies and never update existing data.
 /// 原子初始化缺失持久对象；允许完整复制且从不更新已有数据。
 /// # Arguments
@@ -383,14 +402,25 @@ pub(super) fn inherit_path(
     source: &Path,
     target: &Path,
     directory_subvolume: bool,
+    nocow_handling: NocowHandling,
 ) -> Result<()> {
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
     if !info.is_dir() && !info.is_file() {
         return Err(Error::Invalid("继承来源必须为普通文件或目录".into()));
     }
+    if nocow_handling == NocowHandling::MoveSnapshot
+        && ((!info.is_dir() && super::nocow::is_nocow(source)?)
+            || (info.is_dir()
+                && !backend.is_subvolume(source)?
+                && super::nocow::contains_nocow(source)?))
+    {
+        return Err(Error::Invalid(
+            "move-snapshot 需要先安全迁移来源目录；不能扩大单个 NOCOW 文件的继承范围".into(),
+        ));
+    }
     replace_target(backend, target)?;
     if !info.is_dir() {
-        return backend.copy_inherited(source, target, true);
+        return backend.copy_inherited_with_policy(source, target, nocow_handling);
     }
     if directory_subvolume && backend.is_subvolume(source)? {
         return backend.snapshot_recursive(source, target, false);
@@ -400,7 +430,17 @@ pub(super) fn inherit_path(
     } else {
         disk::directory(target)?;
     }
-    backend.copy_inherited(source, target, true)?;
+    copy_directory(backend, source, target, nocow_handling)
+}
+
+/// Populate an owned empty directory without changing its already recorded identity.
+pub(super) fn copy_directory(
+    backend: &impl BuildBackend,
+    source: &Path,
+    target: &Path,
+    nocow_handling: NocowHandling,
+) -> Result<()> {
+    backend.copy_inherited_with_policy(source, target, nocow_handling)?;
     {
         // Preserve existing child subvolumes independently of the outer-directory option.
         let mut children = backend.nested_subvolumes(source)?;

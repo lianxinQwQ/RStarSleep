@@ -1,7 +1,7 @@
 //! Freeze inherited inputs once so cache validation and execution observe the same data.
 //! 只冻结一次继承输入，确保缓存校验与实际执行读取相同数据。
 use super::{BuildBackend, BuildContext, Error, Result, fs as disk, inheritance};
-use crate::config::{InheritanceConfig, validate_inheritance_type};
+use crate::config::{InheritanceConfig, NocowHandling, validate_inheritance_type};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -24,6 +24,7 @@ pub(super) struct FrozenBuild {
     /// Preserve the configured outer-directory subvolume policy.
     /// 保留配置中的外层目录子卷策略。
     directory_subvolume: bool,
+    nocow_handling: NocowHandling,
     /// Complete captured input fingerprint.
     /// 完整捕获输入指纹。
     pub(super) sha256: String,
@@ -43,6 +44,7 @@ impl FrozenBuild {
                 source,
                 &disk::guest_path(root, target)?,
                 self.directory_subvolume,
+                self.nocow_handling,
             )?;
         }
         Ok(!self.entries.is_empty())
@@ -66,6 +68,15 @@ pub(super) fn freeze(
 ) -> Result<FrozenBuild> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
+    let manager = system
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("继承缺少管理根".into()))?;
+    let _migration_lock = if config.nocow_handling == NocowHandling::MoveSnapshot {
+        Some(super::records::lock_inheritance(manager)?)
+    } else {
+        None
+    };
     let mut digest = Sha256::new();
     field(&mut digest, b"rstarsleep-inherited-inputs-v1");
     let mut entries = Vec::new();
@@ -84,8 +95,17 @@ pub(super) fn freeze(
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
             backend.check_cow_source(&source, scratch)?;
+            if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
+                super::inheritance_migration::prepare(backend, &source, manager, "build", None)?;
+            }
             let frozen = container.join(index.to_string());
-            inheritance::inherit_path(backend, &source, &frozen, config.directory_subvolume)?;
+            inheritance::inherit_path(
+                backend,
+                &source,
+                &frozen,
+                config.directory_subvolume,
+                config.nocow_handling,
+            )?;
             entries.push((frozen, target.clone()));
         }
         let mut children = backend.nested_subvolumes(&container)?;
@@ -106,6 +126,7 @@ pub(super) fn freeze(
     Ok(FrozenBuild {
         entries,
         directory_subvolume: config.directory_subvolume,
+        nocow_handling: config.nocow_handling,
         sha256: format!("{:x}", digest.finalize()),
     })
 }
@@ -116,9 +137,28 @@ pub(super) fn freeze(
 /// - `backend`: Subvolume topology inspector. 子卷结构检查器。
 /// - `root`: Sealed file or directory. 已封存文件或目录。
 fn tree_hash(backend: &impl BuildBackend, root: &Path) -> Result<String> {
+    hash_tree(backend, root, false)
+}
+
+pub(super) fn migration_hash(backend: &impl BuildBackend, root: &Path) -> Result<String> {
+    hash_tree(backend, root, true)
+}
+
+fn hash_tree(
+    backend: &impl BuildBackend,
+    root: &Path,
+    ignore_root_subvolume: bool,
+) -> Result<String> {
     let mut digest = Sha256::new();
     let mut links = BTreeMap::new();
-    hash(backend, root, Path::new(""), &mut links, &mut digest)?;
+    hash(
+        backend,
+        root,
+        Path::new(""),
+        &mut links,
+        &mut digest,
+        ignore_root_subvolume,
+    )?;
     Ok(format!("{:x}", digest.finalize()))
 }
 
@@ -146,6 +186,7 @@ fn hash(
     relative: &Path,
     links: &mut BTreeMap<(u64, u64), PathBuf>,
     digest: &mut Sha256,
+    ignore_root_subvolume: bool,
 ) -> Result<()> {
     let path = if relative.as_os_str().is_empty() {
         root.to_path_buf()
@@ -157,12 +198,23 @@ fn hash(
     digest.update(info.mode().to_le_bytes());
     digest.update(info.uid().to_le_bytes());
     digest.update(info.gid().to_le_bytes());
-    // Timestamps are deliberately excluded: touching a file does not change its inherited content.
+    if ignore_root_subvolume {
+        // Migration must preserve modification times; cache reuse ignores touches.
+        digest.update(info.mtime().to_le_bytes());
+        digest.update(info.mtime_nsec().to_le_bytes());
+    }
+    // Timestamps are deliberately excluded from cache reuse: touching a file does not change its inherited content.
     // 有意排除时间戳：仅 touch 文件不会改变所继承内容。
     hash_xattrs(&path, digest)?;
+    if info.is_file() || info.is_dir() {
+        digest.update([u8::from(super::nocow::is_nocow(&path)?)]);
+    }
     let kind = info.file_type();
     if kind.is_dir() {
-        digest.update([u8::from(backend.is_subvolume(&path)?)]);
+        digest.update([u8::from(
+            !(ignore_root_subvolume && relative.as_os_str().is_empty())
+                && backend.is_subvolume(&path)?,
+        )]);
         let mut entries = fs::read_dir(&path)
             .map_err(|e| disk::io(&path, e))?
             .collect::<std::io::Result<Vec<_>>>()
@@ -176,6 +228,7 @@ fn hash(
                 &relative.join(entry.file_name()),
                 links,
                 digest,
+                ignore_root_subvolume,
             )?;
         }
     } else if kind.is_symlink() {

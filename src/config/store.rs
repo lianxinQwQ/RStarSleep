@@ -244,7 +244,7 @@ impl ConfigStore {
             write_default(&layout.config.join(BUILD_CONFIG_PATH), BUILD_DEFAULT)?;
             write_default(
                 &layout.config.join("build/inherit.conf"),
-                "# Build copies run after package cache commit, before post_maintenance and scripts.\n# 构建继承在软件缓存提交后、插件后处理及脚本执行前完成。\n# Boot copies run at the first boot of each version.\n# 启动继承在每个版本首次启动时完成。\n[Inheritance]\n# DirectorySubvolume=yes\n# Directory paths must end with /; file paths must not.\n# 目录路径必须以 / 结尾，文件路径不能以 / 结尾。\n# CopyOnWriteBuild=/absolute/build-directory/\n# CopyOnWriteBuild=/absolute/build-file\n# CopyOnWriteBoot=/absolute/boot-directory/\n# CopyOnWriteBoot=/absolute/boot-file\n# Mount=/absolute/directory/\n# Mount=/absolute/file\n",
+                "# Build copies run after package cache commit, before post_maintenance and scripts.\n# 构建继承在软件缓存提交后、插件后处理及脚本执行前完成。\n# Boot copies run at the first boot of each version.\n# 启动继承在每个版本首次启动时完成。\n[Inheritance]\n# DirectorySubvolume=yes\n# NOCOW policy: error, reflink, copy, move-snapshot. No automatic fallback.\n# NOCOW 处理策略；不会自动降级。move-snapshot 要求 DirectorySubvolume=yes，\n# 修改实际离线来源目录为子卷，并授权迁移时可能发生的完整复制。\n# NocowHandling=error\n# Directory paths must end with /; file paths must not.\n# 目录路径必须以 / 结尾，文件路径不能以 / 结尾。\n# CopyOnWriteBuild=/absolute/build-directory/\n# CopyOnWriteBuild=/absolute/build-file\n# CopyOnWriteBoot=/absolute/boot-directory/\n# CopyOnWriteBoot=/absolute/boot-file\n# Mount=/absolute/directory/\n# Mount=/absolute/file\n",
             )?;
         }
         write_default(

@@ -654,3 +654,112 @@ fn deferred_targets_follow_guest_directory_symlinks_inside_the_new_root() {
         "data"
     );
 }
+
+#[test]
+fn boot_nocow_policy_is_frozen_and_legacy_manifests_keep_strict_default() {
+    use rstarsleep::config::NocowHandling;
+    for legacy in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("source-file");
+        fs::write(&source, "data").unwrap();
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        let config = layout.config.join("build/inherit.conf");
+        fs::write(
+            &config,
+            format!(
+                "[Inheritance]\nNocowHandling=copy\nCopyOnWriteBoot={}\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap()
+            .remove(0);
+        let manifest_path = outcome
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance-pending.toml");
+        let mut manifest = record(&manifest_path);
+        assert_eq!(manifest["nocow_handling"].as_str(), Some("copy"));
+        if legacy {
+            manifest.as_table_mut().unwrap().remove("nocow_handling");
+            fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+        }
+        // Even an invalid live configuration cannot change an already frozen task.
+        fs::write(
+            &config,
+            "[Inheritance]\nNocowHandling=move-snapshot\nDirectorySubvolume=no\n",
+        )
+        .unwrap();
+        backend.inheritance_policies.borrow_mut().clear();
+        finalize(&outcome, &backend).unwrap();
+        assert_eq!(
+            *backend.inheritance_policies.borrow(),
+            [if legacy {
+                NocowHandling::Error
+            } else {
+                NocowHandling::Copy
+            }]
+        );
+    }
+}
+
+#[test]
+fn pending_source_in_another_system_cache_blocks_invalidation() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    fixture.system("consumer", &[]);
+    let backend = SimulatedBackend::default();
+    let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    let source = fixture
+        .cache(&first.version, "script")
+        .join("inherited-file");
+    fs::write(&source, "keep pinned data").unwrap();
+    let consumer = fixture.store.system_layout("consumer").unwrap();
+    fs::write(
+        consumer.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBoot={}\n", source.display()),
+    )
+    .unwrap();
+    build_with_backend(&fixture.store, Some("consumer"), &backend).unwrap();
+    let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("引用，拒绝清理"), "{error}");
+    assert_eq!(fs::read(&source).unwrap(), b"keep pinned data");
+}
+
+#[test]
+fn unfinished_source_migration_pins_the_source_version_during_clean() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    let source = first.root.join("data");
+    fs::create_dir(&source).unwrap();
+    fixture.retire_current("desktop");
+    let records = fixture.store.root().join("inheritance-migrations");
+    fs::create_dir(&records).unwrap();
+    let receipt = format!(
+        "schema_version=1\nfilesystem_uuid='simulated-uuid'\nsource='{}'\nold_subvolume_id='simulated-id'\nold_inode=1\nparent_subvolume_id='simulated-id'\nauthorization='build'\nphase='preparing'\n",
+        source.display(),
+    );
+    fs::write(records.join("interrupted.toml"), receipt).unwrap();
+    let error = rstarsleep::controller::clean_with_backend(
+        &fixture.store,
+        "desktop",
+        &first.version,
+        &backend,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("继承引用"), "{error}");
+    assert!(source.exists());
+}

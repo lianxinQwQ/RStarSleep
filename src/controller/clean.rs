@@ -90,7 +90,7 @@ pub fn clean_with_backend(
             .collect::<Vec<_>>(),
     )?;
     // Any retained pending version pins the source versions it will consume at boot.
-    let mut pins = Vec::new();
+    let mut pins = super::inheritance_migration::pinned_sources(store.root())?;
     for id in store.list_systems()? {
         let other = store.system_layout(&id)?;
         for entry in fs::read_dir(&other.versions).map_err(|e| disk::io(&other.versions, e))? {

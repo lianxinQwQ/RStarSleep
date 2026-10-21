@@ -335,6 +335,25 @@ pub trait BuildBackend {
         Err(Error::Invalid("此后端不支持继承复制".into()))
     }
 
+    /// Execute exactly the selected policy; backends must opt into NOCOW adaptation.
+    fn copy_inherited_with_policy(
+        &self,
+        source: &Path,
+        target: &Path,
+        policy: crate::config::NocowHandling,
+    ) -> Result<()> {
+        if policy == crate::config::NocowHandling::Error || !super::nocow::contains_nocow(source)? {
+            self.copy_inherited(source, target, true)
+        } else {
+            Err(Error::Invalid("此后端不支持所选 NOCOW 处理策略".into()))
+        }
+    }
+
+    /// Establish that mutating the actual source is safe, before conversion begins.
+    fn check_migration_source(&self, _source: &Path) -> Result<()> {
+        Err(Error::Invalid("此后端不能验证来源目录处于离线状态".into()))
+    }
+
     /// Reject cross-filesystem CoW sources and unresolved mounted descendants.
     /// 拒绝跨文件系统 CoW 来源及未解析的内部挂载，允许嵌套子卷。
     /// # Arguments

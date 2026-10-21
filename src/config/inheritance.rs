@@ -1,11 +1,35 @@
 //! Read inheritance independently of mkosi-style build options from merged INI inputs.
 //! 从合并后的 INI 输入独立读取继承选项，不作为 mkosi 构建选项处理。
 use super::{Error, PluginParameters, Result};
+use serde::{Deserialize, Serialize};
 const DEFAULT_MANAGER: &str = "/rstarsleep";
 use std::{
     collections::BTreeMap,
     path::{Component, Path, PathBuf},
 };
+
+/// Explicit handling of NOCOW data that cannot use the ordinary inheritance copy.
+/// 无法直接继承的 NOCOW 数据处理策略；不在策略之间自动降级。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NocowHandling {
+    #[default]
+    Error,
+    Reflink,
+    Copy,
+    MoveSnapshot,
+}
+
+impl std::fmt::Display for NocowHandling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Error => "error",
+            Self::Reflink => "reflink",
+            Self::Copy => "copy",
+            Self::MoveSnapshot => "move-snapshot",
+        })
+    }
+}
 
 /// Current-running-system inheritance requests.
 /// 当前运行系统的继承请求。
@@ -23,6 +47,7 @@ pub struct InheritanceConfig {
     pub mounts: Vec<PathBuf>,
     /// Give inherited directories independent subvolumes for subsequent snapshots.
     pub directory_subvolume: bool,
+    pub nocow_handling: NocowHandling,
 }
 
 impl Default for InheritanceConfig {
@@ -32,6 +57,7 @@ impl Default for InheritanceConfig {
             copy_on_write_boot: Vec::new(),
             mounts: Vec::new(),
             directory_subvolume: true,
+            nocow_handling: NocowHandling::Error,
         }
     }
 }
@@ -123,6 +149,20 @@ impl InheritanceConfig {
                     };
                     continue;
                 }
+                "RSTAR_INHERITANCE_NOCOWHANDLING" => {
+                    config.nocow_handling = match scalar(key, values)? {
+                        "error" => NocowHandling::Error,
+                        "reflink" => NocowHandling::Reflink,
+                        "copy" => NocowHandling::Copy,
+                        "move-snapshot" => NocowHandling::MoveSnapshot,
+                        _ => {
+                            return Err(Error::Invalid(
+                                "NocowHandling 必须为 error、reflink、copy 或 move-snapshot".into(),
+                            ));
+                        }
+                    };
+                    continue;
+                }
                 _ => (),
             }
             let target = match key.as_str() {
@@ -157,6 +197,11 @@ impl InheritanceConfig {
                 }
             }
         }
+        if config.nocow_handling == NocowHandling::MoveSnapshot && !config.directory_subvolume {
+            return Err(Error::Invalid(
+                "NocowHandling=move-snapshot 要求 DirectorySubvolume=yes".into(),
+            ));
+        }
         let paths: Vec<_> = config
             .copy_on_write_build
             .iter()
@@ -181,6 +226,55 @@ impl InheritanceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nocow_policy_is_one_strict_scalar_and_move_requires_subvolumes() {
+        let mut parameters = PluginParameters::default();
+        assert_eq!(
+            InheritanceConfig::read(&parameters).unwrap().nocow_handling,
+            NocowHandling::Error
+        );
+        for (text, policy) in [
+            ("error", NocowHandling::Error),
+            ("reflink", NocowHandling::Reflink),
+            ("copy", NocowHandling::Copy),
+            ("move-snapshot", NocowHandling::MoveSnapshot),
+        ] {
+            parameters
+                .lists
+                .insert("RSTAR_INHERITANCE_NOCOWHANDLING".into(), vec![text.into()]);
+            parameters.lists.insert(
+                "RSTAR_INHERITANCE_DIRECTORYSUBVOLUME".into(),
+                vec!["yes".into()],
+            );
+            assert_eq!(
+                InheritanceConfig::read(&parameters).unwrap().nocow_handling,
+                policy
+            );
+            parameters.lists.insert(
+                "RSTAR_INHERITANCE_DIRECTORYSUBVOLUME".into(),
+                vec!["no".into()],
+            );
+            assert_eq!(
+                InheritanceConfig::read(&parameters).is_err(),
+                policy == NocowHandling::MoveSnapshot
+            );
+            assert_eq!(policy.to_string(), text);
+        }
+        for invalid in [
+            vec![],
+            vec!["".into()],
+            vec!["auto".into()],
+            vec!["COPY".into()],
+            vec!["copy".into(), "copy".into()],
+            vec!["copy\nreflink".into()],
+        ] {
+            parameters
+                .lists
+                .insert("RSTAR_INHERITANCE_NOCOWHANDLING".into(), invalid);
+            assert!(InheritanceConfig::read(&parameters).is_err());
+        }
+    }
 
     #[test]
     fn directory_markers_preserve_names_and_require_matching_types() {

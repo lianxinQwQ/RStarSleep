@@ -488,3 +488,30 @@ fn failed_source_capture_cleans_partial_inputs_and_keeps_completed_stages() {
         "data"
     );
 }
+
+#[test]
+fn changing_nocow_policy_invalidates_script_cache_and_reuses_packages() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    enable(&fixture);
+    script(&fixture);
+    let config = fixture
+        .store
+        .system_layout("desktop")
+        .unwrap()
+        .config
+        .join("build/inherit.conf");
+    fs::write(&config, "[Inheritance]\nNocowHandling=error\n").unwrap();
+    let backend = SimulatedBackend::default();
+    build(&fixture, &backend);
+    backend.events.borrow_mut().clear();
+    build(&fixture, &backend);
+    assert_eq!(backend.count("script"), 0);
+    fs::write(&config, "[Inheritance]\nNocowHandling=copy\n").unwrap();
+    backend.events.borrow_mut().clear();
+    build(&fixture, &backend);
+    assert_eq!(backend.count("script"), 1);
+    assert_eq!(backend.count("post_maintenance"), 1);
+    assert_eq!(backend.count("update"), 0);
+    assert_eq!(backend.count("install"), 0);
+}

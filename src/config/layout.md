@@ -413,7 +413,7 @@ Mount=/srv/data/
 Mount=/etc/myapp.conf
 ```
 
-控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume，
+控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume、NocowHandling，
 不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，必须以 `/` 开头，
 目录必须以 `/` 结尾，普通文件不能以 `/` 结尾；执行继承时核验类型。不接受 `/`、
 `//`、`.` 或 `..` 路径段、重复、相互包含或持久名称冲突；两份 CoW 列表和 Mount 统一校验，
@@ -425,6 +425,13 @@ CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，在新�
 两份列表可同时配置，分别执行，按 Btrfs UUID 检查同一文件系统。
 目录默认子卷化，已有来源子卷直接递归快照；`DirectorySubvolume=no` 可关闭最外层子卷化。
 保存阶段缓存、恢复及发布根均显式处理全部内部子卷；缓存封存为只读，工作根与最终版本根可写。
+`NocowHandling=error|reflink|copy|move-snapshot` 是统一枚举，默认 `error`，策略之间不会自动降级。
+`reflink` 先匹配空目标 inode 的 CoW/NOCOW 属性再强制克隆；`copy` 仅对 NOCOW 文件明确完整复制。
+`move-snapshot` 要求 `DirectorySubvolume=yes`，授权将实际离线普通来源目录迁成独立子卷并以快照恢复原位，
+可能发生完整复制。构建迁移发生在冻结来源和计算继承指纹之前；启动迁移使用绑定待办摘要的持久化记录恢复，
+未提交迁移保护来源免于清理。不支持的单文件、活动来源、目录外硬链接或重叠待办引用会报错。
+策略固定在构建输入和启动清单中，详情见 [首次启动继承](../../docs/initramfs-inheritance.md)。
+
 CopyOnWriteBoot 非空时，构建继承结果保存在准备根中，启动列表单独写入清单，在主系统首次
 启动的 initramfs 或子系统启动准备阶段完成继承；准备根与清单随版本保存，
 不依赖后续会清理的 script 缓存。详细配置、依赖和恢复见

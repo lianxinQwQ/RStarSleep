@@ -1,6 +1,6 @@
 //! Durable first-boot inheritance, independent of mutable build caches and plugins.
 use super::{BuildBackend, BuildContext, Error, Result, fs as disk};
-use crate::config::{InheritanceConfig, validate_inheritance_type};
+use crate::config::{InheritanceConfig, NocowHandling, validate_inheritance_type};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,6 +19,8 @@ pub struct PendingInheritance {
     pub prepared_subvolume_id: String,
     pub final_root: PathBuf,
     pub directory_subvolume: bool,
+    #[serde(default)]
+    pub nocow_handling: NocowHandling,
     pub sources: Vec<InheritanceSource>,
 }
 
@@ -113,6 +115,7 @@ pub(super) fn prepare(
         prepared_root,
         final_root: final_root.join("root"),
         directory_subvolume: config.directory_subvolume,
+        nocow_handling: config.nocow_handling,
         sources,
     };
     disk::write(&directory.join("inheritance-pending.toml"), &manifest)
@@ -144,6 +147,11 @@ fn read_manifest(path: &Path) -> Result<PendingInheritance> {
         toml::from_str(&text).map_err(|e| Error::Invalid(e.to_string()))?;
     if manifest.schema_version != 1 || manifest.sources.is_empty() {
         return Err(Error::Invalid("待继承清单格式或来源无效".into()));
+    }
+    if manifest.nocow_handling == NocowHandling::MoveSnapshot && !manifest.directory_subvolume {
+        return Err(Error::Invalid(
+            "move-snapshot 清单要求 DirectorySubvolume=yes".into(),
+        ));
     }
     crate::config::validate_identifier(&manifest.system_id)?;
     if !manifest.version.starts_with('v')
@@ -273,7 +281,17 @@ pub fn finalize_inheritance_locked(
         let info = fs::symlink_metadata(&path).map_err(|e| disk::io(&path, e))?;
         if info.is_dir() != source.directory
             || (!info.is_dir() && !info.is_file())
-            || backend.source_subvolume_id(&path)? != source.subvolume_id
+            || !(if manifest.nocow_handling == NocowHandling::MoveSnapshot && source.directory {
+                super::inheritance_migration::validates_identity(
+                    backend,
+                    &path,
+                    manager,
+                    &source.subvolume_id,
+                    &digest,
+                )?
+            } else {
+                backend.source_subvolume_id(&path)? == source.subvolume_id
+            })
         {
             return Err(Error::Invalid(format!(
                 "来源类型或子卷身份已改变: {}",
@@ -282,6 +300,19 @@ pub fn finalize_inheritance_locked(
         }
         backend.check_cow_source(&path, directory)?;
         sources.push((source, path));
+    }
+    if manifest.nocow_handling == NocowHandling::MoveSnapshot {
+        for (source, path) in &sources {
+            if source.directory {
+                super::inheritance_migration::prepare(
+                    backend,
+                    path,
+                    manager,
+                    &digest,
+                    Some(manifest_path),
+                )?;
+            }
+        }
     }
     backend.snapshot_recursive(&prepared, &staging, false)?;
     let result = super::progress::run(
@@ -301,6 +332,7 @@ pub fn finalize_inheritance_locked(
                     &path,
                     &target,
                     manifest.directory_subvolume,
+                    manifest.nocow_handling,
                 )?;
             }
             let mut identities = Vec::new();

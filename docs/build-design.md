@@ -631,7 +631,7 @@ script 只消费本次软件输出，inherit 只消费本次 script 输出，两
 ## 当前运行系统的数据继承
 
 控制器以 `InheritanceConfig::read()` 从合并 INI 参数独立读取 `[Inheritance]`，
-不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount 和 DirectorySubvolume：
+不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume 和 NocowHandling：
 
 ```ini
 # Suggested systems/<system>/config/build/inherit.conf; its name has no parsing semantics.
@@ -658,6 +658,13 @@ CopyOnWriteBoot 在目标版本首次启动时继承。
 来源已有子卷时直接递归快照。`DirectorySubvolume=no` 只关闭最外层目标子卷化，内部原有
 子卷仍保留。阶段缓存保存、恢复及最终发布均处理完整子卷树；缓存封存为只读，工作根及最终版本根可写。
 构建时继承的来源不允许尚未解析的内部挂载；启动时继承将内部挂载固定为独立来源映射。
+
+`NocowHandling=error|reflink|copy|move-snapshot` 是统一枚举，默认 `error`，策略之间不会自动降级。
+`reflink` 先匹配空目标 inode 的 CoW/NOCOW 属性再强制克隆；`copy` 仅对 NOCOW 文件明确完整复制。
+`move-snapshot` 要求 `DirectorySubvolume=yes`，授权将实际离线普通来源目录迁成独立子卷并以快照恢复原位，
+可能发生完整复制。构建迁移发生在冻结来源和计算继承指纹之前；启动迁移使用绑定待办摘要的持久化记录恢复，
+未提交迁移保护来源免于清理。不支持的单文件、活动来源、目录外硬链接或重叠待办引用会报错。
+策略固定在构建输入和启动清单中，详情见 [首次启动继承](initramfs-inheritance.md)。
 
 CopyOnWriteBoot 非空时，完成软件、构建列表继承、插件后处理、用户脚本及 Mount 配置后，
 主系统由核心打包通用早期执行器，再调用

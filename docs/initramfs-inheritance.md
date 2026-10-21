@@ -7,6 +7,7 @@
 ```ini
 [Inheritance]
 DirectorySubvolume=yes
+NocowHandling=error
 CopyOnWriteBuild=/etc/hostname
 CopyOnWriteBoot=/home/alice/
 CopyOnWriteBoot=/var/lib/myapp/
@@ -34,17 +35,60 @@ CopyOnWriteBoot=/var/lib/myapp/
 ## 目录和子卷
 
 `DirectorySubvolume=yes` 时，来源已经是 Btrfs 子卷便直接递归快照，不逐文件复制。
-普通目录在目标对应位置创建子卷，然后以强制 reflink 填充；这不会自动改变当前运行系统
-的来源目录。未来从生成的子卷继承，才能直接快照。
+普通目录在目标对应位置创建子卷，再按 `NocowHandling` 填充；默认不会改变实际来源目录。
+未来从生成的子卷继承，才能直接快照。`move-snapshot` 显式授权转换实际来源，见下文。
 
 `DirectorySubvolume=no` 时，最外层目标目录保持普通目录。来源原有内部子卷仍逐个保留。
-普通目录复制使用 GNU cp 的 `--archive --reflink=always --one-file-system`，Btrfs 内部子卷
-的内容由显式递归快照补齐。CoW 失败不会回退到完整复制。
+默认普通目录复制使用 GNU cp 的 `--archive --reflink=always --one-file-system`，Btrfs 内部子卷
+的内容由显式递归快照补齐。策略之间不会自动降级。
 
 基础、软件、script、inherit 的缓存保存、缓存恢复和最终版本发布统一处理完整子卷树，
 包括构建脚本创建的子卷。缓存先从外到内建立可写快照，再从内到外封存只读属性。
 父子卷只读不会自动影响子卷；只读缓存会逐个校验。工作根及最终版本根的全部子卷保持可写。
 临时根和版本清理均递归删除子卷。
+
+## NOCOW 处理策略
+
+`NocowHandling` 是同时作用于两份 CoW 列表的单次赋值枚举，默认 `error`。
+它随构建配置、缓存输入及启动待办固定；编辑当前配置不会改变已生成待办的策略。
+旧待办没有该字段时按 `error` 处理。它不改变 `Mount` 的初始化语义。
+
+| 值 | 行为 | `DirectorySubvolume=no` |
+| --- | --- | --- |
+| `error` | 保持原有强制 reflink；无法执行即失败 | 支持 |
+| `reflink` | 在空目标 inode 上匹配来源的 CoW/NOCOW 属性，再强制 reflink；失败即退出 | 支持 |
+| `copy` | NOCOW 普通文件明确完整复制并保留 NOCOW 属性，其他普通文件仍强制 reflink | 支持 |
+| `move-snapshot` | 将含 NOCOW 文件的实际普通来源目录转换为子卷，再递归快照继承 | 配置错误 |
+
+来源已经是子卷且开启目录子卷化时，四种策略均直接递归快照。NOCOW 文件本身不阻止子卷快照；
+快照共享数据后，文件的后续写入仍可能发生 CoW。
+
+例如，要自动处理离线旧版本中普通 `/var` 目录里的 journald NOCOW 文件：
+
+```ini
+[Inheritance]
+DirectorySubvolume=yes
+NocowHandling=move-snapshot
+CopyOnWriteBoot=/var/
+```
+
+迁移处理的是清单记录的**实际来源**，不能用当前运行系统的 `/var` 推断旧版本的布局。
+选择 `move-snapshot` 即授权改变来源子卷布局，并授权跨子卷迁移可能发生的完整复制及额外空间占用。
+实现先复制到临时子卷并校验内容、权限、所有者、修改时间、xattr、硬链接、NOCOW 及内部子卷布局，
+再递归快照、恢复内部子卷只读属性，将快照与原目录原子交换。原目录完整备份保留到提交同步后才删除；
+这样达到创建子卷、迁入内容、以快照恢复原路径的结果，并保留中断前的完整来源。
+
+来源须离线并停止写入；程序检查挂载命名空间、进程句柄和内存映射，无法读取这些状态时保守退出。
+该检查不能阻止之后外部程序重新打开来源，用户须在迁移期间保持停写。
+当前仍使用的来源子卷、有其他待办重叠引用、目录外硬链接、不可变/追加属性及不支持的特殊文件均拒绝迁移。
+单独配置的 NOCOW 文件无法采用此策略，程序报错，不会自动扩大到其父目录。
+
+迁移记录位于管理根 `inheritance-migrations/`，临时数据位于来源旁的 `.rstarsleep-migration-*`。
+记录绑定文件系统 UUID、来源路径、旧目录及新子卷身份和启动清单摘要；重试不会改写原待办摘要。
+未提交迁移会保护来源免于清理。中断后使用同一待办重试；来源或临时对象身份不匹配时停止并保留现场，
+需在离线恢复环境核对记录、原路径及临时备份后手动恢复，不能直接删除未知临时数据。
+若不希望自动修改来源，可选 `reflink` 或 `copy`；也可保持 `error`，离线手动将实际来源 `/var`
+迁成独立子卷后重新构建待办，以固定新的子卷身份。
 
 ## 构建和启动流程
 
@@ -131,5 +175,6 @@ Arch 插件的 `prepare_inheritance_initramfs` 动作调用 mkinitcpio，并拥�
 
 测试覆盖首次启动读取最新来源、完成后不重复继承、缓存清理后的准备根存续、失败重试、
 提交后状态修复、身份不匹配拒绝、来源版本清理保护、目录选项、嵌套子卷、Ctrl+C 取消，
+NOCOW 混合属性及硬链接、真实 Btrfs 目录转换和提交前后中断恢复，
 以及 mkinitcpio hook 顺序、早期执行器失败传播、systemd 根挂载依赖和私有加载器。
 真实 Btrfs/nspawn 完整构建与真实机器或 VM 首次启动仍需集成验证。

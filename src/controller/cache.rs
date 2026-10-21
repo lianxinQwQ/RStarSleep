@@ -34,6 +34,29 @@ pub(super) fn clear_from(
         return Ok(());
     }
     disk::checked(cache_root)?;
+    let manager = cache_root
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| Error::Invalid("系统缓存缺少管理根".into()))?;
+    let _pins_lock = super::records::lock_inheritance(manager)?;
+    let mut pins = super::inheritance_migration::pinned_sources(manager)?;
+    let systems = manager.join("systems");
+    for system in fs::read_dir(&systems).map_err(|e| disk::io(&systems, e))? {
+        let versions = system
+            .map_err(|e| disk::io(&systems, e))?
+            .path()
+            .join("versions");
+        if !disk::exists(&versions)? {
+            continue;
+        }
+        for version in fs::read_dir(&versions).map_err(|e| disk::io(&versions, e))? {
+            let directory = version.map_err(|e| disk::io(&versions, e))?.path();
+            if disk::exists(&directory.join("inheritance-pending.toml"))? {
+                pins.extend(super::deferred::pinned_sources_one(&directory)?);
+            }
+        }
+    }
     for entry in fs::read_dir(cache_root).map_err(|e| disk::io(cache_root, e))? {
         let entry = entry.map_err(|e| disk::io(cache_root, e))?;
         let directory = entry.path();
@@ -47,6 +70,21 @@ pub(super) fn clear_from(
                 "系统缓存条目必须是目录: {}",
                 directory.display()
             )));
+        }
+        for stage in &STAGES[start..] {
+            let root = directory.join(stage);
+            if disk::exists(&root)? {
+                let (_, location) = backend.filesystem_location(&root)?;
+                if pins
+                    .iter()
+                    .any(|pin| pin.starts_with(&location) || location.starts_with(pin))
+                {
+                    return Err(Error::Invalid(format!(
+                        "缓存被尚未完成的继承或来源迁移引用，拒绝清理: {}",
+                        root.display()
+                    )));
+                }
+            }
         }
         // Retire completion markers first; an interrupted deletion must never reuse stale roots.
         // 先撤销完成标记，避免删除中断后复用失效根。

@@ -49,6 +49,7 @@ pub struct SimulatedBackend {
     pub events: RefCell<Vec<Event>>,
     pub running_root: RefCell<Option<PathBuf>>,
     pub fail_inheritance_copy: Cell<bool>,
+    pub inheritance_policies: RefCell<Vec<rstarsleep::config::NocowHandling>>,
     pub post_maintenance_probe: RefCell<Option<PathBuf>>,
     pub fail_cleanup: Cell<bool>,
     pub boot_publications: Cell<usize>,
@@ -341,6 +342,15 @@ impl BuildBackend for SimulatedBackend {
             fs::copy(source, target).unwrap();
         }
         Ok(())
+    }
+    fn copy_inherited_with_policy(
+        &self,
+        source: &Path,
+        target: &Path,
+        policy: rstarsleep::config::NocowHandling,
+    ) -> Result<()> {
+        self.inheritance_policies.borrow_mut().push(policy);
+        self.copy_inherited(source, target, true)
     }
     fn check_cow_source(&self, _source: &Path, _parent: &Path) -> Result<()> {
         Ok(())

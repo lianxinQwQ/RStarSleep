@@ -173,6 +173,22 @@ impl BuildBackend for SystemBackend {
         }
         Ok(())
     }
+    fn copy_inherited_with_policy(
+        &self,
+        source: &Path,
+        target: &Path,
+        policy: crate::config::NocowHandling,
+    ) -> Result<()> {
+        match policy {
+            crate::config::NocowHandling::Error | crate::config::NocowHandling::MoveSnapshot => {
+                self.copy_inherited(source, target, true)
+            }
+            _ => super::nocow::copy(source, target, policy),
+        }
+    }
+    fn check_migration_source(&self, source: &Path) -> Result<()> {
+        super::inheritance_migration::check_offline(source)
+    }
     fn is_running_root(&self, path: &Path) -> Result<bool> {
         let current = super::mounts::covering(Path::new("/"))?;
         let candidate = super::mounts::covering(path)?;

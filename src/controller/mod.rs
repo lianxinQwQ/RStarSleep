@@ -18,10 +18,12 @@ mod fs;
 mod identity;
 mod inheritance;
 mod inheritance_inputs;
+mod inheritance_migration;
 mod initramfs;
 mod logging;
 mod model;
 mod mounts;
+mod nocow;
 mod output;
 mod package_watch;
 mod persistent;
@@ -66,6 +68,12 @@ pub(crate) fn retire_runtime_root(
     let _pins = records::lock_inheritance(store.root())?;
     fs::checked(root)?;
     let (_, location) = backend.filesystem_location(root)?;
+    if inheritance_migration::pinned_sources(store.root())?
+        .iter()
+        .any(|source| source.starts_with(&location))
+    {
+        return Ok(false);
+    }
     for id in store.list_systems()? {
         let layout = store.system_layout(&id)?;
         for entry in std::fs::read_dir(&layout.versions).map_err(|e| fs::io(&layout.versions, e))? {
