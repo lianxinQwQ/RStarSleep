@@ -1,14 +1,15 @@
-//! Archive installation diagnostics before and after allocating a build version.
-//! 在分配构建版本前后归档安装诊断。
+//! Archive build and inheritance diagnostics independently of system roots.
+//! 独立于系统根归档构建和继承诊断。
 use super::{Error, Result, fs as disk};
 use std::{
     cell::RefCell,
     fmt::Display,
-    fs::{File, Permissions},
+    fs::{File, OpenOptions, Permissions},
     io::{self, Write},
     marker::PhantomData,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    process::{Command, Output},
     rc::Rc,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -44,6 +45,7 @@ struct State {
     temporary: Option<TempPath>,
     path: PathBuf,
     failure: Option<WriteFailure>,
+    durable: bool,
 }
 
 impl State {
@@ -94,6 +96,38 @@ impl BuildLog {
             temporary: Some(temporary),
             path,
             failure: None,
+            durable: false,
+        }))))
+    }
+
+    /// Append to a private inheritance log and sync each diagnostic before proceeding.
+    /// 追加私有继承日志，继续操作前同步每条诊断。
+    pub(super) fn append(path: &Path) -> Result<Self> {
+        disk::checked(path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|error| disk::io(path, error))?;
+        let metadata = file.metadata().map_err(|error| disk::io(path, error))?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(Error::Invalid(format!(
+                "继承日志必须为无硬链接的普通文件: {} / Inheritance log must be a regular file without hard links",
+                path.display()
+            )));
+        }
+        file.set_permissions(Permissions::from_mode(0o600))
+            .and_then(|()| file.sync_all())
+            .map_err(|error| disk::io(path, error))?;
+        disk::sync(path.parent().unwrap())?;
+        Ok(Self(Arc::new(Mutex::new(State {
+            file,
+            temporary: None,
+            path: path.to_owned(),
+            failure: None,
+            durable: true,
         }))))
     }
 
@@ -154,10 +188,14 @@ impl BuildLog {
         if let Some(error) = &state.failure {
             return Err(error.error());
         }
-        state
-            .file
-            .write_all(bytes)
-            .map_err(|error| state.remember(error))
+        let result = state.file.write_all(bytes).and_then(|()| {
+            if state.durable {
+                state.file.sync_data()
+            } else {
+                Ok(())
+            }
+        });
+        result.map_err(|error| state.remember(error))
     }
 
     fn flush(&self) -> io::Result<()> {
@@ -254,10 +292,128 @@ pub(crate) fn diagnostic(message: impl Display) {
     eprint!("{line}");
 }
 
+/// Retain native storage commands and both output streams only in inheritance logs.
+/// 仅在继承日志中保留原生存储命令及其两个输出流，不改变命令结果。
+pub(super) fn command(command: &mut Command) -> io::Result<Output> {
+    let mut archive = ACTIVE.with(|active| {
+        LogWriter(
+            active
+                .borrow()
+                .iter()
+                .filter(|log| log.state().durable)
+                .cloned()
+                .collect(),
+        )
+    });
+    if archive.0.is_empty() {
+        return command.output();
+    }
+    let _ = writeln!(archive, "命令 / Command: {command:?}");
+    let output = command.output();
+    match &output {
+        Ok(output) => {
+            for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                if !bytes.is_empty() {
+                    let _ = writeln!(archive, "[{stream}]");
+                    let _ = archive.write_all(bytes);
+                    if !bytes.ends_with(b"\n") {
+                        let _ = archive.write_all(b"\n");
+                    }
+                }
+            }
+            let _ = writeln!(archive, "退出状态 / Exit status: {}", output.status);
+        }
+        Err(error) => {
+            let _ = writeln!(archive, "无法执行命令 / Cannot execute command: {error}");
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{fs, fs::OpenOptions, os::unix::fs::symlink, thread};
+
+    #[test]
+    fn inheritance_log_appends_private_history_and_preserves_native_command_results() {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("inheritance.log");
+        fs::write(&path, b"previous attempt\n").unwrap();
+        let log = BuildLog::append(&path).unwrap();
+        let _scope = enter([log.clone()]);
+        diagnostic("retry");
+        let output = command(Command::new("sh").args([
+            "-c",
+            "printf 'stdout\\377'; printf 'stderr\\376' >&2; exit 23",
+        ]))
+        .unwrap();
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(output.stdout, b"stdout\xff");
+        assert_eq!(output.stderr, b"stderr\xfe");
+        log.check().unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"previous attempt\nretry\n"));
+        for text in [
+            b"[stdout]\nstdout\xff\n".as_slice(),
+            b"[stderr]\nstderr\xfe\n",
+            b"exit status: 23",
+        ] {
+            assert!(bytes.windows(text.len()).any(|part| part == text));
+        }
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(_scope);
+        drop(log);
+        let log = BuildLog::append(&path).unwrap();
+        let _scope = enter([log.clone()]);
+        diagnostic("later retry");
+        log.check().unwrap();
+        assert!(fs::read(&path).unwrap().starts_with(&bytes));
+    }
+
+    #[test]
+    fn inheritance_log_captures_native_copy_errors_and_command_spawn_failures() {
+        use crate::controller::{BuildBackend, SystemBackend};
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("inheritance.log");
+        let log = BuildLog::append(&path).unwrap();
+        let _scope = enter([log.clone()]);
+        let source = parent.path().join("missing source");
+        let error = SystemBackend
+            .copy_inherited(&source, &parent.path().join("target"), false)
+            .unwrap_err();
+        assert!(error.to_string().contains("cp inheritance"));
+        let missing_command = parent.path().join("missing-command");
+        assert!(command(&mut Command::new(&missing_command)).is_err());
+        log.check().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Command: "));
+        assert!(text.contains(source.to_str().unwrap()));
+        assert!(text.contains("[stderr]"));
+        assert!(text.contains("Cannot execute command"));
+        assert!(text.contains(missing_command.to_str().unwrap()));
+    }
+
+    #[test]
+    fn inheritance_log_rejects_links_and_special_files_without_touching_targets() {
+        let parent = tempfile::tempdir().unwrap();
+        let outside = parent.path().join("outside");
+        let log = parent.path().join("inheritance.log");
+        fs::write(&outside, b"keep").unwrap();
+        symlink(&outside, &log).unwrap();
+        assert!(BuildLog::append(&log).is_err());
+        fs::remove_file(&log).unwrap();
+        fs::hard_link(&outside, &log).unwrap();
+        assert!(BuildLog::append(&log).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"keep");
+        fs::remove_file(&log).unwrap();
+        let name = std::ffi::CString::new(log.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(BuildLog::append(&log).is_err());
+    }
 
     #[test]
     fn preserves_staged_bytes_and_continues_writing_after_publication() {

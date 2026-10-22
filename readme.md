@@ -265,6 +265,9 @@ Mount=/etc/myapp.conf
 子系统在启动准备阶段完成。失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
 的传统和 systemd initramfs。继承路径不设黑名单，CLI 在任何构建修改前提示并等待 3 秒，
 可按 Ctrl+C 取消。内核和 initramfs 固定使用构建时产物，继承后的兼容性由用户负责。
+启动继承检查的进度、原生命令输出及错误追加到管理子卷的
+`systems/<系统>/versions/<版本>/inheritance.log`；最近一次错误保存在同目录的
+`inheritance-error.txt`，包含前置校验失败。重试成功后保留日志历史并删除错误摘要。
 配置、依赖、提交恢复及验证范围见 [首次启动继承说明](docs/initramfs-inheritance.md)。
 
 `Mount` 使用本系统 `persistent/<编码路径>`，编码前去掉目录末尾 `/`，例如 `/home/alice/`

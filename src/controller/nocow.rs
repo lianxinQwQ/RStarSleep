@@ -173,12 +173,8 @@ fn cp(
     } else {
         source.to_path_buf()
     };
-    let output = command
-        .arg("--")
-        .arg(input)
-        .arg(target)
-        .output()
-        .map_err(|e| disk::io(target, e))?;
+    command.arg("--").arg(input).arg(target);
+    let output = super::logging::command(&mut command).map_err(|e| disk::io(target, e))?;
     if !output.status.success() {
         return Err(Error::Command {
             command: format!("cp NOCOW inheritance {}", source.display()),

@@ -50,6 +50,9 @@ Btrfs 顶层/
             │       ├── state.toml      # building / pending-inheritance / failed / complete / cancelled
             │       ├── boot.toml       # 主系统启动文件的所有权记录
             │       ├── config/         # 构建时配置留档，结构同当前 config/
+            │       ├── install.log     # 构建过程及错误日志
+            │       ├── inheritance.log # 可选，启动继承检查的追加日志及重试历史
+            │       ├── inheritance-error.txt # 可选，最近一次继承失败摘要，成功后删除
             │       ├── application-files.tsv # 可选，包所属文件候选索引
             │       ├── prepared-root/  # 可选，首次启动继承前的独立只读根
             │       ├── inheritance-pending.toml # 可选，原配置路径、来源根及目标身份

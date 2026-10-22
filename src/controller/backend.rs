@@ -49,9 +49,7 @@ pub struct SystemBackend;
 /// - `arguments`: Individually passed command arguments.
 ///   独立传递的命令参数。
 fn btrfs(arguments: &[OsString]) -> Result<Output> {
-    let output = Command::new("btrfs")
-        .args(arguments)
-        .output()
+    let output = super::logging::command(Command::new("btrfs").args(arguments))
         .map_err(|e| fs::io(Path::new("btrfs"), e))?;
     if !output.status.success() {
         return Err(Error::Command {
@@ -156,7 +154,7 @@ impl BuildBackend for SystemBackend {
         if directory && force_cow {
             command.arg("--one-file-system");
         }
-        let output = command
+        command
             .arg("--archive")
             .arg(if force_cow {
                 "--reflink=always"
@@ -165,9 +163,8 @@ impl BuildBackend for SystemBackend {
             })
             .arg("--")
             .arg(&source)
-            .arg(target)
-            .output()
-            .map_err(|e| fs::io(target, e))?;
+            .arg(target);
+        let output = super::logging::command(&mut command).map_err(|e| fs::io(target, e))?;
         if !output.status.success() {
             return Err(Error::Command {
                 command: format!("cp inheritance {}", source.display()),

@@ -189,7 +189,9 @@ pub fn finalize_inheritance_with_backend(
     filesystem_root: &Path,
     backend: &impl BuildBackend,
 ) -> Result<()> {
-    disk::checked(manifest_path)?;
+    disk::checked(manifest_path.parent().ok_or_else(|| {
+        Error::Invalid("清单缺少父目录 / Manifest has no parent directory".into())
+    })?)?;
     let system = manifest_path
         .parent()
         .and_then(Path::parent)
@@ -213,6 +215,85 @@ pub fn finalize_inheritance_with_backend(
 /// # Errors
 /// Returns identity, source or publication failures. 返回身份、来源或发布错误。
 pub fn finalize_inheritance_locked(
+    manifest_path: &Path,
+    filesystem_root: &Path,
+    backend: &impl BuildBackend,
+) -> Result<()> {
+    let directory = manifest_path.parent().ok_or_else(|| {
+        Error::Invalid("清单缺少父目录 / Manifest has no parent directory".into())
+    })?;
+    let log = super::logging::BuildLog::append(&directory.join("inheritance.log"))?;
+    let _scope = super::logging::enter([log.clone()]);
+    super::logging::diagnostic(format!(
+        "\n==> [{}] 开始启动继承检查 / Starting boot inheritance check\n清单 / Manifest: {}\n文件系统顶层 / Filesystem root: {}",
+        timestamp(),
+        manifest_path.display(),
+        filesystem_root.display()
+    ));
+    let mut result = log
+        .check()
+        .and_then(|()| finalize_inheritance_inner(manifest_path, filesystem_root, backend));
+    match &result {
+        Ok(()) => super::logging::diagnostic(format!(
+            "==> [{}] 启动继承检查完成 / Boot inheritance check completed",
+            timestamp()
+        )),
+        Err(error) => super::logging::diagnostic(format!(
+            "==> [{}] 启动继承失败 / Boot inheritance failed: {error}",
+            timestamp()
+        )),
+    }
+    if let Err(error) = log.check() {
+        retain_diagnostic_failure(&mut result, error);
+    }
+    if let Err(error) = &result
+        && let Err(error) =
+            disk::write_text(&directory.join("inheritance-error.txt"), &error.to_string())
+    {
+        retain_diagnostic_failure(&mut result, error);
+        // Best effort: the same storage failure can also prevent this last sync.
+        // 尽力同步；同一个存储故障也可能使最后的同步失败。
+        let _ = log.check();
+    }
+    result
+}
+
+/// Preserve the original failure when the diagnostic storage also fails.
+/// 诊断存储也失败时，保留原始继承失败原因。
+fn retain_diagnostic_failure(result: &mut Result<()>, error: Error) {
+    super::logging::diagnostic(format!(
+        "无法保存继承诊断 / Cannot save inheritance diagnostics: {error}"
+    ));
+    let message = match result {
+        Ok(()) => error.to_string(),
+        Err(original) => {
+            format!("{original}; 无法保存继承诊断 / Cannot save inheritance diagnostics: {error}")
+        }
+    };
+    *result = Err(Error::Invalid(message));
+}
+
+fn timestamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as libc::time_t;
+    let mut time: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&now, &mut time) }.is_null() {
+        return format!("Unix {now}");
+    }
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        time.tm_year + 1900,
+        time.tm_mon + 1,
+        time.tm_mday,
+        time.tm_hour,
+        time.tm_min,
+        time.tm_sec
+    )
+}
+
+fn finalize_inheritance_inner(
     manifest_path: &Path,
     filesystem_root: &Path,
     backend: &impl BuildBackend,
@@ -319,6 +400,11 @@ pub fn finalize_inheritance_locked(
     // Validate every source before creating or modifying a destination.
     let mut sources = Vec::new();
     for source in &manifest.sources {
+        super::progress::message(
+            &manifest.system_id,
+            format!("校验继承来源：{}", source.target.display()),
+            format!("Validate inheritance source: {}", source.target.display()),
+        );
         crate::config::inheritance_name(&source.target)?;
         validate_inheritance_type(&source.target, source.directory)?;
         let path = if let Some(root) = &source_root {
@@ -370,8 +456,13 @@ pub fn finalize_inheritance_locked(
             }
         }
     }
+    super::progress::message(
+        &manifest.system_id,
+        "从准备根创建继承暂存根",
+        "Create inheritance staging root from the prepared root",
+    );
     backend.snapshot_recursive(&prepared, &staging, false)?;
-    let result = super::progress::run(
+    super::progress::run(
         &manifest.system_id,
         "应用启动阶段继承并发布可写系统根",
         "Apply boot-time inheritance and publish the writable system root",
@@ -403,6 +494,11 @@ pub fn finalize_inheritance_locked(
                 root_subvolume_id: backend.source_subvolume_id(&staging)?,
                 children: identities,
             };
+            super::progress::message(
+                &manifest.system_id,
+                "同步继承提交记录并发布最终根",
+                "Sync inheritance commit record and publish the final root",
+            );
             disk::write(&directory.join("inheritance-commit.toml"), &receipt)?;
             backend.sync_filesystem(&staging)?;
             fs::rename(&staging, &final_root).map_err(|e| disk::io(&final_root, e))?;
@@ -410,11 +506,7 @@ pub fn finalize_inheritance_locked(
             backend.sync_filesystem(directory)?;
             mark_complete(directory)
         },
-    );
-    if let Err(error) = &result {
-        disk::write_text(&directory.join("inheritance-error.txt"), &error.to_string())?;
-    }
-    result
+    )
 }
 
 #[derive(Serialize, Deserialize)]

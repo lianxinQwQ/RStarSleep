@@ -276,6 +276,22 @@ fn finalize_hook_mounts_top_level_and_propagates_executor_failure() {
     let calls = fs::read_to_string(&trace).unwrap();
     assert!(calls.contains("mount -t btrfs -o rw,subvolid=5"));
     assert!(calls.contains("engine finalize-inheritance --manifest"));
+    // Missing manifests must reach the executor so their errors can be retained on disk.
+    // 清单缺失也必须进入执行器，以便将错误保留在磁盘中。
+    fs::remove_file(top.join("versions/pending.toml")).unwrap();
+    fs::remove_file(&trace).unwrap();
+    let output = Command::new("bash")
+        .arg(&script)
+        .env("TRACE", &trace)
+        .env("ENGINE_EXIT", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        fs::read_to_string(&trace)
+            .unwrap()
+            .contains("engine finalize-inheritance --manifest")
+    );
     fs::write(&cmdline, "quiet\n").unwrap();
     fs::remove_file(&trace).unwrap();
     assert!(

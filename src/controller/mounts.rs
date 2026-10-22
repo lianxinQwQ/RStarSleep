@@ -26,16 +26,17 @@ struct Mounts {
 /// # Arguments
 /// - `path`: Existing host path. 已有宿主路径。
 pub(super) fn covering(path: &Path) -> Result<Mount> {
-    let output = Command::new("findmnt")
-        .args([
-            "--json",
-            "--output",
-            "TARGET,SOURCE,FSTYPE,OPTIONS,UUID,FSROOT",
-            "--target",
-        ])
-        .arg(path)
-        .output()
-        .map_err(|e| fs::io(Path::new("findmnt"), e))?;
+    let output = super::logging::command(
+        Command::new("findmnt")
+            .args([
+                "--json",
+                "--output",
+                "TARGET,SOURCE,FSTYPE,OPTIONS,UUID,FSROOT",
+                "--target",
+            ])
+            .arg(path),
+    )
+    .map_err(|e| fs::io(Path::new("findmnt"), e))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
             "无法查询挂载 {0}: {1} / Cannot query mount {0}: {1}",

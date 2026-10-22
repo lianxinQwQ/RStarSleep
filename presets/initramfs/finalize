@@ -48,7 +48,8 @@ else
     mount -t btrfs -o rw,subvolid=5 "$device" "$top" || fatal '无法挂载管理存储 / cannot mount management storage'
 fi
 manifest="$top$pending"
-[ -f "$manifest" ] || fatal '待处理清单缺失 / pending manifest is missing'
+# Let the executor persist missing/invalid manifest errors beside the selected version.
+# 由执行器在所选版本目录持久化清单缺失或无效的错误。
 printf 'RStarSleep: completing inheritance: %s\n' "$pending"
 /usr/lib/rstarsleep/early-runtime/run-rstarsleep finalize-inheritance \
     --manifest "$manifest" --filesystem-root "$top" || fatal '继承失败；拒绝使用不完整的根目录 / inheritance failed; refusing incomplete root'

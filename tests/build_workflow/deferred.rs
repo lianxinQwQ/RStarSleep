@@ -250,11 +250,21 @@ fn failed_copy_never_publishes_root_and_retry_rebuilds_staging() {
     let backend = SimulatedBackend::default();
     let outcome = pending(&fixture, &backend, &source, true);
     backend.fail_inheritance_copy.set(true);
-    assert!(finalize(&outcome, &backend).is_err());
+    let error = finalize(&outcome, &backend).unwrap_err().to_string();
     let directory = outcome.root.parent().unwrap();
     assert!(!directory.join("root").exists());
     assert!(directory.join("inheritance-staging").exists());
     assert!(directory.join("inheritance-error.txt").exists());
+    assert_eq!(
+        fs::read_to_string(directory.join("inheritance-error.txt")).unwrap(),
+        error
+    );
+    let failed_log = fs::read_to_string(directory.join("inheritance.log")).unwrap();
+    assert!(failed_log.contains(&error));
+    assert!(failed_log.contains(source.to_str().unwrap()));
+    assert!(failed_log.contains("Starting boot inheritance check"));
+    assert!(failed_log.contains("Z]"));
+    let install_log = fs::read(directory.join("install.log")).unwrap();
     assert_eq!(
         record(&directory.join("state.toml"))["state"].as_str(),
         Some("pending-inheritance")
@@ -263,6 +273,14 @@ fn failed_copy_never_publishes_root_and_retry_rebuilds_staging() {
     finalize(&outcome, &backend).unwrap();
     assert!(!directory.join("inheritance-staging").exists());
     assert!(!directory.join("inheritance-error.txt").exists());
+    let recovered_log = fs::read_to_string(directory.join("inheritance.log")).unwrap();
+    assert!(recovered_log.starts_with(&failed_log));
+    assert!(recovered_log.contains("Boot inheritance check completed"));
+    assert!(recovered_log.contains("publish the final root"));
+    assert_eq!(
+        fs::read(directory.join("install.log")).unwrap(),
+        install_log
+    );
     assert_eq!(
         fs::read_to_string(
             directory
@@ -271,6 +289,124 @@ fn failed_copy_never_publishes_root_and_retry_rebuilds_staging() {
         )
         .unwrap(),
         "retry"
+    );
+}
+
+#[test]
+fn preflight_failures_are_durable_and_success_keeps_the_retry_history() {
+    for failure in [
+        "missing-manifest",
+        "invalid-manifest",
+        "missing-source",
+        "uuid",
+        "identity",
+    ] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("live-file");
+        fs::write(&source, "data").unwrap();
+        let backend = SimulatedBackend::default();
+        let outcome = pending(&fixture, &backend, &source, true);
+        let directory = outcome.root.parent().unwrap();
+        let manifest_path = directory.join("inheritance-pending.toml");
+        let original = fs::read(&manifest_path).unwrap();
+        match failure {
+            "missing-manifest" => fs::remove_file(&manifest_path).unwrap(),
+            "invalid-manifest" => fs::write(&manifest_path, "not valid TOML [[").unwrap(),
+            "missing-source" => fs::remove_file(&source).unwrap(),
+            _ => {
+                let mut manifest = record(&manifest_path);
+                if failure == "uuid" {
+                    manifest["filesystem_uuid"] = "another-filesystem".into();
+                } else {
+                    manifest["source_root"]["subvolume_id"] = "changed-root".into();
+                }
+                fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+            }
+        }
+        let error = finalize(&outcome, &backend).unwrap_err().to_string();
+        let failed_log = fs::read_to_string(directory.join("inheritance.log")).unwrap();
+        assert!(failed_log.contains(&error), "{failure}: {failed_log}");
+        assert_eq!(
+            fs::read_to_string(directory.join("inheritance-error.txt")).unwrap(),
+            error,
+            "{failure}"
+        );
+        assert!(!directory.join("root").exists(), "{failure}");
+        assert!(!directory.join("inheritance-staging").exists(), "{failure}");
+        assert_eq!(
+            record(&directory.join("state.toml"))["state"].as_str(),
+            Some("pending-inheritance")
+        );
+
+        fs::write(&manifest_path, original).unwrap();
+        fs::write(&source, "recovered").unwrap();
+        finalize(&outcome, &backend).unwrap();
+        assert!(!directory.join("inheritance-error.txt").exists());
+        let log = fs::read_to_string(directory.join("inheritance.log")).unwrap();
+        assert!(log.starts_with(&failed_log));
+        assert!(log.contains("Boot inheritance check completed"));
+        assert_eq!(
+            fs::read_to_string(
+                directory
+                    .join("root")
+                    .join(source.strip_prefix("/").unwrap())
+            )
+            .unwrap(),
+            "recovered"
+        );
+    }
+}
+
+#[test]
+fn error_summary_failure_does_not_hide_the_original_inheritance_error() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let source = fixture.store.root().parent().unwrap().join("live-file");
+    fs::write(&source, "data").unwrap();
+    let backend = SimulatedBackend::default();
+    let outcome = pending(&fixture, &backend, &source, true);
+    let directory = outcome.root.parent().unwrap();
+    fs::remove_file(&source).unwrap();
+    fs::create_dir(directory.join("inheritance-error.txt")).unwrap();
+    let error = finalize(&outcome, &backend).unwrap_err().to_string();
+    assert!(error.contains(source.to_str().unwrap()), "{error}");
+    assert!(
+        error.contains("Cannot save inheritance diagnostics"),
+        "{error}"
+    );
+    let log = fs::read_to_string(directory.join("inheritance.log")).unwrap();
+    assert!(log.contains(source.to_str().unwrap()));
+    assert!(log.contains("Cannot save inheritance diagnostics"));
+    assert!(!directory.join("root").exists());
+}
+
+#[test]
+fn inheritance_log_stays_outside_roots_and_is_removed_with_its_version() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let source = fixture.store.root().parent().unwrap().join("live-file");
+    fs::write(&source, "data").unwrap();
+    let backend = SimulatedBackend::default();
+    let first = pending(&fixture, &backend, &source, true);
+    finalize(&first, &backend).unwrap();
+    let directory = first.root.parent().unwrap();
+    let log = fs::read(directory.join("inheritance.log")).unwrap();
+    assert!(!directory.join("root/inheritance.log").exists());
+    assert!(!first.root.join("inheritance.log").exists());
+    let second = pending(&fixture, &backend, &source, true);
+    assert_eq!(fs::read(directory.join("inheritance.log")).unwrap(), log);
+    finalize(&second, &backend).unwrap();
+    rstarsleep::controller::clean_with_backend(&fixture.store, "desktop", &first.version, &backend)
+        .unwrap();
+    assert!(!directory.exists());
+    assert!(
+        second
+            .root
+            .parent()
+            .unwrap()
+            .join("inheritance.log")
+            .is_file()
     );
 }
 
