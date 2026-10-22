@@ -137,3 +137,64 @@ fn drift_policy_controls_publication_without_repair() {
         }
     }
 }
+
+#[test]
+fn selected_source_root_supplies_account_preflight_environment_and_frozen_inputs() {
+    use rstarsleep::controller::{BuildOptions, build_with_options_and_backend_and_warning};
+    use std::path::Path;
+
+    let fixture = Fixture::new();
+    fixture.system("desktop", &["editor"]);
+    let parent = fixture.store.root().parent().unwrap();
+    let selected = parent.join("selected-source");
+    fs::create_dir_all(selected.join("rstar-test")).unwrap();
+    fs::write(
+        selected.join("rstar-test/account"),
+        "frozen-before-preflight",
+    )
+    .unwrap();
+    fixture.account_plugin(Path::new("/rstar-test/account"), EMPTY, EMPTY);
+    let plugin_source = parent.join("plugin-source");
+    let quoted_root = format!("'{}'", selected.to_str().unwrap().replace('\'', "'\\''"));
+    fs::write(
+        plugin_source.join("account_check.sh"),
+        format!(
+            "set -eu\nif [ \"${{3:-}}\" = --preflight ]; then\n  test \"$RSTAR_ROOT\" = {quoted_root}\n  test \"$(cat \"$2/old/rstar-test/account\")\" = frozen-before-preflight\n  test \"$(cat \"$RSTAR_ROOT/rstar-test/account\")\" = frozen-before-preflight\n  printf changed-after-preflight > \"$RSTAR_ROOT/rstar-test/account\"\n  cat \"$RSTAR_PLUGIN_ROOT/account-preflight.json\"\nelse\n  cat \"$RSTAR_PLUGIN_ROOT/account-result.json\"\nfi\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        plugin_source.join("account_prepare.sh"),
+        "set -eu\ntest \"$(cat \"$2/old/rstar-test/account\")\" = frozen-before-preflight\ncat \"$2/old/rstar-test/account\" > \"$RSTAR_ROOT/.account-frozen-source\"\n",
+    )
+    .unwrap();
+    let archive = fs::File::create(fixture.store.plugins_path().join("arch.tar")).unwrap();
+    let mut archive = tar::Builder::new(archive);
+    archive.append_dir_all(".", &plugin_source).unwrap();
+    archive.finish().unwrap();
+
+    let backend = SimulatedBackend::default();
+    let outcome = build_with_options_and_backend_and_warning(
+        &fixture.store,
+        Some("desktop"),
+        &BuildOptions {
+            inheritance_root: selected.clone(),
+        },
+        &backend,
+        |_| Ok(()),
+    )
+    .unwrap()
+    .remove(0);
+    assert_eq!(
+        fs::read_to_string(outcome.root.join(".account-frozen-source")).unwrap(),
+        "frozen-before-preflight"
+    );
+    assert_eq!(
+        fs::read_to_string(selected.join("rstar-test/account")).unwrap(),
+        "changed-after-preflight"
+    );
+    assert_eq!(
+        fs::read_to_string(outcome.root.join(".accounts")).unwrap(),
+        "inherited"
+    );
+}

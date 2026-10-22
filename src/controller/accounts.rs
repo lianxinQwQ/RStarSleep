@@ -131,6 +131,7 @@ fn capture(plugin: &LoadedPlugin, source_root: &Path, name: &str) -> Result<()> 
 pub(super) fn preflight(
     plugin: &LoadedPlugin,
     context: &BuildContext,
+    source_root: &Path,
     report: &mut preflight::Report,
 ) -> Result<()> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
@@ -160,14 +161,8 @@ pub(super) fn preflight(
     .unwrap();
     crate::subsystem::atomic_write(&work.join("request.json"), &request, 0o600)
         .map_err(|e| Error::Invalid(e.to_string()))?;
-    capture(plugin, Path::new("/"), "old")?;
-    let checked = parse_check(&call(
-        plugin,
-        context,
-        Path::new("/"),
-        "account_check",
-        true,
-    )?)?;
+    capture(plugin, source_root, "old")?;
+    let checked = parse_check(&call(plugin, context, source_root, "account_check", true)?)?;
     if !checked.differences.is_empty() {
         return Err(Error::Invalid(format!(
             "账户来源预检失败: {0} / Account-source preflight failed: {0}",
@@ -258,6 +253,7 @@ pub(super) fn apply(
     context: &BuildContext,
     root: &Path,
     system: &Path,
+    source_root: &Path,
 ) -> Result<bool> {
     if plugin.metadata.account_inheritance.is_none() {
         return Ok(false);
@@ -304,7 +300,7 @@ pub(super) fn apply(
             }
             AccountDriftPolicy::Assess => {
                 super::logging::diagnostic(format!("UID/GID 漂移影响评估：{summary}"));
-                impact::assess(backend, context, system, &checked.drifts)?;
+                impact::assess(backend, context, system, &checked.drifts, source_root)?;
             }
         }
     }

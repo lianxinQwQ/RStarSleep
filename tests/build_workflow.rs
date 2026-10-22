@@ -411,3 +411,6 @@ mod reuse;
 
 #[path = "build_workflow/dedup.rs"]
 mod dedup;
+
+#[path = "build_workflow/source_root.rs"]
+mod source_root;

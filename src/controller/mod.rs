@@ -46,7 +46,10 @@ pub use dedup::DedupOutcome;
 pub use deferred::finalize_inheritance_locked;
 pub use deferred::{finalize_inheritance, finalize_inheritance_with_backend};
 pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount, Result};
-pub use workflow::{build, build_with_backend, build_with_backend_and_warning};
+pub use workflow::{
+    BuildOptions, build, build_with_backend, build_with_backend_and_warning, build_with_options,
+    build_with_options_and_backend, build_with_options_and_backend_and_warning,
+};
 
 /// Acquire the shared build, startup and cleanup system lock.
 /// 获取构建、启动和清理共用的系统锁。

@@ -14,6 +14,23 @@ use crate::config::{
 };
 use std::path::{Path, PathBuf};
 
+/// Per-invocation source selection for data and account inheritance.
+/// 每次构建调用的数据及账户继承来源选择。
+#[derive(Debug, Clone)]
+pub struct BuildOptions {
+    /// Root under which configured absolute inheritance paths are resolved.
+    /// 用于解析配置中绝对继承路径的来源根。
+    pub inheritance_root: PathBuf,
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            inheritance_root: PathBuf::from("/"),
+        }
+    }
+}
+
 /// Build one named system or every configured system using native CoW storage.
 /// 使用原生 CoW 存储构建一个命名系统或所有已配置系统。
 /// # Arguments
@@ -28,6 +45,19 @@ use std::path::{Path, PathBuf};
 /// 返回构建错误；全部构建时继续尝试其他独立系统。
 pub fn build(store: &ConfigStore, system: Option<&str>) -> Result<Vec<BuildOutcome>> {
     build_with_backend(store, system, &SystemBackend)
+}
+
+/// Build using an explicitly selected inheritance source root.
+/// 使用显式选择的继承来源根构建。
+/// # Errors
+/// Returns source, configuration or build failures.
+/// 返回来源、配置或构建错误。
+pub fn build_with_options(
+    store: &ConfigStore,
+    system: Option<&str>,
+    options: &BuildOptions,
+) -> Result<Vec<BuildOutcome>> {
+    build_with_options_and_backend(store, system, options, &SystemBackend)
 }
 
 /// Build with an injectable backend while preserving locks, records, and control flow.
@@ -49,7 +79,21 @@ pub fn build_with_backend(
     system: Option<&str>,
     backend: &impl BuildBackend,
 ) -> Result<Vec<BuildOutcome>> {
-    build_with_backend_and_warning(store, system, backend, |warnings| {
+    build_with_options_and_backend(store, system, &BuildOptions::default(), backend)
+}
+
+/// Build with explicit sources and an injectable storage and execution backend.
+/// 使用显式来源及可注入存储和执行后端构建。
+/// # Errors
+/// Returns source, selection or aggregated build failures.
+/// 返回来源、选择或汇总构建错误。
+pub fn build_with_options_and_backend(
+    store: &ConfigStore,
+    system: Option<&str>,
+    options: &BuildOptions,
+    backend: &impl BuildBackend,
+) -> Result<Vec<BuildOutcome>> {
+    build_with_options_and_backend_and_warning(store, system, options, backend, |warnings| {
         for warning in warnings {
             logging::diagnostic(warning);
         }
@@ -65,14 +109,55 @@ pub fn build_with_backend_and_warning(
     store: &ConfigStore,
     system: Option<&str>,
     backend: &impl BuildBackend,
+    warning: impl FnMut(&[String]) -> Result<()>,
+) -> Result<Vec<BuildOutcome>> {
+    build_with_options_and_backend_and_warning(
+        store,
+        system,
+        &BuildOptions::default(),
+        backend,
+        warning,
+    )
+}
+
+/// Check selected sources before reporting warnings or allocating any build attempt.
+/// 报告警告或分配任何构建尝试前检查选定来源。
+/// # Errors
+/// Returns source, preflight, warning callback or build failures.
+/// 返回来源、预检、警告回调或构建错误。
+pub fn build_with_options_and_backend_and_warning(
+    store: &ConfigStore,
+    system: Option<&str>,
+    options: &BuildOptions,
+    backend: &impl BuildBackend,
     mut warning: impl FnMut(&[String]) -> Result<()>,
 ) -> Result<Vec<BuildOutcome>> {
+    let inheritance_root = &options.inheritance_root;
+    fs::checked(inheritance_root)?;
+    if !std::fs::metadata(inheritance_root)
+        .map_err(|e| fs::io(inheritance_root, e))?
+        .is_dir()
+    {
+        return Err(Error::Invalid(format!(
+            "继承来源根必须为已有目录: {0} / Inheritance source root must be an existing directory: {0}",
+            inheritance_root.display()
+        )));
+    }
     let systems = if let Some(id) = system {
         store.system_layout(id)?;
         vec![id.to_owned()]
     } else {
         store.list_systems()?
     };
+    for id in &systems {
+        let cache = store.system_layout(id)?.cache;
+        if inheritance_root.starts_with(&cache) {
+            return Err(Error::Invalid(format!(
+                "继承来源根位于本次构建可能清理的系统 {id} 缓存中，请选择版本根: {0} / Inheritance source root is inside system {id}'s cache, which this build may remove; select a version root instead: {0}",
+                inheritance_root.display()
+            )));
+        }
+    }
     progress::message(
         "build",
         format!("准备构建 {} 个系统", systems.len()),
@@ -103,7 +188,18 @@ pub fn build_with_backend_and_warning(
                     "Prepare configuration and check caches ({}/{system_count})",
                     index + 1
                 ),
-                || check_system(store, &id, &runtime, inputs, &backend, &work, &mut warnings),
+                || {
+                    check_system(
+                        store,
+                        &id,
+                        &runtime,
+                        inputs,
+                        &backend,
+                        &work,
+                        inheritance_root,
+                        &mut warnings,
+                    )
+                },
             )
         })();
         match checked {
@@ -233,7 +329,16 @@ pub fn build_with_backend_and_warning(
             &value.context.system_id,
             format!("构建版本 {}", value.attempt.version),
             format!("Build version {}", value.attempt.version),
-            || build_system(value, &work, &backend, &runtime, &dedup_sources),
+            || {
+                build_system(
+                    value,
+                    &work,
+                    &backend,
+                    &runtime,
+                    &dedup_sources,
+                    inheritance_root,
+                )
+            },
         );
         let built = match value.attempt.log.check() {
             Ok(()) => built,
@@ -462,6 +567,7 @@ fn check_system(
     inputs: Preflight,
     backend: &impl BuildBackend,
     work: &Path,
+    inheritance_root: &Path,
     warnings: &mut super::preflight::Report,
 ) -> Result<Pending> {
     progress::message(
@@ -498,6 +604,7 @@ fn check_system(
         &inheritance,
         &store.system_layout(id)?.root,
         work,
+        inheritance_root,
         &mut inheritance_warnings,
     )?;
     for message in inheritance_warnings {
@@ -542,7 +649,7 @@ fn check_system(
         environment,
         inherited_mounts: Vec::new(),
     };
-    super::accounts::preflight(&plugin, &context, warnings)?;
+    super::accounts::preflight(&plugin, &context, inheritance_root, warnings)?;
     Ok(Pending {
         inputs,
         plugin,
@@ -936,6 +1043,7 @@ fn build_system(
     backend: &impl BuildBackend,
     runtime: &crate::config::RuntimeConfig,
     dedup_sources: &[super::dedup::Source],
+    inheritance_root: &Path,
 ) -> Result<(BuildOutcome, Option<super::dedup::Source>)> {
     let Prepared {
         attempt,
@@ -1001,6 +1109,7 @@ fn build_system(
             deduplicate_packages: prepared.deduplicate_packages,
             dedup_sources,
             source_root: prepared.source_root.as_ref(),
+            inheritance_root,
         };
         let outcome = stages.run(base, packages, scripts, &mut owned)?;
         let source = if prepared.deduplicate_packages {

@@ -1042,7 +1042,12 @@ mod tests {
         fs::create_dir(&scratch).unwrap();
         let mut owned = Vec::new();
         let frozen = super::super::inheritance_inputs::freeze(
-            &backend, &context, &scratch, &system, &mut owned,
+            &backend,
+            &context,
+            &scratch,
+            &system,
+            Path::new("/"),
+            &mut owned,
         )
         .unwrap();
         backend.check_subvolume(&fixture.source, false).unwrap();

@@ -4,9 +4,9 @@
 use crate::config::{ConfigStore, DEFAULT_MOUNT_POINT};
 use std::{ffi::OsString, path::PathBuf};
 
-/// Help describing system selection, manager location, and scratch defaults.
-/// 描述系统选择、管理器位置和临时目录默认值的帮助。
-const USAGE: &str = "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]\n\n省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep。\n构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。 / Usage: RStarSleep build [<system-id> | --all] [--root <absolute-management-root>]\n\nOmit the system or use --all to build every system; the management root defaults to /rstarsleep.\nTemporary build directories use the global work_dir setting, which defaults to work/ under the management root.";
+/// Help describing system selection, manager location, inheritance source, and scratch defaults.
+/// 描述系统选择、管理器位置、继承来源和临时目录默认值的帮助。
+const USAGE: &str = "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>] [--inheritance-root <继承来源根绝对路径>]\n\n省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep，默认继承来源根为 /。\n继承路径相对于来源系统根解析；--root 仅选择管理存储。\n构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。 / Usage: RStarSleep build [<system-id> | --all] [--root <absolute-management-root>] [--inheritance-root <absolute-inheritance-root>]\n\nOmit the system or use --all to build every system; the management root defaults to /rstarsleep and the inheritance source root defaults to /.\nInheritance paths resolve within the source system root; --root only selects management storage.\nTemporary build directories use the global work_dir setting, which defaults to work/ under the management root.";
 
 /// Parse arguments and run one system or every managed system.
 /// 解析参数并构建一个系统或全部被管理系统。
@@ -25,11 +25,13 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
-    let (root, system) = parse(arguments)?;
+    let (root, system, inheritance_root) = parse(arguments)?;
     let store = ConfigStore::new(root)?;
-    for outcome in crate::controller::build_with_backend_and_warning(
+    let options = crate::controller::BuildOptions { inheritance_root };
+    for outcome in crate::controller::build_with_options_and_backend_and_warning(
         &store,
         system.as_deref(),
+        &options,
         &crate::controller::SystemBackend,
         warn_preflight,
     )? {
@@ -44,6 +46,7 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
 }
 
 /// Warn before the controller allocates versions or invalidates caches.
+/// 在控制器分配版本或使缓存失效之前发出警告。
 fn warn_preflight(warnings: &[String]) -> crate::controller::Result<()> {
     use std::io::Write;
     let report = || -> std::io::Result<()> {
@@ -68,36 +71,48 @@ fn warn_preflight(warnings: &[String]) -> crate::controller::Result<()> {
     })
 }
 
-/// Validate selection while preserving native bytes in an optional manager path.
-/// 校验系统选择，保留可选管理路径的原生字节。
+/// Validate selection while preserving native bytes in optional manager and source paths.
+/// 校验系统选择，保留可选管理路径和来源路径的原生字节。
 ///
 /// # Arguments
 ///
 /// - `arguments`: Native build arguments.
 ///   原生 build 参数。
-fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>)> {
+fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>, PathBuf)> {
     let mut root = None;
+    let mut inheritance_root = None;
     let mut system = None;
     let mut all = false;
     let mut arguments = arguments.iter();
     while let Some(argument) = arguments.next() {
-        if argument == "--root" {
-            if root.is_some() {
+        if argument == "--root" || argument == "--inheritance-root" {
+            let (slot, flag, label, english_label) = if argument == "--root" {
+                (&mut root, "--root", "管理根", "management root")
+            } else {
+                (
+                    &mut inheritance_root,
+                    "--inheritance-root",
+                    "继承来源根",
+                    "inheritance source root",
+                )
+            };
+            if slot.is_some() {
                 return Err(format!(
-                    "--root 只能指定一次 / --root may only be specified once\n{USAGE}"
+                    "{flag} 只能指定一次 / {flag} may only be specified once\n{USAGE}"
                 )
                 .into());
             }
             let path =
                 PathBuf::from(arguments.next().ok_or_else(|| {
-                    format!("--root 缺少路径 / --root is missing a path\n{USAGE}")
+                    format!("{flag} 缺少路径 / {flag} is missing a path\n{USAGE}")
                 })?);
             if !path.is_absolute() {
-                return Err(
-                    "管理根必须为绝对路径 / management root must be an absolute path".into(),
-                );
+                return Err(format!(
+                    "{label}必须为绝对路径 / {english_label} must be an absolute path"
+                )
+                .into());
             }
-            root = Some(path);
+            *slot = Some(path);
         } else if argument == "--all" {
             if all || system.is_some() {
                 return Err(format!("--all 不能重复或与系统标识同时使用 / --all must not be repeated or combined with a system identifier\n{USAGE}").into());
@@ -116,7 +131,11 @@ fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>)> {
             system = Some(text.to_owned());
         }
     }
-    Ok((root.unwrap_or_else(|| DEFAULT_MOUNT_POINT.into()), system))
+    Ok((
+        root.unwrap_or_else(|| DEFAULT_MOUNT_POINT.into()),
+        system,
+        inheritance_root.unwrap_or_else(|| PathBuf::from("/")),
+    ))
 }
 
 #[cfg(test)]
@@ -145,11 +164,11 @@ mod tests {
     fn selects_all_by_default_and_accepts_one_system_in_either_order() {
         assert_eq!(
             parse(&[]).unwrap(),
-            (PathBuf::from(DEFAULT_MOUNT_POINT), None)
+            (PathBuf::from(DEFAULT_MOUNT_POINT), None, PathBuf::from("/"))
         );
         assert_eq!(
             parse(&arguments(&["--all"])).unwrap(),
-            (PathBuf::from(DEFAULT_MOUNT_POINT), None)
+            (PathBuf::from(DEFAULT_MOUNT_POINT), None, PathBuf::from("/"))
         );
         for values in [
             vec!["desktop", "--root", "/mnt/manager"],
@@ -157,12 +176,55 @@ mod tests {
         ] {
             assert_eq!(
                 parse(&arguments(&values)).unwrap(),
-                (PathBuf::from("/mnt/manager"), Some("desktop".into()))
+                (
+                    PathBuf::from("/mnt/manager"),
+                    Some("desktop".into()),
+                    PathBuf::from("/")
+                )
             );
         }
         assert_eq!(
             parse(&arguments(&["--all", "--root", "/mnt/manager"])).unwrap(),
-            (PathBuf::from("/mnt/manager"), None)
+            (PathBuf::from("/mnt/manager"), None, PathBuf::from("/"))
+        );
+    }
+
+    /// Keep the management and source roots independent regardless of argument order.
+    /// 无论参数顺序如何，管理根和来源根都保持独立。
+    #[test]
+    fn selects_inheritance_root_independently_of_management_root() {
+        for values in [
+            vec![
+                "desktop",
+                "--root",
+                "/mnt/manager",
+                "--inheritance-root",
+                "/mnt/source",
+            ],
+            vec![
+                "--inheritance-root",
+                "/mnt/source",
+                "desktop",
+                "--root",
+                "/mnt/manager",
+            ],
+        ] {
+            assert_eq!(
+                parse(&arguments(&values)).unwrap(),
+                (
+                    PathBuf::from("/mnt/manager"),
+                    Some("desktop".into()),
+                    PathBuf::from("/mnt/source")
+                )
+            );
+        }
+        assert_eq!(
+            parse(&arguments(&["--all", "--inheritance-root", "/mnt/source"])).unwrap(),
+            (
+                PathBuf::from(DEFAULT_MOUNT_POINT),
+                None,
+                PathBuf::from("/mnt/source")
+            )
         );
     }
 
@@ -184,6 +246,10 @@ mod tests {
             vec!["--root", "relative"],
             vec!["--unknown"],
             vec!["--root", "/one", "--root", "/two"],
+            vec!["--inheritance-root"],
+            vec!["--inheritance-root", "relative"],
+            vec!["--inheritance-root", "/one", "--inheritance-root", "/two"],
+            vec!["--inheritance-root", "--all"],
         ] {
             assert!(parse(&arguments(&values)).is_err(), "accepted {values:?}");
         }
@@ -191,8 +257,8 @@ mod tests {
         assert!(run(&arguments(&["-h"])).is_ok());
     }
 
-    /// Preserve non-UTF-8 manager paths while rejecting non-UTF-8 system identities.
-    /// 保留非 UTF-8 管理器路径，拒绝非 UTF-8 系统标识。
+    /// Preserve non-UTF-8 manager and source paths while rejecting non-UTF-8 system identities.
+    /// 保留非 UTF-8 管理器和来源路径，拒绝非 UTF-8 系统标识。
     ///
     /// # Arguments
     ///
@@ -203,13 +269,17 @@ mod tests {
     fn preserves_native_path_bytes() {
         use std::os::unix::ffi::OsStringExt;
         let root = OsString::from_vec(b"/mnt/manager-\xff".to_vec());
+        let inheritance_root = OsString::from_vec(b"/mnt/source-\xfe".to_vec());
         let actual = parse(&[
             OsString::from("--root"),
             root.clone(),
+            OsString::from("--inheritance-root"),
+            inheritance_root.clone(),
             OsString::from("desktop"),
         ])
         .unwrap();
         assert_eq!(actual.0.as_os_str(), root);
+        assert_eq!(actual.2.as_os_str(), inheritance_root);
         assert!(parse(&[OsString::from_vec(b"system-\xff".to_vec())]).is_err());
     }
 }

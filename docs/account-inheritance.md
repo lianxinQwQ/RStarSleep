@@ -17,6 +17,10 @@ Users、Groups 支持重复赋值、多行值和空列表；重复名称去重�
 只接受 `silent`、`warn`、`error`、`assess`，默认 `warn`。这些是控制器配置，
 不需要加入插件普通参数声明，也不影响基础、软件阶段的配置摘要。
 不根据 UID/GID 范围猜测账户来源，不自动合并全部运行期账户修改。
+账户来源根使用本次 build 的 `--inheritance-root <绝对路径>`，默认 `/`，与选择管理存储的
+`--root` 独立。例如 `RStarSleep build desktop --inheritance-root /mnt/source-system`
+从该根内的 `/etc/passwd`、`/etc/shadow`、`/etc/group`、`/etc/gshadow` 固定 old 输入；
+这些路径仍是来源系统内的绝对路径。来源无效或读取失败不回退当前系统根。
 
 ## 预检与执行时机
 

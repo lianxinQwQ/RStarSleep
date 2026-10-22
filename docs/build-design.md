@@ -33,6 +33,11 @@ API 2 仍支持已有缓存的维护；无基础缓存的创建需要 API 3。
 工作目录不占用位置参数。`build` 从配置模块读取工作目录；未设置 `work_dir` 时，
 使用配置模块创建的专用根下默认独立目录，不以当前 shell 的目录作为默认值。
 默认管理根为 `/rstarsleep`，可通过 `--root <绝对路径>` 选择其他管理根。
+`--inheritance-root <绝对路径>` 独立选择本次构建的继承来源系统根，默认 `/`，
+作用于 CopyOnWriteBuild、CopyOnWriteBoot 的来源根身份、Mount 首次初始化及账户继承。
+配置中的继承路径仍是该系统内的绝对路径；来源根无效或读取失败不回退当前系统根。
+本次参与构建系统的 `cache/` 目录不能作为继承来源根，因为构建可能清理这些缓存；
+需要继承已有构建时，可选择其 `versions/<版本>/root`。
 默认构建工作目录为 `<管理根>/work`；全局 `work_dir` 的相对路径相对于管理根解析。
 该目录必须独立于配置、插件和系统记录目录，修改它不会迁移永久数据。
 
@@ -41,6 +46,7 @@ RStarSleep build
 RStarSleep build --all
 RStarSleep build <系统标识>
 RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
+RStarSleep build desktop --inheritance-root /mnt/source-system
 ```
 
 单个系统与 `--all` 不能同时指定。全部系统指 `systems/` 下已初始化的被管理系统，
@@ -65,7 +71,7 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 
 | 文件 | 单一职责 |
 | --- | --- |
-| `src/cli/build.rs` | 解析系统选择、`--all`、`--root` 和帮助 |
+| `src/cli/build.rs` | 解析系统选择、`--all`、`--root`、`--inheritance-root` 和帮助 |
 | `src/config/build.rs` | 完整构建配置、工作目录和系统枚举 |
 | `src/config/ini.rs` | mkosi 风格 INI 解析、文件叠加、包列表追加及规范化摘要输入 |
 | `src/config/inheritance.rs` | 独立读取控制器所属继承列表、路径及持久名称校验 |
@@ -73,7 +79,7 @@ Arch 插件的源代码放在 `presets/plugins/arch/`，打包后嵌入程序并
 | `src/controller/model.rs` | 后端契约、冻结上下文、构建结果和错误 |
 | `src/controller/workflow.rs` | 系统批次、一次构建生命周期、状态迁移和临时根清理 |
 | `src/controller/stages.rs` | 按步骤执行基础系统、软件包、script、inherit 及最终根发布 |
-| `src/controller/inheritance.rs` | 当前系统 CoW 复制、系统级持久挂载及显式子卷发布 |
+| `src/controller/inheritance.rs` | 所选来源系统 CoW 复制、系统级持久挂载及显式子卷发布 |
 | `src/controller/mounts.rs` | 文件系统 UUID、顶层子卷路径及挂载边界检查 |
 | `src/controller/boot.rs` | 主系统 Type #1 启动发布与管理器可执行程序同步 |
 | `src/controller/clean.rs` | 版本及缓存清理、启动文件所有权与运行系统保护 |
@@ -630,7 +636,7 @@ script 阶段使用完整冻结配置（包括脚本正文和资源）、已解�
 有无缓存的动作在各步骤内部处理；新版维护在应用配置目标的层执行一次。
 script 只消费本次软件输出，inherit 只消费本次 script 输出，两者每次重新执行。
 
-## 当前运行系统的数据继承
+## 所选系统根的数据继承
 
 控制器以 `InheritanceConfig::read()` 从合并 INI 参数独立读取 `[Inheritance]`，
 不把继承作为 mkosi 构建选项或要求插件声明的配置。接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume 和 NocowHandling：
@@ -651,9 +657,11 @@ Mount=/etc/myapp.conf
 结尾，普通文件不能以 `/` 结尾；继承时核验实际类型。不接受 `/`、`//`、`.` 路径段、重复、相互包含、
 控制字符、父级跳转或编码名称冲突；来源不能包含目标管理存储，顶层来源解析为普通文件或目录。
 Mount 还不能遮盖 `/rstarsleep`、`/run/rstarsleep`，路径不得包含 nspawn 绑定分隔字符 `:`、`\`。
+来源根由本次 build 的 `--inheritance-root` 选择，默认 `/`。例如来源根为 `/mnt/source-system`，
+配置 `/etc/hostname` 读取其下的 `etc/hostname`，目标路径保持 `/etc/hostname`。
 
 CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，从该缓存创建的 `script-root` 中
-继承当前运行系统，然后执行 `post_maintenance` 和用户脚本，成功后一起提交 `script` 缓存；
+继承所选来源系统，然后执行 `post_maintenance` 和用户脚本，成功后一起提交 `script` 缓存；
 CopyOnWriteBoot 在目标版本首次启动时继承。
 两份列表可同时配置，不使用全局时机开关；跨列表及 Mount 的路径重复、相互包含和名称冲突统一拒绝。
 来源与目标必须具有相同 Btrfs UUID。普通文件使用强制 reflink；目录默认创建独立目标子卷，
@@ -664,7 +672,10 @@ CopyOnWriteBoot 在目标版本首次启动时继承。
 类型不符或 UUID 不一致仅警告；所有提示共用一次三秒取消等待，后续不重复当前视图诊断。
 构建时继承的来源不允许内部挂载。启动清单仅原样记录配置路径并固定构建时来源根身份，
 不扫描来源目录、发现子卷或展开后代挂载；启动时在来源根的底层视图解析路径，
-再发现实际嵌套子卷并递归快照，不要求子卷分别挂载。旧 schema 1 的物理来源映射保持兼容。
+读取所选根子卷，而非构建时覆盖路径的外部挂载，再发现实际嵌套子卷并递归快照，
+不要求子卷分别挂载。来源失效或读取失败不回退当前系统根。旧 schema 1 的物理来源映射保持兼容。
+自定义来源根（非 `/`）的 Btrfs UUID、位置或子卷 ID 无法固定，或根 UUID 与目标不符时，
+在预检阶段直接拒绝构建；默认 `/` 保持原有警告并保存未解析任务的行为。
 
 `NocowHandling=error|reflink|copy|move-snapshot` 是统一枚举，默认 `error`，策略之间不会自动降级。
 `reflink` 先匹配空目标 inode 的 CoW/NOCOW 属性再强制克隆；`copy` 仅对 NOCOW 文件明确完整复制。
@@ -683,8 +694,8 @@ CopyOnWriteBoot 非空时，完成软件、构建列表继承、插件后处理�
 兼容性由用户负责。详细协议见 [首次启动继承](initramfs-inheritance.md)。
 
 Mount 的路径先去掉声明目录的末尾 `/`，再把其余 `/` 替换为 `-`，包括开头斜杠，例如 `/home/alice/` 对应
-`systems/<系统>/persistent/-home-alice`。不存在时从当前运行系统首次复制；存在时直接复用，
-即使当前来源已经不存在也不复制；复用时按持久对象核验路径类型。来源可以跨分区、包含内部挂载点或子卷，输出 Warning，
+`systems/<系统>/persistent/-home-alice`。不存在时从所选来源根首次复制；存在时直接复用，
+即使更换来源根或当前来源已经不存在也不覆盖；复用时按持久对象核验路径类型。来源可以跨分区、包含内部挂载点或子卷，输出 Warning，
 首次复制允许普通复制。目录初始化为可写 Btrfs 子卷，文件为普通文件，不随版本清理删除。
 新根保留挂载点的底层内容，确保 `/usr` 等路径仍能提供工具。在挂载插件和包查询期间，
 这些持久项目绑定到目标系统；继承 `/etc` 时把最终 fstab 同步到新根。

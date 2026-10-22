@@ -138,6 +138,7 @@ pub(super) fn assess(
     context: &BuildContext,
     system: &Path,
     drifts: &[Drift],
+    source_root: &Path,
 ) -> Result<()> {
     let config =
         InheritanceConfig::read(&crate::config::read_plugin_parameters_at(&context.config)?)?;
@@ -151,17 +152,28 @@ pub(super) fn assess(
         errors: Vec::new(),
         skipped: 0,
     };
-    let mut sources = config.copy_on_write_build.clone();
-    sources.extend(config.copy_on_write_boot.iter().cloned());
+    let mut sources = config
+        .copy_on_write_build
+        .iter()
+        .chain(&config.copy_on_write_boot)
+        .map(|target| disk::source_path(source_root, target))
+        .collect::<Vec<_>>();
     for target in &config.mounts {
         let persistent = system.join("persistent").join(inheritance_name(target)?);
         sources.push(if disk::exists(&persistent)? {
-            persistent
+            Ok(persistent)
         } else {
-            target.clone()
+            disk::source_path(source_root, target)
         });
     }
     for source in sources {
+        let source = match source {
+            Ok(source) => source,
+            Err(error) => {
+                scanner.errors.push(error.to_string());
+                continue;
+            }
+        };
         let path = source.as_path();
         // Resolve a declared root once; never follow links encountered below that root.
         match fs::canonicalize(path) {

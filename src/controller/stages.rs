@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 /// Shared immutable inputs for the independently committed stage workflows.
 /// 独立提交阶段流程共享的不可变输入。
 pub(super) struct Stages<'a, B: BuildBackend> {
+    /// Selected source system root for build-time data, accounts and persistent seeding.
+    /// 构建数据、账户和持久初始化所用的选定来源系统根。
+    pub(super) inheritance_root: &'a Path,
     /// Stable root view captured without traversing boot inheritance sources.
     pub(super) source_root: Option<&'a super::deferred::InheritanceRoot>,
     /// Required CoW storage and checked execution.
@@ -416,6 +419,7 @@ impl<B: BuildBackend> Stages<'_, B> {
                 self.context,
                 self.scratch,
                 &self.attempt.layout.root,
+                self.inheritance_root,
                 owned,
             )?)
         } else {
@@ -492,6 +496,7 @@ impl<B: BuildBackend> Stages<'_, B> {
                 self.context,
                 &root,
                 &self.attempt.layout.root,
+                self.inheritance_root,
             )?
         };
         let accounts_changed = super::accounts::apply(
@@ -500,6 +505,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             self.context,
             &root,
             &self.attempt.layout.root,
+            self.inheritance_root,
         )?;
         if self.plugin.metadata.post_maintenance {
             self.backend
@@ -630,6 +636,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             self.context,
             &root,
             &self.attempt.layout.root,
+            self.inheritance_root,
         )?;
         if !config.copy_on_write_boot.is_empty() {
             if self.prepare_boot_inheritance {

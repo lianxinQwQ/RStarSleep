@@ -58,12 +58,14 @@ impl FrozenBuild {
 /// - `context`: Frozen system configuration. 冻结系统配置。
 /// - `scratch`: Existing owned scratch directory. 已有所属临时目录。
 /// - `system`: Managed-system directory excluded from live sources. 从运行来源排除的被管理系统目录。
+/// - `source_root`: Selected source system root. 选定来源系统根。
 /// - `owned`: Cleanup roots registered before any mutations. 在修改前登记的清理根。
 pub(super) fn freeze(
     backend: &impl BuildBackend,
     context: &BuildContext,
     scratch: &Path,
     system: &Path,
+    source_root: &Path,
     owned: &mut Vec<PathBuf>,
 ) -> Result<FrozenBuild> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
@@ -90,7 +92,7 @@ pub(super) fn freeze(
         backend.create_subvolume(&container)?;
         for (index, target) in config.copy_on_write_build.iter().enumerate() {
             let unmarked = Path::new(target.to_str().unwrap().trim_end_matches('/'));
-            let source = fs::canonicalize(unmarked).map_err(|e| disk::io(target, e))?;
+            let source = disk::source_path(source_root, unmarked)?;
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
             if directory && config.nocow_handling == NocowHandling::MoveSnapshot {

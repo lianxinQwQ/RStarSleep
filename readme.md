@@ -163,9 +163,13 @@ RStarSleep init-system /rstarsleep desktop
 RStarSleep build desktop
 RStarSleep build --all
 RStarSleep build desktop --root /mnt/btrfs/@RStarSleep
+RStarSleep build desktop --inheritance-root /mnt/source-system
 ```
 
 省略系统标识默认构建全部系统，逐个执行，个别失败不阻断其他系统。
+`--root` 选择管理存储；`--inheritance-root <绝对路径>` 选择本次构建的继承来源系统根，
+默认 `/`。两个参数互相独立，指定的来源根同时用于构建继承、首次启动来源身份、
+Mount 首次初始化和账户继承。来源无效或读取失败时不回退当前系统根。
 可在各参与系统的 `build/config.conf` 中设置 `[Config] DeduplicatePackages=yes`，手动开启
 本批系统间的软件包文件去重，默认关闭。开启要求插件声明 `query_package_files`，否则
 预检查报错；软件维护后、二阶段快照前共享内核校验一致的 Btrfs 数据块，保留独立文件
@@ -224,7 +228,7 @@ script 及后续阶段的快照用于调试和备份，不作为下次构建的�
 详细协议、步骤缓存动作和文件职责见 [构建设计](docs/build-design.md)。
 当前已通过模拟流程和真实 Bash 测试；真实 Btrfs、bootstrap/nspawn 完整安装尚未验证。
 
-## 从当前运行系统继承数据
+## 从指定系统根继承数据
 
 新系统生成空的 `systems/<系统>/config/build/inherit.conf` 模板，由控制器独立读取，
 接受 `[Inheritance] CopyOnWriteBuild`、`CopyOnWriteBoot`、`Mount` 和 `DirectorySubvolume`。文件与其他 INI 一同叠加，名称没有特殊含义：
@@ -251,9 +255,13 @@ Mount=/etc/myapp.conf
 结尾，普通文件不能以 `/` 结尾；执行继承时校验实际类型。路径不能为 `/`，不能包含
 `//`、`.` 或 `..` 路径段，也不能重复、相互包含，或去掉目录末尾 `/` 后将其余 `/`
 替换成 `-` 时发生名称冲突；这些检查同时覆盖两份 CoW 列表和 Mount。
+路径始终是所选来源系统内的绝对路径。例如使用 `--inheritance-root /mnt/source-system`
+并配置 `/etc/hostname`，读取的是 `/mnt/source-system/etc/hostname`，目标仍为 `/etc/hostname`。
+可选择已有版本的 `versions/<版本>/root`；本次参与构建系统的 `cache/` 目录可能被清理，
+不能作为继承来源根。
 
 `CopyOnWriteBuild` 在软件安装/维护及 `packages` 缓存提交后、`post_maintenance` 和用户脚本
-执行前从当前运行系统继承，结果随脚本输出保存到 `script` 缓存；`CopyOnWriteBoot` 在版本首次
+执行前从所选来源根继承，结果随脚本输出保存到 `script` 缓存；`CopyOnWriteBoot` 在版本首次
 启动时继承。两份列表可同时配置、分别执行，均要求来源与目标的 Btrfs UUID 相同。
 文件强制 reflink；目录默认在目标位置创建独立子卷，来源已经是子卷时直接递归快照。`DirectorySubvolume=no` 可让最外层目标保持普通目录，原有内部子卷仍保留。
 缓存保存、恢复和版本发布都会递归快照整个系统根中的子卷，包括脚本创建的子卷。
@@ -261,7 +269,8 @@ Mount=/etc/myapp.conf
 直接写入版本根的修改随该版本保留；需要跨版本共享的数据使用 Mount。
 
 `CopyOnWriteBoot` 非空时，构建保存包含构建时继承结果的独立 `prepared-root`，来源清单只记录
-启动列表。主系统首次选择该版本时，在正式根挂载前完成启动列表的继承并发布最终根；
+启动列表，并固定所选来源根的 Btrfs 文件系统及根子卷身份。首次启动按配置路径读取该根子卷，
+不采用构建时覆盖对应路径的外部挂载内容。主系统首次选择该版本时，在正式根挂载前完成启动列表的继承并发布最终根；
 子系统在启动准备阶段完成。失败可重试，完成后不再继承。当前支持 Arch mkinitcpio
 的传统和 systemd initramfs。继承路径不设黑名单，CLI 在任何构建修改前提示并等待 3 秒，
 可按 Ctrl+C 取消。内核和 initramfs 固定使用构建时产物，继承后的兼容性由用户负责。
@@ -272,7 +281,7 @@ Mount=/etc/myapp.conf
 
 `Mount` 使用本系统 `persistent/<编码路径>`，编码前去掉目录末尾 `/`，例如 `/home/alice/`
 对应 `-home-alice`。复用时按持久对象校验路径类型，不要求当前来源仍存在。
-项目不存在时从当前系统完整复制，存在时直接复用，即使当前来源已不存在也不重新复制。
+项目不存在时从所选来源根完整复制，存在时直接复用，即使更换来源根或当前来源已不存在也不覆盖。
 允许来源跨分区、包含挂载点或子卷，并输出 Warning；跨分区首次复制允许普通复制。
 目录保存为可写 Btrfs 子卷，文件保存为普通文件。新根的底层目录内容保留到实际挂载，
 使 `/usr` 等目标仍可提供系统工具。控制器创建目标路径，在插件调用和包查询期间绑定

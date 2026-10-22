@@ -38,7 +38,7 @@ const USAGE: &str = "用法：
   RStarSleep init [<Btrfs 顶层绝对路径>] [--update-presets]
   RStarSleep init-system [<工作目录绝对路径>] <系统标识>
   RStarSleep packages <工作目录绝对路径> <系统标识>
-  RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]
+  RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>] [--inheritance-root <继承来源根绝对路径>]
   RStarSleep clean <系统标识> <版本> [--root <管理根绝对路径>]
   RStarSleep daemon install|run [--root <管理根绝对路径>]
   RStarSleep subsystem --help
@@ -49,7 +49,7 @@ init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @
   RStarSleep init [<absolute-Btrfs-top-level-path>] [--update-presets]
   RStarSleep init-system [<absolute-work-directory>] <system-id>
   RStarSleep packages <absolute-work-directory> <system-id>
-  RStarSleep build [<system-id> | --all] [--root <absolute-management-root>]
+  RStarSleep build [<system-id> | --all] [--root <absolute-management-root>] [--inheritance-root <absolute-inheritance-root>]
   RStarSleep clean <system-id> <version> [--root <absolute-management-root>]
   RStarSleep daemon install|run [--root <absolute-management-root>]
   RStarSleep subsystem --help

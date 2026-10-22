@@ -25,11 +25,13 @@ pub(super) struct Inherited {
 /// - `context`: Frozen current build inputs. 冻结的当前构建输入。
 /// - `root`: Writable pre-script root. 脚本前的可写根。
 /// - `system`: Owning managed-system directory. 所属被管理系统目录。
+/// - `source_root`: Selected source system root. 选定来源系统根。
 pub(super) fn apply_build(
     backend: &impl BuildBackend,
     context: &BuildContext,
     root: &Path,
     system: &Path,
+    source_root: &Path,
 ) -> Result<bool> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
@@ -48,7 +50,7 @@ pub(super) fn apply_build(
             format!("Inherit copy-on-write path: {}", source.display()),
         );
         let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-        let resolved = fs::canonicalize(unmarked).map_err(|e| disk::io(source, e))?;
+        let resolved = disk::source_path(source_root, unmarked)?;
         let directory = check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
         if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
@@ -73,12 +75,14 @@ pub(super) fn apply_build(
 /// - `context`: Frozen current build inputs. 冻结的当前构建输入。
 /// - `root`: Writable post-script root. 脚本后的可写根。
 /// - `system`: Owning managed-system directory. 所属被管理系统目录。
+/// - `source_root`: Selected source system root. 选定来源系统根。
 pub(super) fn apply_mounts(
     backend: &impl BuildBackend,
     plugin: &LoadedPlugin,
     context: &BuildContext,
     root: &Path,
     system: &Path,
+    source_root: &Path,
 ) -> Result<Inherited> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
@@ -102,23 +106,24 @@ pub(super) fn apply_mounts(
             // Remove the marker before inspecting a file so a mismatched trailing slash
             // produces a type error instead of ENOTDIR, and links remain rejected.
             let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-            let directory = check_source(unmarked, system)?;
+            let resolved = source_root.join(unmarked.strip_prefix("/").unwrap());
+            let directory = check_source(&resolved, system)?;
             validate_inheritance_type(source, directory)?;
-            if backend.check_subvolume(unmarked, false).is_ok()
-                || backend.check_subvolume(unmarked, true).is_ok()
+            if backend.check_subvolume(&resolved, false).is_ok()
+                || backend.check_subvolume(&resolved, true).is_ok()
             {
                 super::logging::diagnostic(format!(
                     "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
                     source.display(),
                 ));
             }
-            if let Err(error) = backend.check_cow_source(unmarked, &pool) {
+            if let Err(error) = backend.check_cow_source(&resolved, &pool) {
                 super::logging::diagnostic(format!(
                     "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
                     source.display()
                 ));
             }
-            seed_persistent(backend, unmarked, &persistent, &pool)?;
+            seed_persistent(backend, &resolved, &persistent, &pool)?;
         }
         let info = fs::symlink_metadata(&persistent).map_err(|e| disk::io(&persistent, e))?;
         validate_inheritance_type(source, info.is_dir())?;
