@@ -41,7 +41,9 @@ values = ["silent", "warn", "error", "assess"]
 插件可声明额外的 `[AccountInheritance]` 字段，控制器不解释这些扩展字段，由插件自行读取。
 Arch 未把账户字段加入基础、软件缓存选择器，因此这些字段不使这两个阶段缓存失效。
 不根据 UID/GID 范围猜测账户来源，不自动合并全部运行期账户修改。
-账户来源根使用本次 build 的 `--inheritance-root <绝对路径>`，默认 `/`，与选择管理存储的
+账户来源根遵循构建的逐系统自动选择：主系统在运行根属于自身某版本时使用运行根，
+其余情况使用该系统最新完成开机复制的版本根。没有来源时，在构建前三秒警告后跳过继承。
+`--inheritance-root <绝对路径>` 仅在显式指定单个构建系统时覆盖来源，与选择管理存储的
 `--root` 独立。例如 `RStarSleep build desktop --inheritance-root /mnt/source-system`
 从该根内的 `/etc/passwd`、`/etc/shadow`、`/etc/group`、`/etc/gshadow` 固定 old 输入；
 这些路径仍是来源系统内的绝对路径。来源无效或读取失败不回退当前系统根。

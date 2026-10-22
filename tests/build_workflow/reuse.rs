@@ -4,6 +4,26 @@ use super::*;
 use rstarsleep::controller::BuildOutcome;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
+/// Keep these stage tests tied to their explicit host-side source paths.
+/// 将这些阶段测试固定到其显式宿主来源路径。
+fn build_with_backend(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    if system.is_none() {
+        return rstarsleep::controller::build_with_backend(store, system, backend);
+    }
+    rstarsleep::controller::build_with_options_and_backend(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+    )
+}
+
 /// Enable a ten-minute global execution lifetime in an isolated manager.
 /// 在隔离管理器中启用十分钟全局执行有效期。
 /// # Arguments

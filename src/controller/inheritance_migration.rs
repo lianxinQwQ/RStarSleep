@@ -997,7 +997,7 @@ mod tests {
             &context,
             &scratch,
             &system,
-            Path::new("/"),
+            Some(Path::new("/")),
             &mut owned,
         )
         .unwrap();

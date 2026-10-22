@@ -38,7 +38,7 @@ fn build(
         &fixture.store,
         Some("desktop"),
         &BuildOptions {
-            inheritance_root: root.to_path_buf(),
+            inheritance_root: Some(root.to_path_buf()),
         },
         backend,
         |_| Ok(()),
@@ -268,7 +268,7 @@ fn invalid_roots_fail_before_allocating_versions_or_running_plugins() {
             &fixture.store,
             Some("desktop"),
             &BuildOptions {
-                inheritance_root: root,
+                inheritance_root: Some(root),
             },
             &backend,
             |_| {
@@ -334,7 +334,7 @@ fn explicit_boot_source_on_another_filesystem_fails_before_build() {
         &fixture.store,
         Some("desktop"),
         &BuildOptions {
-            inheritance_root: selected,
+            inheritance_root: Some(selected),
         },
         &backend,
         |_| panic!("跨文件系统来源必须提前拒绝 / Cross-filesystem source must be rejected early"),
@@ -388,7 +388,7 @@ fn invalid_boot_root_identity_fails_before_warning_callback_and_allocation() {
             &fixture.store,
             Some("desktop"),
             &BuildOptions {
-                inheritance_root: selected,
+                inheritance_root: Some(selected),
             },
             &backend,
             |_| {
@@ -443,7 +443,7 @@ fn invalid_new_mount_sources_fail_before_warning_callback_or_any_build_work() {
             &fixture.store,
             Some("desktop"),
             &BuildOptions {
-                inheritance_root: selected,
+                inheritance_root: Some(selected),
             },
             &backend,
             |_| {
@@ -607,7 +607,7 @@ fn selected_system_caches_cannot_supply_inheritance_roots_that_build_would_retir
                 &fixture.store,
                 selection,
                 &BuildOptions {
-                    inheritance_root: selected.clone(),
+                    inheritance_root: Some(selected.clone()),
                 },
                 &backend,
                 |_| {
@@ -618,7 +618,14 @@ fn selected_system_caches_cannot_supply_inheritance_roots_that_build_would_retir
             )
             .unwrap_err()
             .to_string();
-            assert!(error.contains("缓存") && error.contains("cache"), "{error}");
+            if selection.is_some() {
+                assert!(error.contains("缓存") && error.contains("cache"), "{error}");
+            } else {
+                assert!(
+                    error.contains("具体构建系统") && error.contains("explicitly selected"),
+                    "{error}"
+                );
+            }
             assert!(backend.events.borrow().is_empty());
             assert!(backend.snapshots.borrow().is_empty());
             assert!(selected.is_dir());

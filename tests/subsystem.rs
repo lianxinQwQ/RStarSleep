@@ -9,6 +9,26 @@ use rstarsleep::{
 use std::{fs, path::Path};
 use support::build::{Fixture, SimulatedBackend};
 
+/// Keep these stage tests tied to their explicit host-side source paths.
+/// 将这些阶段测试固定到其显式宿主来源路径。
+fn build_with_backend(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    if system.is_none() {
+        return rstarsleep::controller::build_with_backend(store, system, backend);
+    }
+    rstarsleep::controller::build_with_options_and_backend(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+    )
+}
+
 /// Enable the fixture system without permitting arbitrary guest callers.
 /// 启用夹具系统，不允许任意容器调用者。
 /// # Arguments
@@ -32,11 +52,11 @@ fn current_artifact_is_atomic_and_failure_preserves_it() {
     enable(&f);
     let b = SimulatedBackend::default();
     assert!(controller::read_current_build(&f.store, "desktop").is_err());
-    let first = controller::build_with_backend(&f.store, Some("desktop"), &b)
+    let first = build_with_backend(&f.store, Some("desktop"), &b)
         .unwrap()
         .remove(0);
     *b.fail_operation.borrow_mut() = Some("update");
-    assert!(controller::build_with_backend(&f.store, Some("desktop"), &b).is_err());
+    assert!(build_with_backend(&f.store, Some("desktop"), &b).is_err());
     assert_eq!(
         controller::read_current_build(&f.store, "desktop")
             .unwrap()
@@ -76,7 +96,7 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
         format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
     )
     .unwrap();
-    let first = controller::build_with_backend(&f.store, Some("desktop"), &b)
+    let first = build_with_backend(&f.store, Some("desktop"), &b)
         .unwrap()
         .remove(0);
     assert!(first.root.ends_with("prepared-root"));
@@ -110,7 +130,7 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
         .unwrap(),
         "at-startup"
     );
-    let second = controller::build_with_backend(&f.store, Some("desktop"), &b)
+    let second = build_with_backend(&f.store, Some("desktop"), &b)
         .unwrap()
         .remove(0);
     let new =
@@ -162,7 +182,7 @@ fn package_index_is_part_of_successful_publication() {
     f.system("desktop", &["editor"]);
     enable(&f);
     let b = SimulatedBackend::default();
-    let first = controller::build_with_backend(&f.store, Some("desktop"), &b)
+    let first = build_with_backend(&f.store, Some("desktop"), &b)
         .unwrap()
         .remove(0);
     let layout = f.store.system_layout("desktop").unwrap();
@@ -175,7 +195,7 @@ fn package_index_is_part_of_successful_publication() {
     .unwrap();
     assert!(index.contains("editor\t/usr/bin/editor\n"));
     *b.fail_operation.borrow_mut() = Some("query_package_files");
-    assert!(controller::build_with_backend(&f.store, Some("desktop"), &b).is_err());
+    assert!(build_with_backend(&f.store, Some("desktop"), &b).is_err());
     assert_eq!(
         controller::read_current_build(&f.store, "desktop")
             .unwrap()
@@ -217,7 +237,7 @@ fn persistent_fstab_is_overlaid_without_modifying_source() {
         ),
     )
     .unwrap();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let runtime =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
     assert!(
@@ -243,10 +263,10 @@ fn obsolete_runtime_roots_wait_for_successful_boot() {
     f.system("desktop", &[]);
     enable(&f);
     let b = SimulatedBackend::default();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let first =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
     assert!(first.root.exists());
@@ -266,7 +286,7 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
     f.system("consumer", &[]);
     enable(&f);
     let b = SimulatedBackend::default();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let first =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
     let source = first.root.join("data");
@@ -278,10 +298,10 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
         format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
     )
     .unwrap();
-    let pending = controller::build_with_backend(&f.store, Some("consumer"), &b)
+    let pending = build_with_backend(&f.store, Some("consumer"), &b)
         .unwrap()
         .remove(0);
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
 
@@ -323,10 +343,10 @@ fn runtime_pruning_preserves_running_roots() {
     f.system("desktop", &[]);
     enable(&f);
     let b = SimulatedBackend::default();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let first =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    controller::build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
     *b.running_root.borrow_mut() = Some(first.root.clone());

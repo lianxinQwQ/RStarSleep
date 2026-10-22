@@ -6,7 +6,20 @@ use std::{ffi::OsString, path::PathBuf};
 
 /// Help describing system selection, manager location, inheritance source, and scratch defaults.
 /// 描述系统选择、管理器位置、继承来源和临时目录默认值的帮助。
-const USAGE: &str = "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>] [--inheritance-root <继承来源根绝对路径>]\n\n省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep，默认继承来源根为 /。\n继承路径相对于来源系统根解析；--root 仅选择管理存储。\n构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。 / Usage: RStarSleep build [<system-id> | --all] [--root <absolute-management-root>] [--inheritance-root <absolute-inheritance-root>]\n\nOmit the system or use --all to build every system; the management root defaults to /rstarsleep and the inheritance source root defaults to /.\nInheritance paths resolve within the source system root; --root only selects management storage.\nTemporary build directories use the global work_dir setting, which defaults to work/ under the management root.";
+const USAGE: &str = concat!(
+    "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>] [--inheritance-root <继承来源根绝对路径>]\n\n",
+    "省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep。\n",
+    "默认自动选择继承来源：构建主系统且当前运行根属于该系统的某个版本时，使用当前运行根；否则使用该系统最近完成开机复制的版本。\n",
+    "配置继承但没有来源时，构建前警告并等待 3 秒，本次不执行该系统的继承。\n",
+    "--inheritance-root 仅可在显式指定一个系统时使用；继承路径相对于来源系统根解析；--root 仅选择管理存储。\n",
+    "构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。\n\n",
+    "Usage: RStarSleep build [<system-id> | --all] [--root <absolute-management-root>] [--inheritance-root <absolute-inheritance-root>]\n\n",
+    "Omit the system or use --all to build every system; the management root defaults to /rstarsleep.\n",
+    "Inheritance sources are selected automatically: use the running root when building the primary system and that root belongs to one of its versions; otherwise use that system's latest version that completed boot copying.\n",
+    "If inheritance is configured but no source exists, warn and wait 3 seconds before building, then skip inheritance for that system.\n",
+    "--inheritance-root requires an explicit single system; inheritance paths resolve within the source system root; --root only selects management storage.\n",
+    "Temporary build directories use the global work_dir setting, which defaults to work/ under the management root."
+);
 
 /// Parse arguments and run one system or every managed system.
 /// 解析参数并构建一个系统或全部被管理系统。
@@ -78,7 +91,7 @@ fn warn_preflight(warnings: &[String]) -> crate::controller::Result<()> {
 ///
 /// - `arguments`: Native build arguments.
 ///   原生 build 参数。
-fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>, PathBuf)> {
+fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>, Option<PathBuf>)> {
     let mut root = None;
     let mut inheritance_root = None;
     let mut system = None;
@@ -131,10 +144,16 @@ fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>, Path
             system = Some(text.to_owned());
         }
     }
+    if inheritance_root.is_some() && system.is_none() {
+        return Err(format!(
+            "--inheritance-root 必须显式指定一个具体构建系统，不能省略系统或使用 --all / --inheritance-root requires an explicit single build system; omitting the system or using --all is not allowed\n{USAGE}"
+        )
+        .into());
+    }
     Ok((
         root.unwrap_or_else(|| DEFAULT_MOUNT_POINT.into()),
         system,
-        inheritance_root.unwrap_or_else(|| PathBuf::from("/")),
+        inheritance_root,
     ))
 }
 
@@ -164,11 +183,11 @@ mod tests {
     fn selects_all_by_default_and_accepts_one_system_in_either_order() {
         assert_eq!(
             parse(&[]).unwrap(),
-            (PathBuf::from(DEFAULT_MOUNT_POINT), None, PathBuf::from("/"))
+            (PathBuf::from(DEFAULT_MOUNT_POINT), None, None)
         );
         assert_eq!(
             parse(&arguments(&["--all"])).unwrap(),
-            (PathBuf::from(DEFAULT_MOUNT_POINT), None, PathBuf::from("/"))
+            (PathBuf::from(DEFAULT_MOUNT_POINT), None, None)
         );
         for values in [
             vec!["desktop", "--root", "/mnt/manager"],
@@ -176,16 +195,12 @@ mod tests {
         ] {
             assert_eq!(
                 parse(&arguments(&values)).unwrap(),
-                (
-                    PathBuf::from("/mnt/manager"),
-                    Some("desktop".into()),
-                    PathBuf::from("/")
-                )
+                (PathBuf::from("/mnt/manager"), Some("desktop".into()), None)
             );
         }
         assert_eq!(
             parse(&arguments(&["--all", "--root", "/mnt/manager"])).unwrap(),
-            (PathBuf::from("/mnt/manager"), None, PathBuf::from("/"))
+            (PathBuf::from("/mnt/manager"), None, None)
         );
     }
 
@@ -214,18 +229,25 @@ mod tests {
                 (
                     PathBuf::from("/mnt/manager"),
                     Some("desktop".into()),
-                    PathBuf::from("/mnt/source")
+                    Some(PathBuf::from("/mnt/source"))
                 )
             );
         }
-        assert_eq!(
-            parse(&arguments(&["--all", "--inheritance-root", "/mnt/source"])).unwrap(),
-            (
-                PathBuf::from(DEFAULT_MOUNT_POINT),
-                None,
-                PathBuf::from("/mnt/source")
-            )
-        );
+    }
+
+    /// Require an explicit single system before accepting an inheritance source override.
+    /// 接受继承来源覆盖前，要求显式指定一个系统。
+    #[test]
+    fn inheritance_root_requires_an_explicit_single_system() {
+        for values in [
+            vec!["--inheritance-root", "/mnt/source"],
+            vec!["--all", "--inheritance-root", "/mnt/source"],
+            vec!["--inheritance-root", "/mnt/source", "--all"],
+        ] {
+            let error = parse(&arguments(&values)).unwrap_err().to_string();
+            assert!(error.contains("必须显式指定一个具体构建系统"));
+            assert!(error.contains("requires an explicit single build system"));
+        }
     }
 
     /// Reject conflicting selectors, repeated roots, unknown flags, and missing root values.
@@ -279,7 +301,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(actual.0.as_os_str(), root);
-        assert_eq!(actual.2.as_os_str(), inheritance_root);
+        assert_eq!(actual.2.unwrap().as_os_str(), inheritance_root);
         assert!(parse(&[OsString::from_vec(b"system-\xff".to_vec())]).is_err());
     }
 }

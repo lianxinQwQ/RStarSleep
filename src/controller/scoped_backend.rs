@@ -40,6 +40,9 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
     fn filesystem_location(&self, path: &Path) -> Result<(String, PathBuf)> {
         self.backend.filesystem_location(path)
     }
+    fn is_running_root(&self, path: &Path) -> Result<bool> {
+        self.backend.is_running_root(path)
+    }
     fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
         self.backend.set_readonly(path, readonly)
     }

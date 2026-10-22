@@ -75,129 +75,131 @@ pub(super) fn apply_build(
 /// - `context`: Frozen current build inputs. 冻结的当前构建输入。
 /// - `root`: Writable post-script root. 脚本后的可写根。
 /// - `system`: Owning managed-system directory. 所属被管理系统目录。
-/// - `source_root`: Selected source system root. 选定来源系统根。
+/// - `source_root`: Selected source system root, or no inherited mounts. 选定来源系统根，或不继承挂载。
 pub(super) fn apply_mounts(
     backend: &impl BuildBackend,
     plugin: &LoadedPlugin,
     context: &BuildContext,
     root: &Path,
     system: &Path,
-    source_root: &Path,
+    source_root: Option<&Path>,
 ) -> Result<Inherited> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
     let mut arguments = Vec::new();
     let mut inherited_mounts = Vec::new();
-    let pool = system.join("persistent");
-    disk::directory(&pool)?;
-    let manager = system
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("系统缺少管理根 / System has no management root".into()))?;
-    let mut needs_manager_mount = false;
-    for source in &config.mounts {
-        let persistent = pool.join(inheritance_name(source)?);
-        progress::message(
-            &context.system_id,
-            format!("准备持久继承挂载：{}", source.display()),
-            format!("Prepare persistent inherited mount: {}", source.display()),
-        );
-        if !disk::exists(&persistent)? {
-            // Remove the marker before inspecting a file so a mismatched trailing slash
-            // produces a type error instead of ENOTDIR, and links remain rejected.
-            // 先去掉目录标记，以类型错误代替 ENOTDIR，并继续拒绝挂载来源链接。
-            let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-            let resolved = source_root.join(unmarked.strip_prefix("/").unwrap());
-            let directory = check_mount_source(&resolved, system)?;
-            validate_inheritance_type(source, directory)?;
-            if backend.check_subvolume(&resolved, false).is_ok()
-                || backend.check_subvolume(&resolved, true).is_ok()
-            {
-                super::logging::diagnostic(format!(
-                    "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
-                    source.display(),
-                ));
-            }
-            if let Err(error) = backend.check_cow_source(&resolved, &pool) {
-                super::logging::diagnostic(format!(
-                    "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
-                    source.display()
-                ));
-            }
-            seed_persistent(backend, &resolved, &persistent, &pool)?;
-        }
-        let info = fs::symlink_metadata(&persistent).map_err(|e| disk::io(&persistent, e))?;
-        validate_inheritance_type(source, info.is_dir())?;
-        let relative = source
-            .strip_prefix("/")
-            .map_err(|e| Error::Invalid(e.to_string()))?;
-        let target = root.join(relative);
-        if info.is_dir() {
-            if let Err(error) = backend.check_cow_source(&persistent, &pool) {
-                super::logging::diagnostic(format!(
-                    "警告：复用含子卷或挂载点的 Mount 持久目录 {} / Warning: reusing a persistent mount directory containing subvolumes or mount points: {error}",
-                    persistent.display()
-                ));
-            }
-            // Ensure the filesystem has an owned writable subvolume; nested children are allowed.
-            // 确保文件系统具有所属可写子卷；允许嵌套后代。
-            backend.check_subvolume(&persistent, false)?;
-            disk::directory(&target)?;
-            let (uuid, subvolume) = backend.filesystem_location(&persistent)?;
-            arguments.extend([
-                format!("UUID={uuid}"),
-                source.to_string_lossy().into_owned(),
-                "btrfs".into(),
-                subvolume_options(&subvolume, false)?,
-            ]);
-        } else if info.is_file() {
-            disk::checked(&target)?;
-            disk::directory(target.parent().unwrap())?;
-            if !disk::exists(&target)? {
-                fs::File::create(&target).map_err(|e| disk::io(&target, e))?;
-            }
-            if !fs::symlink_metadata(&target)
-                .map_err(|e| disk::io(&target, e))?
-                .is_file()
-            {
-                return Err(Error::Invalid(
-                    "文件挂载目标必须为普通文件 / File mount target must be a regular file".into(),
-                ));
-            }
-            let runtime_source = Path::new(DEFAULT_MOUNT_POINT).join(
-                persistent
-                    .strip_prefix(manager)
-                    .map_err(|e| Error::Invalid(e.to_string()))?,
+    if let Some(source_root) = source_root {
+        let pool = system.join("persistent");
+        disk::directory(&pool)?;
+        let manager = system.parent().and_then(Path::parent).ok_or_else(|| {
+            Error::Invalid("系统缺少管理根 / System has no management root".into())
+        })?;
+        let mut needs_manager_mount = false;
+        for source in &config.mounts {
+            let persistent = pool.join(inheritance_name(source)?);
+            progress::message(
+                &context.system_id,
+                format!("准备持久继承挂载：{}", source.display()),
+                format!("Prepare persistent inherited mount: {}", source.display()),
             );
-            arguments.extend([
-                runtime_source.to_string_lossy().into_owned(),
-                source.to_string_lossy().into_owned(),
-                "none".into(),
-                format!("bind,x-systemd.requires-mounts-for={DEFAULT_MOUNT_POINT}"),
-            ]);
-            needs_manager_mount = true;
-        } else {
-            return Err(Error::Invalid(
+            if !disk::exists(&persistent)? {
+                // Remove the marker before inspecting a file so a mismatched trailing slash
+                // produces a type error instead of ENOTDIR, and links remain rejected.
+                // 先去掉目录标记，以类型错误代替 ENOTDIR，并继续拒绝挂载来源链接。
+                let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+                let resolved = source_root.join(unmarked.strip_prefix("/").unwrap());
+                let directory = check_mount_source(&resolved, system)?;
+                validate_inheritance_type(source, directory)?;
+                if backend.check_subvolume(&resolved, false).is_ok()
+                    || backend.check_subvolume(&resolved, true).is_ok()
+                {
+                    super::logging::diagnostic(format!(
+                        "警告：Mount 继承来源是子卷，使用完整复制 {} / Warning: mount inheritance source is a subvolume; copying its full contents",
+                        source.display(),
+                    ));
+                }
+                if let Err(error) = backend.check_cow_source(&resolved, &pool) {
+                    super::logging::diagnostic(format!(
+                        "警告：Mount 继承使用完整复制 {} / Warning: copying mount inheritance across filesystems, subvolumes or mount points: {error}",
+                        source.display()
+                    ));
+                }
+                seed_persistent(backend, &resolved, &persistent, &pool)?;
+            }
+            let info = fs::symlink_metadata(&persistent).map_err(|e| disk::io(&persistent, e))?;
+            validate_inheritance_type(source, info.is_dir())?;
+            let relative = source
+                .strip_prefix("/")
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            let target = root.join(relative);
+            if info.is_dir() {
+                if let Err(error) = backend.check_cow_source(&persistent, &pool) {
+                    super::logging::diagnostic(format!(
+                        "警告：复用含子卷或挂载点的 Mount 持久目录 {} / Warning: reusing a persistent mount directory containing subvolumes or mount points: {error}",
+                        persistent.display()
+                    ));
+                }
+                // Ensure the filesystem has an owned writable subvolume; nested children are allowed.
+                // 确保文件系统具有所属可写子卷；允许嵌套后代。
+                backend.check_subvolume(&persistent, false)?;
+                disk::directory(&target)?;
+                let (uuid, subvolume) = backend.filesystem_location(&persistent)?;
+                arguments.extend([
+                    format!("UUID={uuid}"),
+                    source.to_string_lossy().into_owned(),
+                    "btrfs".into(),
+                    subvolume_options(&subvolume, false)?,
+                ]);
+            } else if info.is_file() {
+                disk::checked(&target)?;
+                disk::directory(target.parent().unwrap())?;
+                if !disk::exists(&target)? {
+                    fs::File::create(&target).map_err(|e| disk::io(&target, e))?;
+                }
+                if !fs::symlink_metadata(&target)
+                    .map_err(|e| disk::io(&target, e))?
+                    .is_file()
+                {
+                    return Err(Error::Invalid(
+                        "文件挂载目标必须为普通文件 / File mount target must be a regular file"
+                            .into(),
+                    ));
+                }
+                let runtime_source = Path::new(DEFAULT_MOUNT_POINT).join(
+                    persistent
+                        .strip_prefix(manager)
+                        .map_err(|e| Error::Invalid(e.to_string()))?,
+                );
+                arguments.extend([
+                    runtime_source.to_string_lossy().into_owned(),
+                    source.to_string_lossy().into_owned(),
+                    "none".into(),
+                    format!("bind,x-systemd.requires-mounts-for={DEFAULT_MOUNT_POINT}"),
+                ]);
+                needs_manager_mount = true;
+            } else {
+                return Err(Error::Invalid(
                 "持久继承项目必须为普通文件或子卷目录 / Persistent inheritance item must be a regular file or subvolume directory".into(),
             ));
+            }
+            inherited_mounts.push(super::PersistentMount {
+                source: persistent,
+                target: source.clone(),
+            });
         }
-        inherited_mounts.push(super::PersistentMount {
-            source: persistent,
-            target: source.clone(),
-        });
-    }
-    if needs_manager_mount {
-        let (uuid, subvolume) = backend.filesystem_location(manager)?;
-        disk::directory(&root.join(DEFAULT_MOUNT_POINT.trim_start_matches('/')))?;
-        arguments.splice(
-            0..0,
-            [
-                format!("UUID={uuid}"),
-                DEFAULT_MOUNT_POINT.into(),
-                "btrfs".into(),
-                subvolume_options(&subvolume, false)?,
-            ],
-        );
+        if needs_manager_mount {
+            let (uuid, subvolume) = backend.filesystem_location(manager)?;
+            disk::directory(&root.join(DEFAULT_MOUNT_POINT.trim_start_matches('/')))?;
+            arguments.splice(
+                0..0,
+                [
+                    format!("UUID={uuid}"),
+                    DEFAULT_MOUNT_POINT.into(),
+                    "btrfs".into(),
+                    subvolume_options(&subvolume, false)?,
+                ],
+            );
+        }
     }
     if !arguments.is_empty() || context.parameters.contains_key("RSTAR_CONTENT_FSTABLINES") {
         if !plugin.metadata.mount_inheritance {

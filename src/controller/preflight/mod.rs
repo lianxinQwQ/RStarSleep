@@ -1,5 +1,6 @@
 //! Shared pre-build diagnostics. Checks never print countdowns or sleep.
 pub(super) mod inheritance;
+pub(super) mod source_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Diagnostic {

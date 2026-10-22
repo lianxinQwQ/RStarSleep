@@ -2,6 +2,45 @@
 use super::*;
 use std::path::Path;
 
+/// Keep these stage tests tied to their explicit host-side source paths.
+/// 将这些阶段测试固定到其显式宿主来源路径。
+fn build_with_backend(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    if system.is_none() {
+        return rstarsleep::controller::build_with_backend(store, system, backend);
+    }
+    rstarsleep::controller::build_with_options_and_backend(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+    )
+}
+
+/// Exercise the shared preflight callback with an explicitly selected source root.
+/// 使用显式选择的来源根验证统一预检回调。
+fn build_with_backend_and_warning(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+    warning: impl FnMut(&[String]) -> rstarsleep::controller::Result<()>,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    rstarsleep::controller::build_with_options_and_backend_and_warning(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+        warning,
+    )
+}
+
 const BOOT: &[&str] = &["linux", "mkinitcpio"];
 const COW: &[&str] = &[
     "linux",
@@ -439,6 +478,17 @@ fn another_systems_package_does_not_satisfy_the_main_system_requirement() {
     inheritance(&fixture, "CopyOnWriteBoot", true);
     let backend = SimulatedBackend::default();
     arch_base_dependencies(&backend);
+    let desktop = fixture.store.system_layout("desktop").unwrap();
+    let previous = desktop.versions.join("v00000000");
+    fs::create_dir(&previous).unwrap();
+    let running = previous.join("root");
+    backend.create_subvolume(&running).unwrap();
+    fs::write(
+        previous.join("state.toml"),
+        "schema_version=1\nsystem_id='desktop'\nversion='v00000000'\nstate='complete'\n",
+    )
+    .unwrap();
+    *backend.running_root.borrow_mut() = Some(running.clone());
     let error = build_with_backend(&fixture.store, None, &backend)
         .unwrap_err()
         .to_string();
@@ -446,9 +496,9 @@ fn another_systems_package_does_not_satisfy_the_main_system_requirement() {
         error.contains("desktop") && error.contains("btrfs-progs"),
         "{error}"
     );
-    let desktop = fixture.store.system_layout("desktop").unwrap();
     assert!(!desktop.root.join("version-counter").exists());
-    assert_eq!(fs::read_dir(&desktop.versions).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&desktop.versions).unwrap().count(), 1);
+    assert!(running.is_dir());
     assert_eq!(fs::read_dir(&desktop.cache).unwrap().count(), 0);
     assert!(
         backend
@@ -581,7 +631,6 @@ fn build_inheritance_missing_or_cross_filesystem_sources_fail_before_any_attempt
 
 #[test]
 fn build_inheritance_filesystem_check_runs_once_before_operations() {
-    use rstarsleep::controller::build_with_backend_and_warning;
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let source = fixture.store.root().parent().unwrap().join("source-file");

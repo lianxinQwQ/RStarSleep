@@ -58,18 +58,30 @@ impl FrozenBuild {
 /// - `context`: Frozen system configuration. 冻结系统配置。
 /// - `scratch`: Existing owned scratch directory. 已有所属临时目录。
 /// - `system`: Managed-system directory excluded from live sources. 从运行来源排除的被管理系统目录。
-/// - `source_root`: Selected source system root. 选定来源系统根。
+/// - `source_root`: Selected source system root, or no inheritance. 选定来源系统根，或不执行继承。
 /// - `owned`: Cleanup roots registered before any mutations. 在修改前登记的清理根。
 pub(super) fn freeze(
     backend: &impl BuildBackend,
     context: &BuildContext,
     scratch: &Path,
     system: &Path,
-    source_root: &Path,
+    source_root: Option<&Path>,
     owned: &mut Vec<PathBuf>,
 ) -> Result<FrozenBuild> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
+    let mut digest = Sha256::new();
+    field(&mut digest, b"rstarsleep-inherited-inputs-v2");
+    let Some(source_root) = source_root else {
+        field(&mut digest, b"no-inheritance-source");
+        return Ok(FrozenBuild {
+            entries: Vec::new(),
+            directory_subvolume: config.directory_subvolume,
+            nocow_handling: config.nocow_handling,
+            sha256: format!("{:x}", digest.finalize()),
+        });
+    };
+    field(&mut digest, b"inheritance-source-selected");
     let manager = system.parent().and_then(Path::parent).ok_or_else(|| {
         Error::Invalid("继承缺少管理根 / Inheritance has no management root".into())
     })?;
@@ -78,8 +90,6 @@ pub(super) fn freeze(
     } else {
         None
     };
-    let mut digest = Sha256::new();
-    field(&mut digest, b"rstarsleep-inherited-inputs-v1");
     let mut entries = Vec::new();
     if !config.copy_on_write_build.is_empty() {
         super::progress::message(
@@ -364,6 +374,60 @@ mod tests {
         fn is_subvolume(&self, _: &Path) -> Result<bool> {
             Ok(self.subvolume.get())
         }
+    }
+
+    /// An absent source requires no captured paths or backend operations and has its own identity.
+    /// 缺少来源时无需捕获路径或调用后端，并具有独立身份摘要。
+    #[test]
+    fn absent_source_skips_capture_and_has_distinct_fingerprint() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = temporary.path().join("config");
+        fs::create_dir_all(config.join("build")).unwrap();
+        let config_file = config.join("build/config.conf");
+        fs::write(
+            &config_file,
+            "[Inheritance]\nCopyOnWriteBuild=/missing/\nNocowHandling=move-snapshot\n",
+        )
+        .unwrap();
+        let context = BuildContext {
+            system_id: "desktop".into(),
+            architecture: "x86_64".into(),
+            parameters: Default::default(),
+            parameter_lists: Default::default(),
+            environment: Default::default(),
+            distribution_options: Default::default(),
+            config,
+            persistent_mounts: Vec::new(),
+            inherited_mounts: Vec::new(),
+        };
+        let backend = MetadataBackend {
+            subvolume: Cell::new(false),
+        };
+        let mut owned = Vec::new();
+        let scratch = temporary.path().join("missing-scratch");
+        let absent = freeze(
+            &backend,
+            &context,
+            &scratch,
+            Path::new("/"),
+            None,
+            &mut owned,
+        )
+        .unwrap();
+        assert!(!absent.apply(&backend, Path::new("/missing-root")).unwrap());
+        assert!(owned.is_empty());
+        assert!(!scratch.exists());
+        fs::write(&config_file, "[Inheritance]\n").unwrap();
+        let selected = freeze(
+            &backend,
+            &context,
+            &scratch,
+            &temporary.path().join("systems/desktop"),
+            Some(Path::new("/missing-source")),
+            &mut owned,
+        )
+        .unwrap();
+        assert_ne!(absent.sha256, selected.sha256);
     }
 
     /// Verify semantic changes invalidate, while timestamp-only changes remain reusable.

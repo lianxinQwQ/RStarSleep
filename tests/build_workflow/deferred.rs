@@ -3,6 +3,45 @@ use super::*;
 use rstarsleep::controller::finalize_inheritance_with_backend;
 use std::path::Path;
 
+/// Keep these stage tests tied to their explicit host-side source paths.
+/// 将这些阶段测试固定到其显式宿主来源路径。
+fn build_with_backend(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    if system.is_none() {
+        return rstarsleep::controller::build_with_backend(store, system, backend);
+    }
+    rstarsleep::controller::build_with_options_and_backend(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+    )
+}
+
+/// Exercise the shared preflight callback with an explicitly selected source root.
+/// 使用显式选择的来源根验证统一预检回调。
+fn build_with_backend_and_warning(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+    warning: impl FnMut(&[String]) -> rstarsleep::controller::Result<()>,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    rstarsleep::controller::build_with_options_and_backend_and_warning(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+        warning,
+    )
+}
+
 fn pending(
     fixture: &Fixture,
     backend: &SimulatedBackend,
@@ -662,7 +701,7 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))
-        .args(["build", "desktop", "--root"])
+        .args(["build", "desktop", "--inheritance-root", "/", "--root"])
         .arg(fixture.store.root())
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
@@ -919,7 +958,6 @@ fn unfinished_source_migration_pins_the_source_version_during_clean() {
 
 #[test]
 fn missing_boot_source_is_warned_once_and_only_scanned_at_first_boot() {
-    use rstarsleep::controller::build_with_backend_and_warning;
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let layout = fixture.store.system_layout("desktop").unwrap();
@@ -1009,7 +1047,6 @@ fn missing_boot_source_is_warned_once_and_only_scanned_at_first_boot() {
 
 #[test]
 fn boot_uuid_warning_keeps_raw_path_and_reads_below_the_fixed_source_root() {
-    use rstarsleep::controller::build_with_backend_and_warning;
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let backend = SimulatedBackend::default();
@@ -1188,7 +1225,7 @@ fn boot_inheritance_preserves_raw_symbolic_links_and_does_not_repeat() {
         &fixture.store,
         Some("desktop"),
         &rstarsleep::controller::BuildOptions {
-            inheritance_root: old_root.clone(),
+            inheritance_root: Some(old_root.clone()),
         },
         &backend,
         |_| Ok(()),
@@ -1276,7 +1313,6 @@ fn cleanup_pins_resolve_configuration_paths_below_the_fixed_source_root() {
 
 #[test]
 fn boot_source_root_on_a_different_filesystem_warns_then_refuses_finalization() {
-    use rstarsleep::controller::build_with_backend_and_warning;
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let backend = SimulatedBackend::default();

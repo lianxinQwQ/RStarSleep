@@ -1,11 +1,47 @@
 #[allow(dead_code, unused_imports)]
 mod support;
-use rstarsleep::{
-    config::AccountDriftPolicy,
-    controller::{Error, build_with_backend, build_with_backend_and_warning},
-};
+use rstarsleep::{config::AccountDriftPolicy, controller::Error};
 use std::fs;
 use support::build::{Fixture, SimulatedBackend};
+
+/// Keep these stage tests tied to their explicit host-side source paths.
+/// 将这些阶段测试固定到其显式宿主来源路径。
+fn build_with_backend(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    if system.is_none() {
+        return rstarsleep::controller::build_with_backend(store, system, backend);
+    }
+    rstarsleep::controller::build_with_options_and_backend(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+    )
+}
+
+/// Exercise the shared preflight callback with an explicitly selected source root.
+/// 使用显式选择的来源根验证统一预检回调。
+fn build_with_backend_and_warning(
+    store: &rstarsleep::config::ConfigStore,
+    system: Option<&str>,
+    backend: &impl rstarsleep::controller::BuildBackend,
+    warning: impl FnMut(&[String]) -> rstarsleep::controller::Result<()>,
+) -> rstarsleep::controller::Result<Vec<rstarsleep::controller::BuildOutcome>> {
+    rstarsleep::controller::build_with_options_and_backend_and_warning(
+        store,
+        system,
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: Some("/".into()),
+        },
+        backend,
+        warning,
+    )
+}
 
 const EMPTY: &str = r#"{"schema_version":1,"consistent":true}"#;
 const DROPPED: &str = r#"{"schema_version":1,"consistent":false,"dropped_users":["alice"]}"#;
@@ -362,7 +398,7 @@ fn selected_source_root_supplies_account_preflight_environment_and_frozen_inputs
         &fixture.store,
         Some("desktop"),
         &BuildOptions {
-            inheritance_root: selected.clone(),
+            inheritance_root: Some(selected.clone()),
         },
         &backend,
         |_| Ok(()),

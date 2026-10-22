@@ -16,19 +16,11 @@ use std::path::{Path, PathBuf};
 
 /// Per-invocation source selection for data and account inheritance.
 /// 每次构建调用的数据及账户继承来源选择。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
-    /// Root under which configured absolute inheritance paths are resolved.
-    /// 用于解析配置中绝对继承路径的来源根。
-    pub inheritance_root: PathBuf,
-}
-
-impl Default for BuildOptions {
-    fn default() -> Self {
-        Self {
-            inheritance_root: PathBuf::from("/"),
-        }
-    }
+    /// Override automatic per-system selection; requires one explicitly selected system.
+    /// 覆盖逐系统自动选择；必须显式指定一个系统。
+    pub inheritance_root: Option<PathBuf>,
 }
 
 /// Build one named system or every configured system using native CoW storage.
@@ -132,16 +124,13 @@ pub fn build_with_options_and_backend_and_warning(
     backend: &impl BuildBackend,
     mut warning: impl FnMut(&[String]) -> Result<()>,
 ) -> Result<Vec<BuildOutcome>> {
-    let inheritance_root = &options.inheritance_root;
-    fs::checked(inheritance_root)?;
-    if !std::fs::metadata(inheritance_root)
-        .map_err(|e| fs::io(inheritance_root, e))?
-        .is_dir()
-    {
-        return Err(Error::Invalid(format!(
-            "继承来源根必须为已有目录: {0} / Inheritance source root must be an existing directory: {0}",
-            inheritance_root.display()
-        )));
+    if options.inheritance_root.is_some() && system.is_none() {
+        return Err(Error::Invalid(
+            "指定继承来源根时必须指定具体构建系统 / An inheritance source root override requires an explicitly selected build system".into(),
+        ));
+    }
+    if let Some(root) = &options.inheritance_root {
+        super::preflight::source_root::check_directory(root)?;
     }
     let systems = if let Some(id) = system {
         store.system_layout(id)?;
@@ -149,13 +138,15 @@ pub fn build_with_options_and_backend_and_warning(
     } else {
         store.list_systems()?
     };
-    for id in &systems {
-        let cache = store.system_layout(id)?.cache;
-        if inheritance_root.starts_with(&cache) {
-            return Err(Error::Invalid(format!(
-                "继承来源根位于本次构建可能清理的系统 {id} 缓存中，请选择版本根: {0} / Inheritance source root is inside system {id}'s cache, which this build may remove; select a version root instead: {0}",
-                inheritance_root.display()
-            )));
+    if let Some(inheritance_root) = &options.inheritance_root {
+        for id in &systems {
+            let cache = store.system_layout(id)?.cache;
+            if inheritance_root.starts_with(&cache) {
+                return Err(Error::Invalid(format!(
+                    "继承来源根位于本次构建可能清理的系统 {id} 缓存中，请选择版本根: {0} / Inheritance source root is inside system {id}'s cache, which this build may remove; select a version root instead: {0}",
+                    inheritance_root.display()
+                )));
+            }
         }
     }
     progress::message(
@@ -196,7 +187,7 @@ pub fn build_with_options_and_backend_and_warning(
                         inputs,
                         &backend,
                         &work,
-                        inheritance_root,
+                        options.inheritance_root.as_deref(),
                         &mut warnings,
                     )
                 },
@@ -329,16 +320,7 @@ pub fn build_with_options_and_backend_and_warning(
             &value.context.system_id,
             format!("构建版本 {}", value.attempt.version),
             format!("Build version {}", value.attempt.version),
-            || {
-                build_system(
-                    value,
-                    &work,
-                    &backend,
-                    &runtime,
-                    &dedup_sources,
-                    inheritance_root,
-                )
-            },
+            || build_system(value, &work, &backend, &runtime, &dedup_sources),
         );
         let built = match value.attempt.log.check() {
             Ok(()) => built,
@@ -494,6 +476,7 @@ struct Prepared {
     reuse_minutes: u64,
     deduplicate_packages: bool,
     source_root: Option<super::deferred::InheritanceRoot>,
+    inheritance_root: Option<PathBuf>,
 }
 
 type DownloadGroup = (
@@ -512,6 +495,8 @@ struct Pending {
     reuse_minutes: u64,
     deduplicate_packages: bool,
     source_root: Option<super::deferred::InheritanceRoot>,
+    inheritance_root: Option<PathBuf>,
+    inheritance: crate::config::InheritanceConfig,
 }
 
 fn collect_plan(
@@ -543,13 +528,10 @@ fn collect_plan(
                 &value.context,
             )?;
             let plan = crate::software::PackagePlan::parse(&output)?;
-            let inheritance = crate::config::InheritanceConfig::read(&read_plugin_parameters_at(
-                &value.context.config,
-            )?)?;
             validate_boot_packages(
                 &value.context.system_id,
                 runtime,
-                &inheritance,
+                &value.inheritance,
                 &value.plugin,
                 &plan.packages,
             )?;
@@ -567,7 +549,7 @@ fn check_system(
     inputs: Preflight,
     backend: &impl BuildBackend,
     work: &Path,
-    inheritance_root: &Path,
+    inheritance_override: Option<&Path>,
     warnings: &mut super::preflight::Report,
 ) -> Result<Pending> {
     progress::message(
@@ -595,18 +577,48 @@ fn check_system(
     let input = read_plugin_parameters_at(frozen)?;
     let environment = crate::config::read_environment_at(frozen)?;
     plugin.validate_parameter_lists(&input)?;
-    let inheritance = crate::config::InheritanceConfig::read(&input)?;
+    let mut inheritance = crate::config::InheritanceConfig::read(&input)?;
+    if plugin.metadata.account_inheritance.is_some() {
+        crate::config::AccountInheritanceConfig::read(&input)?;
+    }
+    let has_inheritance = !inheritance.copy_on_write_build.is_empty()
+        || !inheritance.copy_on_write_boot.is_empty()
+        || !inheritance.mounts.is_empty()
+        || plugin.metadata.account_inheritance.is_some();
+    let inheritance_root = if has_inheritance || inheritance_override.is_some() {
+        super::preflight::source_root::select(
+            backend,
+            id,
+            runtime.main_system.as_deref() == Some(id),
+            &inputs.layout.versions,
+            inheritance_override,
+        )?
+    } else {
+        None
+    };
+    if inheritance_root.is_none() {
+        if has_inheritance {
+            warnings.warn(id, "inheritance-source", format!(
+                "警告：系统 {id} 具有继承项，但是该系统没有找到任何继承来源，故本次不执行继承。 / Warning: system {id} has inheritance entries, but no inheritance source was found for this system; inheritance will be skipped for this build."
+            ));
+        }
+        inheritance = crate::config::InheritanceConfig::default();
+    }
     validate_boot_capabilities(id, runtime, &inheritance, &plugin)?;
     let mut inheritance_warnings = Vec::new();
-    let source_root = super::preflight::inheritance::inspect(
-        backend,
-        id,
-        &inheritance,
-        &store.system_layout(id)?.root,
-        work,
-        inheritance_root,
-        &mut inheritance_warnings,
-    )?;
+    let source_root = if let Some(inheritance_root) = &inheritance_root {
+        super::preflight::inheritance::inspect(
+            backend,
+            id,
+            &inheritance,
+            &store.system_layout(id)?.root,
+            work,
+            inheritance_root,
+            &mut inheritance_warnings,
+        )?
+    } else {
+        None
+    };
     for message in inheritance_warnings {
         warnings.warn(id, "inheritance", message);
     }
@@ -648,7 +660,9 @@ fn check_system(
         environment,
         inherited_mounts: Vec::new(),
     };
-    super::accounts::preflight(&plugin, &context, inheritance_root, warnings)?;
+    if let Some(inheritance_root) = &inheritance_root {
+        super::accounts::preflight(&plugin, &context, inheritance_root, warnings)?;
+    }
     Ok(Pending {
         inputs,
         plugin,
@@ -658,6 +672,8 @@ fn check_system(
         reuse_minutes,
         deduplicate_packages,
         source_root,
+        inheritance_root,
+        inheritance,
     })
 }
 
@@ -752,13 +768,10 @@ fn collect_plans(
                                     .unwrap()
                                     .to_string(),
                             )?;
-                            let inheritance = crate::config::InheritanceConfig::read(
-                                &read_plugin_parameters_at(&value.context.config)?,
-                            )?;
                             validate_boot_packages(
                                 &value.context.system_id,
                                 runtime,
-                                &inheritance,
+                                &value.inheritance,
                                 &value.plugin,
                                 &plan.packages,
                             )?;
@@ -817,6 +830,8 @@ fn prepare_system(
         reuse_minutes,
         deduplicate_packages,
         source_root,
+        inheritance_root,
+        ..
     } = pending;
     let _log = logging::enter([inputs.log.clone()]);
     let id = context.system_id.clone();
@@ -926,6 +941,7 @@ fn prepare_system(
             reuse_minutes,
             deduplicate_packages,
             source_root,
+            inheritance_root,
         }),
         Err(error) => {
             status(
@@ -1042,7 +1058,6 @@ fn build_system(
     backend: &impl BuildBackend,
     runtime: &crate::config::RuntimeConfig,
     dedup_sources: &[super::dedup::Source],
-    inheritance_root: &Path,
 ) -> Result<(BuildOutcome, Option<super::dedup::Source>)> {
     let Prepared {
         attempt,
@@ -1108,7 +1123,7 @@ fn build_system(
             deduplicate_packages: prepared.deduplicate_packages,
             dedup_sources,
             source_root: prepared.source_root.as_ref(),
-            inheritance_root,
+            inheritance_root: prepared.inheritance_root.as_deref(),
         };
         let outcome = stages.run(base, packages, scripts, &mut owned)?;
         let source = if prepared.deduplicate_packages {

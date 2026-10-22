@@ -414,3 +414,9 @@ mod dedup;
 
 #[path = "build_workflow/source_root.rs"]
 mod source_root;
+
+#[path = "build_workflow/automatic_source.rs"]
+mod automatic_source;
+
+#[path = "build_workflow/missing_source.rs"]
+mod missing_source;

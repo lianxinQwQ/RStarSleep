@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct Stages<'a, B: BuildBackend> {
     /// Selected source system root for build-time data, accounts and persistent seeding.
     /// 构建数据、账户和持久初始化所用的选定来源系统根。
-    pub(super) inheritance_root: &'a Path,
+    pub(super) inheritance_root: Option<&'a Path>,
     /// Stable root view captured without traversing boot inheritance sources.
     pub(super) source_root: Option<&'a super::deferred::InheritanceRoot>,
     /// Required CoW storage and checked execution.
@@ -406,10 +406,16 @@ impl<B: BuildBackend> Stages<'_, B> {
         cached: Option<&Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
-        let account_inputs = super::accounts::fingerprint(self.plugin)?;
+        let account_inputs = if self.inheritance_root.is_some() {
+            super::accounts::fingerprint(self.plugin)?
+        } else {
+            "no-inheritance-source".into()
+        };
         // Assess reads live boot/Mount sources; never reuse a previous scan result.
         // Assess 读取实时启动/Mount 来源，不能复用上次扫描结果。
-        let allow_reuse = if self.plugin.metadata.account_inheritance.is_some() {
+        let allow_reuse = if self.inheritance_root.is_some()
+            && self.plugin.metadata.account_inheritance.is_some()
+        {
             crate::config::AccountInheritanceConfig::read(
                 &crate::config::read_plugin_parameters_at(&self.context.config)?,
             )?
@@ -482,7 +488,9 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned.push(root.clone());
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
-        super::accounts::capture_new(self.plugin, &root)?;
+        if self.inheritance_root.is_some() {
+            super::accounts::capture_new(self.plugin, &root)?;
+        }
         // Observe inheritance too: it can replace a database before any script runs.
         // Keep the inventory bound to the database that produced it, including cache hits.
         let database_paths = if self.plugin.metadata.query_package_database_paths {
@@ -495,23 +503,29 @@ impl<B: BuildBackend> Stages<'_, B> {
             .and_then(|paths| super::package_watch::PackageWatch::start(&root, paths));
         let inherited = if let Some(frozen) = &frozen {
             frozen.apply(self.backend, &root)?
-        } else {
+        } else if let Some(source_root) = self.inheritance_root {
             super::inheritance::apply_build(
                 self.backend,
                 self.context,
                 &root,
                 &self.attempt.layout.root,
-                self.inheritance_root,
+                source_root,
             )?
+        } else {
+            false
         };
-        let accounts_changed = super::accounts::apply(
-            self.backend,
-            self.plugin,
-            self.context,
-            &root,
-            &self.attempt.layout.root,
-            self.inheritance_root,
-        )?;
+        let accounts_changed = if let Some(source_root) = self.inheritance_root {
+            super::accounts::apply(
+                self.backend,
+                self.plugin,
+                self.context,
+                &root,
+                &self.attempt.layout.root,
+                source_root,
+            )?
+        } else {
+            false
+        };
         if self.plugin.metadata.post_maintenance {
             self.backend
                 .invoke(self.plugin, "post_maintenance", &[], &root, self.context)?;
@@ -612,8 +626,8 @@ impl<B: BuildBackend> Stages<'_, B> {
     fn inheritance_step(&self, scripts: &Cache, owned: &mut Vec<PathBuf>) -> Result<BuildOutcome> {
         let input = crate::config::read_plugin_parameters_at(&self.context.config)?;
         let config = crate::config::InheritanceConfig::read(&input)?;
-        if config.copy_on_write_boot.is_empty()
-            && config.mounts.is_empty()
+        if (self.inheritance_root.is_none()
+            || (config.copy_on_write_boot.is_empty() && config.mounts.is_empty()))
             && !self
                 .context
                 .parameters
@@ -643,7 +657,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             &self.attempt.layout.root,
             self.inheritance_root,
         )?;
-        if !config.copy_on_write_boot.is_empty() {
+        if self.inheritance_root.is_some() && !config.copy_on_write_boot.is_empty() {
             if self.prepare_boot_inheritance {
                 progress::message(
                     &self.context.system_id,
