@@ -37,12 +37,17 @@ fn boot_spec(outcome: &BuildOutcome) -> Result<plugins::BootRequirements> {
     let path = outcome
         .root
         .parent()
-        .ok_or_else(|| Error::Invalid("启动根缺少版本目录".into()))?
+        .ok_or_else(|| {
+            Error::Invalid("启动根缺少版本目录 / Boot root has no version directory".into())
+        })?
         .join("boot-spec.toml");
     fs::checked(&path)?;
     let text = disk::read_to_string(&path).map_err(|e| fs::io(&path, e))?;
-    let spec: plugins::BootRequirements =
-        toml::from_str(&text).map_err(|e| Error::Invalid(format!("启动产物声明无效: {e}")))?;
+    let spec: plugins::BootRequirements = toml::from_str(&text).map_err(|e| {
+        Error::Invalid(format!(
+            "启动产物声明无效 / Invalid boot artifact declaration: {e}"
+        ))
+    })?;
     plugins::validate_boot(&spec)?;
     Ok(spec)
 }
@@ -58,7 +63,7 @@ pub(super) fn publish(outcome: &BuildOutcome, config: &RuntimeConfig) -> Result<
         .uuid
         .as_deref()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::Invalid("Btrfs 根缺少 UUID".into()))?;
+        .ok_or_else(|| Error::Invalid("Btrfs 根缺少 UUID / Btrfs root has no UUID".into()))?;
     publish_at(outcome, config, uuid, &mount.subvolume_path(&outcome.root)?)
 }
 
@@ -77,7 +82,9 @@ fn publish_at(
 ) -> Result<()> {
     let spec = boot_spec(outcome)?;
     if uuid.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-') || uuid.is_empty() {
-        return Err(Error::Invalid("无效 Btrfs UUID".into()));
+        return Err(Error::Invalid(
+            "无效 Btrfs UUID / Invalid Btrfs UUID".into(),
+        ));
     }
     let subvolume = subvolume
         .to_str()
@@ -85,16 +92,19 @@ fn publish_at(
             !p.chars()
                 .any(|c| c.is_whitespace() || c.is_control() || c == ',')
         })
-        .ok_or_else(|| Error::Invalid("启动子卷路径不能包含空白、逗号或非 UTF-8".into()))?;
+        .ok_or_else(|| Error::Invalid("启动子卷路径不能包含空白、逗号或非 UTF-8 / Boot subvolume path must not contain whitespace, commas, or non-UTF-8 characters".into()))?;
     let pending = outcome
         .root
         .file_name()
         .is_some_and(|s| s == "prepared-root");
     let mut options = config.kernel_options.clone();
     let root_subvolume = if pending {
-        let parent_path = Path::new(subvolume)
-            .parent()
-            .ok_or_else(|| Error::Invalid("待继承启动根缺少版本目录".into()))?;
+        let parent_path = Path::new(subvolume).parent().ok_or_else(|| {
+            Error::Invalid(
+                "待继承启动根缺少版本目录 / Boot root pending inheritance has no version directory"
+                    .into(),
+            )
+        })?;
         let manifest = parent_path.join("inheritance-pending.toml");
         if !fs::exists(
             &outcome
@@ -103,7 +113,9 @@ fn publish_at(
                 .unwrap()
                 .join("inheritance-pending.toml"),
         )? {
-            return Err(Error::Invalid("候选启动根缺少继承清单".into()));
+            return Err(Error::Invalid(
+                "候选启动根缺少继承清单 / Candidate boot root has no inheritance manifest".into(),
+            ));
         }
         options.push(format!("rstarsleep.storage=UUID={uuid}"));
         options.push(format!("rstarsleep.pending={}", manifest.display()));
@@ -122,7 +134,7 @@ fn publish_at(
     for path in [&directory, &entry] {
         if fs::exists(path)? {
             return Err(Error::Invalid(format!(
-                "启动目标已存在: {}",
+                "启动目标已存在: {0} / Boot target already exists: {0}",
                 path.display()
             )));
         }
@@ -148,7 +160,7 @@ fn publish_at(
             .is_file()
         {
             return Err(Error::Invalid(format!(
-                "启动文件必须为普通文件: {}",
+                "启动文件必须为普通文件: {0} / Boot file must be a regular file: {0}",
                 source.display()
             )));
         }
@@ -206,7 +218,10 @@ pub(super) fn sync_executable(root: &Path) -> Result<()> {
             .map_err(|e| fs::io(&destination, e))?
             .is_file()
         {
-            return Err(Error::Invalid("管理器二进制目标必须为普通文件".into()));
+            return Err(Error::Invalid(
+                "管理器二进制目标必须为普通文件 / Manager binary target must be a regular file"
+                    .into(),
+            ));
         }
         if disk::read(&destination).map_err(|e| fs::io(&destination, e))? == bytes {
             let permissions = disk::metadata(&source)

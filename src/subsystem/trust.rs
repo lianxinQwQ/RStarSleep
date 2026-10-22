@@ -14,7 +14,7 @@ pub(crate) fn path(path: &Path) -> Result<()> {
         let m = fs::symlink_metadata(part)?;
         if m.uid() != 0 || m.mode() & 0o022 != 0 || m.file_type().is_symlink() {
             return Err(Error::Invalid(format!(
-                "untrusted privileged path: {}",
+                "不可信的特权路径: {0} / untrusted privileged path: {0}",
                 part.display()
             )));
         }

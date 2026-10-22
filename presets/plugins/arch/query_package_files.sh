@@ -12,7 +12,7 @@ pacman -Ql -- "$@" | awk '
     path = substr($0, split_at + 1)
     if (split_at < 2 || substr(path, 1, 1) != "/" ||
         index(path, "\t") || index(path, "\r")) {
-        print "invalid package file list" > "/dev/stderr"
+        print "软件包文件列表无效 / invalid package file list" > "/dev/stderr"
         exit 1
     }
     if (path !~ /\/$/)

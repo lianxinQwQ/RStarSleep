@@ -38,7 +38,7 @@ pub(super) fn load(directory: &Path) -> Result<Vec<Script>> {
         Err(e) => return Err(disk::io(directory, e)),
         Ok(info) if !info.is_dir() => {
             return Err(Error::Invalid(format!(
-                "script 必须是普通目录: {}",
+                "script 必须是普通目录: {0} / script must be a regular directory: {0}",
                 directory.display()
             )));
         }
@@ -82,7 +82,7 @@ pub(super) fn load(directory: &Path) -> Result<Vec<Script>> {
                 })
             } else {
                 Err(Error::Invalid(format!(
-                    "script 条目必须是压缩包、目录或 *.sh 普通文件: {}",
+                    "script 条目必须是压缩包、目录或 *.sh 普通文件: {0} / script entry must be an archive, a directory, or a regular *.sh file: {0}",
                     path.display()
                 )))
             }

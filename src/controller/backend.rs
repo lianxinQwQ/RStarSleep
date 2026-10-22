@@ -71,12 +71,14 @@ fn btrfs(arguments: &[OsString]) -> Result<Output> {
 ///   新子卷路径。
 fn destination(path: &Path) -> Result<()> {
     if fs::exists(path)? {
-        return Err(Error::Invalid(format!("目标已存在: {}", path.display())));
+        return Err(Error::Invalid(format!(
+            "目标已存在: {0} / Target already exists: {0}",
+            path.display()
+        )));
     }
-    fs::directory(
-        path.parent()
-            .ok_or_else(|| Error::Invalid("子卷缺少父目录".into()))?,
-    )
+    fs::directory(path.parent().ok_or_else(|| {
+        Error::Invalid("子卷缺少父目录 / Subvolume has no parent directory".into())
+    })?)
 }
 
 impl BuildBackend for SystemBackend {
@@ -117,7 +119,9 @@ impl BuildBackend for SystemBackend {
         let out = btrfs(&["inspect-internal".into(), "rootid".into(), path.into()])?;
         let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(Error::Invalid("来源子卷 ID 无效".into()));
+            return Err(Error::Invalid(
+                "来源子卷 ID 无效 / Invalid source subvolume ID".into(),
+            ));
         }
         Ok(id)
     }
@@ -211,7 +215,9 @@ impl BuildBackend for SystemBackend {
         if std::fs::metadata(path).map_err(|e| fs::io(path, e))?.ino() != 256 {
             let children = nested_subvolumes(path)?;
             if !children.is_empty() {
-                return Err(Error::Invalid(format!("继承目录含嵌套子卷: {children:?}")));
+                return Err(Error::Invalid(format!(
+                    "继承目录含嵌套子卷: {children:?} / Inheritance directory contains nested subvolumes: {children:?}"
+                )));
             }
             return Ok(());
         }
@@ -225,7 +231,7 @@ impl BuildBackend for SystemBackend {
         ])?;
         if !output.stdout.is_empty() {
             return Err(Error::Invalid(format!(
-                "持久目录含嵌套子卷，不能快照或提交 {}:\n{}",
+                "持久目录含嵌套子卷，不能快照或提交 {0} / Persistent directory contains nested subvolumes and cannot be snapshotted or committed {0}:\n{1}",
                 path.display(),
                 String::from_utf8_lossy(&output.stdout)
             )));
@@ -292,7 +298,7 @@ impl BuildBackend for SystemBackend {
         ])?;
         if String::from_utf8_lossy(&output.stdout).trim() != format!("ro={readonly}") {
             return Err(Error::Invalid(format!(
-                "子卷只读属性不符: {}",
+                "子卷只读属性不符: {0} / Subvolume read-only attribute mismatch: {0}",
                 path.display()
             )));
         }
@@ -378,8 +384,11 @@ impl BuildBackend for SystemBackend {
         if super::plugins::is_query(operation)
             || (operation == "predownload" && plugin.metadata.predownload_plans)
         {
-            String::from_utf8(output.stdout)
-                .map_err(|_| Error::Invalid(format!("{operation} 查询不是 UTF-8")))
+            String::from_utf8(output.stdout).map_err(|_| {
+                Error::Invalid(format!(
+                    "{operation} 查询不是 UTF-8 / {operation} query is not UTF-8"
+                ))
+            })
         } else {
             Ok(String::new())
         }
@@ -399,8 +408,11 @@ impl BuildBackend for SystemBackend {
         if super::plugins::is_query(operation)
             || (operation == "predownload" && plugin.metadata.predownload_plans)
         {
-            String::from_utf8(output.stdout)
-                .map_err(|_| Error::Invalid(format!("{operation} 查询不是 UTF-8")))
+            String::from_utf8(output.stdout).map_err(|_| {
+                Error::Invalid(format!(
+                    "{operation} 查询不是 UTF-8 / {operation} query is not UTF-8"
+                ))
+            })
         } else {
             Ok(String::new())
         }

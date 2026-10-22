@@ -19,20 +19,21 @@ pub(super) fn add_copy(
     let _activity = super::filesystem::activity(store, &runtime.system_id, true)?;
     if execution::occupied(runtime)? {
         return Err(Error::Invalid(
-            "stop managed applications and other writers before capturing build inputs".into(),
+            "采集构建输入前请停止受管应用和其他写入进程 / stop managed applications and other writers before capturing build inputs".into(),
         ));
     }
     let layout = store.system_layout(&runtime.system_id)?;
     let _system = controller::lock_system_directory(&layout.root)?;
     if !mounts_at(root, target)?.is_empty() {
         return Err(Error::Invalid(
-            "capture target has mounted descendants; capture an unmounted path".into(),
+            "采集目标包含已挂载的后代，请采集未挂载的路径 / capture target has mounted descendants; capture an unmounted path".into(),
         ));
     }
     let source = open_target(&root.root, target)?;
     if !source.metadata()?.is_file() && !source.metadata()?.is_dir() {
         return Err(Error::Invalid(
-            "capture source must be a regular file or directory".into(),
+            "采集来源必须为普通文件或目录 / capture source must be a regular file or directory"
+                .into(),
         ));
     }
     let parent = layout.config.join("script");
@@ -65,7 +66,7 @@ pub(super) fn add_copy(
     let result = commands::output(tar, Duration::from_secs(120))?;
     if !result.status.success() {
         return Err(Error::Invalid(format!(
-            "capture archive failed: {}",
+            "采集归档失败: {0} / capture archive failed: {0}",
             String::from_utf8_lossy(&result.stderr)
         )));
     }

@@ -48,7 +48,7 @@ fn copy_directory(source: &Path, destination: &Path, config_root: bool) -> Resul
                 .map_err(|e| disk::io(&target, e))?;
         } else {
             return Err(Error::Invalid(format!(
-                "配置仅允许普通文件及目录: {}",
+                "配置仅允许普通文件及目录: {0} / Configuration permits only regular files and directories: {0}",
                 entry.path().display()
             )));
         }
@@ -125,7 +125,7 @@ fn hash_directory(root: &Path, relative: &Path, digest: &mut Sha256) -> Result<(
             digest.update(content);
         } else {
             return Err(Error::Invalid(format!(
-                "留档配置含特殊条目: {}",
+                "留档配置含特殊条目: {0} / Archived configuration contains special entries: {0}",
                 entry.path().display()
             )));
         }

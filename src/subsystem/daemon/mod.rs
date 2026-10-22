@@ -104,7 +104,7 @@ struct Origin {
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     mutex
         .lock()
-        .map_err(|_| Error::Invalid("runtime lock poisoned".into()))
+        .map_err(|_| Error::Invalid("运行环境锁损坏 / runtime lock poisoned".into()))
 }
 /// Determine idle eligibility independently of machine probes.
 /// 独立于机器探测判断空闲资格。

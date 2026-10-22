@@ -45,7 +45,9 @@ impl AccountInheritanceConfig {
                                     || matches!(c, ':' | ',' | '/' | '\\')
                             })
                         {
-                            return Err(Error::Invalid(format!("无效账户名称: {name:?}")));
+                            return Err(Error::Invalid(format!(
+                                "无效账户名称: {name:?} / invalid account name: {name:?}"
+                            )));
                         }
                         if !target.iter().any(|existing| existing == name) {
                             target.push(name.to_owned());
@@ -61,14 +63,18 @@ impl AccountInheritanceConfig {
                             "assess" => AccountDriftPolicy::Assess,
                             _ => {
                                 return Err(Error::Invalid(
-                                    "DriftPolicy 必须为 silent、warn、error 或 assess".into(),
+                                    "DriftPolicy 必须为 silent、warn、error 或 assess / DriftPolicy must be silent, warn, error, or assess".into(),
                                 ));
                             }
                         },
-                        _ => return Err(Error::Invalid("DriftPolicy 必须只赋值一次".into())),
+                        _ => return Err(Error::Invalid("DriftPolicy 必须只赋值一次 / DriftPolicy must be assigned exactly once".into())),
                     };
                 }
-                _ => return Err(Error::Invalid(format!("未知账户继承配置: {key}"))),
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "未知账户继承配置: {key} / unknown account inheritance setting: {key}"
+                    )));
+                }
             }
         }
         Ok(result)

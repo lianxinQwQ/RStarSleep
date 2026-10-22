@@ -41,7 +41,9 @@ fn location(
         .join(format!("{key}.toml"));
     let transaction = source
         .parent()
-        .ok_or_else(|| Error::Invalid("迁移来源缺少父目录".into()))?
+        .ok_or_else(|| {
+            Error::Invalid("迁移来源缺少父目录 / Migration source has no parent directory".into())
+        })?
         .join(format!(".rstarsleep-migration-{key}"));
     Ok((uuid, source_location, record, transaction))
 }
@@ -49,12 +51,14 @@ fn location(
 fn read(path: &Path) -> Result<Migration> {
     disk::checked(path)?;
     let text = fs::read_to_string(path).map_err(|e| disk::io(path, e))?;
-    let value: Migration =
-        toml::from_str(&text).map_err(|e| Error::Invalid(format!("迁移记录无效: {e}")))?;
+    let value: Migration = toml::from_str(&text)
+        .map_err(|e| Error::Invalid(format!("迁移记录无效 / Invalid migration record: {e}")))?;
     if value.schema_version != 1
         || !matches!(value.phase.as_str(), "preparing" | "ready" | "committed")
     {
-        return Err(Error::Invalid("迁移记录版本或状态无效".into()));
+        return Err(Error::Invalid(
+            "迁移记录版本或状态无效 / Invalid migration record version or state".into(),
+        ));
     }
     Ok(value)
 }
@@ -126,7 +130,7 @@ pub(super) fn check_offline(source: &Path) -> Result<()> {
             .any(|line| line.split_whitespace().nth(2) == Some(&device_text))
         {
             return Err(Error::Invalid(format!(
-                "move-snapshot 来源所属子卷仍被挂载: {}",
+                "move-snapshot 来源所属子卷仍被挂载: {0} / Subvolume containing the move-snapshot source is still mounted: {0}",
                 source.display()
             )));
         }
@@ -147,7 +151,7 @@ pub(super) fn check_offline(source: &Path) -> Result<()> {
                 && u32::from_str_radix(minor, 16).ok() == Some(libc::minor(device))
             {
                 return Err(Error::Invalid(format!(
-                    "move-snapshot 来源所属子卷仍被进程映射: {}",
+                    "move-snapshot 来源所属子卷仍被进程映射: {0} / Subvolume containing the move-snapshot source is still mapped by a process: {0}",
                     source.display()
                 )));
             }
@@ -167,7 +171,7 @@ pub(super) fn check_offline(source: &Path) -> Result<()> {
             match fs::metadata(&handle) {
                 Ok(info) if info.dev() == device => {
                     return Err(Error::Invalid(format!(
-                        "move-snapshot 来源所属子卷仍被进程使用: {} ({})",
+                        "move-snapshot 来源所属子卷仍被进程使用: {0} ({1}) / Subvolume containing the move-snapshot source is still used by a process: {0} ({1})",
                         source.display(),
                         handle.display()
                     )));
@@ -197,7 +201,7 @@ fn check_tree(backend: &impl BuildBackend, source: &Path) -> Result<()> {
         } else {
             if !info.is_file() && !info.file_type().is_symlink() {
                 return Err(Error::Invalid(format!(
-                    "move-snapshot 无法安全迁移特殊文件: {}",
+                    "move-snapshot 无法安全迁移特殊文件: {0} / move-snapshot cannot safely migrate a special file: {0}",
                     path.display()
                 )));
             }
@@ -208,14 +212,14 @@ fn check_tree(backend: &impl BuildBackend, source: &Path) -> Result<()> {
         }
         if (info.is_dir() || info.is_file()) && super::nocow::flags(&path)? & (0x10 | 0x20) != 0 {
             return Err(Error::Invalid(format!(
-                "move-snapshot 来源含不可变或追加属性: {}",
+                "move-snapshot 来源含不可变或追加属性: {0} / move-snapshot source has immutable or append-only attributes: {0}",
                 path.display()
             )));
         }
     }
     if links.values().any(|(inside, total)| inside != total) {
         return Err(Error::Invalid(
-            "move-snapshot 来源含连接目录外对象的硬链接".into(),
+            "move-snapshot 来源含连接目录外对象的硬链接 / move-snapshot source contains hard links to objects outside the directory".into(),
         ));
     }
     Ok(())
@@ -248,7 +252,7 @@ fn check_other_pins(
                 .any(|pin| pin.starts_with(&location) || location.starts_with(pin))
             {
                 return Err(Error::Invalid(
-                    "move-snapshot 来源还被其他待办继承引用，拒绝改变其身份".into(),
+                    "move-snapshot 来源还被其他待办继承引用，拒绝改变其身份 / move-snapshot source is referenced by other pending inheritance tasks; refusing to change its identity".into(),
                 ));
             }
         }
@@ -258,9 +262,9 @@ fn check_other_pins(
 
 fn exchange(left: &Path, right: &Path) -> Result<()> {
     let left_native = CString::new(left.as_os_str().as_bytes())
-        .map_err(|_| Error::Invalid("迁移路径含 NUL".into()))?;
+        .map_err(|_| Error::Invalid("迁移路径含 NUL / Migration path contains NUL".into()))?;
     let right_native = CString::new(right.as_os_str().as_bytes())
-        .map_err(|_| Error::Invalid("迁移路径含 NUL".into()))?;
+        .map_err(|_| Error::Invalid("迁移路径含 NUL / Migration path contains NUL".into()))?;
     // SAFETY: both paths are stable NUL-terminated strings; no descriptors are borrowed.
     if unsafe {
         libc::renameat2(
@@ -296,7 +300,7 @@ fn check_transaction(transaction: &Path, migration: &Migration) -> Result<()> {
         let info = fs::symlink_metadata(transaction).map_err(|e| disk::io(transaction, e))?;
         if !info.is_dir() || Some(info.ino()) != migration.transaction_inode {
             return Err(Error::Invalid(
-                "迁移临时目录身份不匹配，保留现场供手动恢复".into(),
+                "迁移临时目录身份不匹配，保留现场供手动恢复 / Migration temporary-directory identity mismatch; preserving it for manual recovery".into(),
             ));
         }
     }
@@ -322,7 +326,7 @@ fn remove_owned(
     };
     if !matches {
         return Err(Error::Invalid(format!(
-            "迁移临时对象身份不匹配，拒绝删除: {}",
+            "迁移临时对象身份不匹配，拒绝删除: {0} / Migration temporary-object identity mismatch; refusing deletion: {0}",
             path.display()
         )));
     }
@@ -355,14 +359,16 @@ pub(super) fn prepare(
     let mut migration = if existing {
         let migration = read(&record)?;
         if migration.filesystem_uuid != uuid || migration.source != source_location {
-            return Err(Error::Invalid("来源迁移记录身份不匹配".into()));
+            return Err(Error::Invalid(
+                "来源迁移记录身份不匹配 / Source migration record identity mismatch".into(),
+            ));
         }
         migration
     } else {
         check_tree(backend, source)?;
         check_other_pins(backend, manager, source, own_manifest)?;
         if disk::exists(&transaction)? {
-            return Err(Error::Invalid("存在未登记的来源迁移目录，拒绝覆盖".into()));
+            return Err(Error::Invalid("存在未登记的来源迁移目录，拒绝覆盖 / An unregistered source migration directory exists; refusing to overwrite it".into()));
         }
         disk::directory(record.parent().unwrap())?;
         let migration = Migration {
@@ -384,7 +390,10 @@ pub(super) fn prepare(
         migration
     };
     if backend.source_subvolume_id(source.parent().unwrap())? != migration.parent_subvolume_id {
-        return Err(Error::Invalid("来源迁移父目录身份已改变".into()));
+        return Err(Error::Invalid(
+            "来源迁移父目录身份已改变 / Source migration parent-directory identity has changed"
+                .into(),
+        ));
     }
     let replacement = transaction.join("replacement");
     let work = transaction.join("work");
@@ -396,7 +405,7 @@ pub(super) fn prepare(
             if migration.authorization != authorization
                 || !original_matches(backend, &replacement, &migration)?
             {
-                return Err(Error::Invalid("迁移中断后的原目录备份身份不匹配".into()));
+                return Err(Error::Invalid("迁移中断后的原目录备份身份不匹配 / Original-directory backup identity mismatch after interrupted migration".into()));
             }
             migration.phase = "committed".into();
             backend.sync_filesystem(source)?;
@@ -411,7 +420,7 @@ pub(super) fn prepare(
                 .ino()
                 != migration.old_inode
         {
-            return Err(Error::Invalid("来源迁移对象或授权已改变，拒绝继续".into()));
+            return Err(Error::Invalid("来源迁移对象或授权已改变，拒绝继续 / Source migration object or authorization has changed; refusing to continue".into()));
         }
         check_tree(backend, source)?;
         check_other_pins(backend, manager, source, own_manifest)?;
@@ -447,7 +456,7 @@ pub(super) fn prepare(
         if super::inheritance_inputs::migration_hash(backend, source)?
             != super::inheritance_inputs::migration_hash(backend, &work)?
         {
-            return Err(Error::Invalid("来源迁移校验失败，保留原目录".into()));
+            return Err(Error::Invalid("来源迁移校验失败，保留原目录 / Source migration validation failed; preserving the original directory".into()));
         }
         backend.snapshot_recursive(&work, &replacement, false)?;
         restore_times(backend, &work, &replacement)?;
@@ -466,7 +475,7 @@ pub(super) fn prepare(
         if super::inheritance_inputs::migration_hash(backend, source)?
             != super::inheritance_inputs::migration_hash(backend, &replacement)?
         {
-            return Err(Error::Invalid("来源在迁移期间改变，保留原目录".into()));
+            return Err(Error::Invalid("来源在迁移期间改变，保留原目录 / Source changed during migration; preserving the original directory".into()));
         }
         if !original_matches(backend, source, &migration)?
             || backend.source_subvolume_id(source.parent().unwrap())?
@@ -474,7 +483,7 @@ pub(super) fn prepare(
             || backend.source_subvolume_id(&replacement)?
                 != migration.replacement_id.as_deref().unwrap()
         {
-            return Err(Error::Invalid("交换前来源或临时子卷身份已改变".into()));
+            return Err(Error::Invalid("交换前来源或临时子卷身份已改变 / Source or temporary subvolume identity changed before exchange".into()));
         }
         check_transaction(&transaction, &migration)?;
         check_other_pins(backend, manager, source, own_manifest)?;

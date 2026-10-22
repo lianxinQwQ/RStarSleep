@@ -34,12 +34,12 @@ fn query(arguments: &[&str]) -> Result<Vec<Mount>> {
         .map_err(|e| io_error("findmnt", e))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
-            "无法识别当前系统的挂载: {}",
+            "无法识别当前系统的挂载: {0} / cannot identify the current system mount: {0}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     let mounts: Mounts = serde_json::from_slice(&output.stdout)
-        .map_err(|e| Error::Invalid(format!("findmnt 响应无效: {e}")))?;
+        .map_err(|e| Error::Invalid(format!("findmnt 响应无效 / invalid findmnt response: {e}")))?;
     Ok(mounts.filesystems)
 }
 
@@ -48,18 +48,18 @@ fn query(arguments: &[&str]) -> Result<Vec<Mount>> {
 fn system_uuid(mounts: &[Mount]) -> Result<&str> {
     let [root] = mounts else {
         return Err(Error::Invalid(
-            "findmnt 必须返回唯一的当前系统根挂载".into(),
+            "findmnt 必须返回唯一的当前系统根挂载 / findmnt must return exactly one current system root mount".into(),
         ));
     };
     if root.target != Path::new("/") || root.fstype != "btrfs" {
         return Err(Error::Invalid(
-            "当前系统根 / 必须位于 Btrfs；可显式指定已挂载的 Btrfs 顶层绝对路径".into(),
+            "当前系统根 / 必须位于 Btrfs；可显式指定已挂载的 Btrfs 顶层绝对路径 / the current system root / must reside on Btrfs; alternatively, specify an absolute path to a mounted Btrfs top level".into(),
         ));
     }
     let uuid = root.uuid.as_deref().unwrap_or("");
     if uuid.is_empty() || !uuid.bytes().all(|v| v.is_ascii_hexdigit() || v == b'-') {
         return Err(Error::Invalid(
-            "无法识别当前系统所在 Btrfs 文件系统的 UUID".into(),
+            "无法识别当前系统所在 Btrfs 文件系统的 UUID / cannot identify the UUID of the Btrfs filesystem containing the current system".into(),
         ));
     }
     Ok(uuid)
@@ -105,14 +105,16 @@ pub fn with_current_system_top_level<T>(operation: impl FnOnce(&Path) -> Result<
     // 创建任何管理器文件前，先校验挂载的文件系统。
     let mounted = query(&[
         "--target",
-        top_level
-            .path()
-            .to_str()
-            .ok_or_else(|| Error::Invalid("自动挂载目录必须为 UTF-8 路径".into()))?,
+        top_level.path().to_str().ok_or_else(|| {
+            Error::Invalid(
+                "自动挂载目录必须为 UTF-8 路径 / automatic mount directory must be a UTF-8 path"
+                    .into(),
+            )
+        })?,
     ])?;
     if mounted.len() != 1 || writable_top_level(&mounted, uuid) != Some(top_level.path()) {
         return Err(Error::Invalid(
-            "自动挂载未指向当前系统所在 Btrfs 的可写顶层".into(),
+            "自动挂载未指向当前系统所在 Btrfs 的可写顶层 / automatic mount does not point to the writable top level of the Btrfs filesystem containing the current system".into(),
         ));
     }
     let result = operation(top_level.path())?;
@@ -142,7 +144,7 @@ impl TopLevel {
             .map_err(|e| io_error("mount", e))?;
         if !output.status.success() {
             return Err(Error::Btrfs(format!(
-                "挂载当前系统所在文件系统的顶层失败: {}",
+                "挂载当前系统所在文件系统的顶层失败: {0} / failed to mount the top level of the filesystem containing the current system: {0}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }

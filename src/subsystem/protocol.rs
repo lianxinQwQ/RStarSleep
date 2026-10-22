@@ -132,13 +132,19 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(
             return if bytes.is_empty() {
                 Ok(None)
             } else {
-                Err(io::Error::new(io::ErrorKind::UnexpectedEof, "消息截断"))
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "消息截断 / truncated message",
+                ))
             };
         }
         let newline = available.iter().position(|v| *v == b'\n');
         let count = newline.map_or(available.len(), |i| i + 1);
         if bytes.len().saturating_add(count) > MAX_FRAME_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "消息过大"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "消息过大 / message too large",
+            ));
         }
         bytes.extend_from_slice(&available[..count]);
         reader.consume(count);
@@ -160,7 +166,10 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> io::Resu
     let mut bytes =
         serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if bytes.len() + 1 > MAX_FRAME_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "消息过大"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "消息过大 / message too large",
+        ));
     }
     bytes.push(b'\n');
     writer.write_all(&bytes)?;
@@ -173,7 +182,10 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> io::Resu
 /// - `request`: Untrusted peer request. 不可信对端请求。
 pub fn validate_request(request: &Request) -> io::Result<()> {
     if request.version != PROTOCOL_VERSION {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "协议版本不支持"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "协议版本不支持 / unsupported protocol version",
+        ));
     }
     match &request.operation {
         Operation::List => {}
@@ -218,7 +230,7 @@ pub fn validate_request(request: &Request) -> io::Result<()> {
             ) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "未知 guest 操作",
+                    "未知 guest 操作 / unknown guest action",
                 ));
             }
             if path
@@ -227,7 +239,7 @@ pub fn validate_request(request: &Request) -> io::Result<()> {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "guest 路径无效",
+                    "guest 路径无效 / invalid guest path",
                 ));
             }
             if packages.len() > 256
@@ -235,7 +247,10 @@ pub fn validate_request(request: &Request) -> io::Result<()> {
                     p.is_empty() || p.starts_with('-') || p.chars().any(char::is_whitespace)
                 })
             {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "包请求无效"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "包请求无效 / invalid package request",
+                ));
             }
         }
     }
@@ -250,7 +265,7 @@ pub fn validate_id(id: &str) -> io::Result<()> {
     if id.len() > 64 || crate::config::validate_identifier(id).is_err() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "子系统标识无效",
+            "子系统标识无效 / invalid subsystem identifier",
         ));
     }
     Ok(())
@@ -261,7 +276,10 @@ pub fn validate_id(id: &str) -> io::Result<()> {
 /// - `window`: Desired rows and columns. 目标行列数。
 pub fn validate_window(window: WindowSize) -> io::Result<()> {
     if window.rows == 0 || window.cols == 0 || window.rows > 1000 || window.cols > 1000 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "终端尺寸无效"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "终端尺寸无效 / invalid terminal dimensions",
+        ));
     }
     Ok(())
 }
@@ -276,7 +294,10 @@ fn validate_argv(argv: &[String]) -> io::Result<()> {
         || argv.iter().any(|s| s.contains('\0'))
         || argv.iter().map(String::len).sum::<usize>() > 32768
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "命令参数无效"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "命令参数无效 / invalid command arguments",
+        ));
     }
     Ok(())
 }
@@ -296,7 +317,10 @@ fn validate_environment(env: &BTreeMap<String, String>) -> io::Result<()> {
                 || v.contains('\0')
         })
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "会话环境无效"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "会话环境无效 / invalid session environment",
+        ));
     }
     Ok(())
 }

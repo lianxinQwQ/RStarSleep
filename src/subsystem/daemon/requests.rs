@@ -16,7 +16,11 @@ impl Manager {
     ) -> Result<()> {
         let request = match first {
             ClientMessage::Request { request } => request,
-            _ => return Err(Error::Protocol("initial request required".into())),
+            _ => {
+                return Err(Error::Protocol(
+                    "需要初始请求 / initial request required".into(),
+                ));
+            }
         };
         protocol::validate_request(&request)?;
         reader.get_ref().set_read_timeout(None)?;
@@ -34,7 +38,9 @@ impl Manager {
             }
             Operation::Status { id } => {
                 if !self.config(&id)?.allows(peer.uid) {
-                    return Err(Error::Invalid("subsystem access denied".into()));
+                    return Err(Error::Invalid(
+                        "子系统访问被拒绝 / subsystem access denied".into(),
+                    ));
                 }
                 wire.send(&Event::Result {
                     statuses: vec![self.status(&id)?],
@@ -95,7 +101,10 @@ impl Manager {
             } => {
                 let (runtime, _lease) = self.lease(&id, peer)?;
                 let target = if desktop && !target.ends_with(".desktop") {
-                    return Err(Error::Invalid("run-desktop requires a desktop path".into()));
+                    return Err(Error::Invalid(
+                        "run-desktop 需要 desktop 路径 / run-desktop requires a desktop path"
+                            .into(),
+                    ));
                 } else {
                     target
                 };
@@ -140,7 +149,9 @@ impl Manager {
             Operation::SyncExports { id } => {
                 let config = self.config(&id)?;
                 if !config.allows(peer.uid) {
-                    return Err(Error::Invalid("subsystem access denied".into()));
+                    return Err(Error::Invalid(
+                        "子系统访问被拒绝 / subsystem access denied".into(),
+                    ));
                 }
                 super::exports::sync(&self.store, &id, peer.uid)?;
                 wire.send(&Event::Result {
@@ -149,7 +160,7 @@ impl Manager {
             }
             Operation::Guest { .. } => {
                 return Err(Error::Invalid(
-                    "guest actions require the machine-specific guest socket".into(),
+                    "客体操作必须使用机器专属的客体套接字 / guest actions require the machine-specific guest socket".into(),
                 ));
             }
         }

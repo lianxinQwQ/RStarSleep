@@ -62,8 +62,11 @@ pub(super) fn with_environment<T>(
 ) -> Result<T> {
     plugin.validate_configuration(&target.parameters)?;
     let architecture = &target.architecture;
-    let options = toml::to_string(&target.distribution_options)
-        .map_err(|e| Error::Invalid(format!("预下载配置无法编码: {e}")))?;
+    let options = toml::to_string(&target.distribution_options).map_err(|e| {
+        Error::Invalid(format!(
+            "预下载配置无法编码 / Cannot encode predownload configuration: {e}"
+        ))
+    })?;
     let options_hash = format!("{:x}", Sha256::digest(options.as_bytes()));
     let directory = store
         .predownload_path()
@@ -80,8 +83,11 @@ pub(super) fn with_environment<T>(
         .write(true)
         .open(&lock_path)
         .map_err(|e| disk::io(&lock_path, e))?;
-    lock.try_lock()
-        .map_err(|e| Error::Invalid(format!("预下载环境正在使用: {e}")))?;
+    lock.try_lock().map_err(|e| {
+        Error::Invalid(format!(
+            "预下载环境正在使用 / Predownload environment is in use: {e}"
+        ))
+    })?;
     let _lock = Lock(lock);
     progress::message(
         "predownload",
@@ -134,17 +140,23 @@ pub(super) fn with_environment<T>(
                 .map_err(|e| disk::io(&path, e))?
                 .is_file()
             {
-                return Err(Error::Invalid("预下载环境完成记录必须是普通文件".into()));
+                return Err(Error::Invalid("预下载环境完成记录必须是普通文件 / Predownload environment completion record must be a regular file".into()));
             }
             let record: Record =
                 toml::from_str(&fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?)
-                    .map_err(|e| Error::Invalid(format!("预下载环境记录无效: {e}")))?;
+                    .map_err(|e| {
+                        Error::Invalid(format!(
+                            "预下载环境记录无效 / Invalid predownload environment record: {e}"
+                        ))
+                    })?;
             if record.schema_version != 1
                 || record.plugin_sha256 != plugin.archive_sha256
                 || &record.architecture != architecture
                 || record.distribution_sha256 != options_hash
             {
-                return Err(Error::Invalid("预下载环境来源不符".into()));
+                return Err(Error::Invalid(
+                    "预下载环境来源不符 / Predownload environment source mismatch".into(),
+                ));
             }
             record.software.validate()?;
             backend.check_subvolume(&completed.join("root"), true)?;
@@ -233,7 +245,9 @@ pub(super) fn with_environment<T>(
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
-        (Err(e), Err(c)) => Err(Error::Invalid(format!("{e}; 预下载环境清理失败: {c}"))),
+        (Err(e), Err(c)) => Err(Error::Invalid(format!(
+            "{e}; 预下载环境清理失败: {c} / {e}; predownload environment cleanup failed: {c}"
+        ))),
     }
 }
 /// Download the union after per-system plans have passed capability checks.

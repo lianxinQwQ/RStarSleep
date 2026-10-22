@@ -15,10 +15,15 @@ pub struct PackagePlan {
 
 impl PackagePlan {
     pub(crate) fn parse(text: &str) -> Result<Self> {
-        let plan: Self = serde_json::from_str(text)
-            .map_err(|e| Error::Invalid(format!("软件包计划查询结果无效: {e}")))?;
+        let plan: Self = serde_json::from_str(text).map_err(|e| {
+            Error::Invalid(format!(
+                "软件包计划查询结果无效 / Invalid package-plan query result: {e}"
+            ))
+        })?;
         if plan.schema_version != 1 {
-            return Err(Error::Invalid("软件包计划仅支持格式版本 1".into()));
+            return Err(Error::Invalid(
+                "软件包计划仅支持格式版本 1 / Package plans support only format version 1".into(),
+            ));
         }
         names(&plan.packages.join("\n"))?;
         for package in &plan.packages {
@@ -67,7 +72,9 @@ pub(crate) fn valid_name(name: &str) -> Result<()> {
         .is_some_and(|c| c.is_ascii_alphanumeric() || "@_+".contains(c))
         || !chars.all(|c| c.is_ascii_alphanumeric() || "@_.+-".contains(c))
     {
-        return Err(Error::Invalid(format!("无效具体包名: {name:?}")));
+        return Err(Error::Invalid(format!(
+            "无效具体包名: {name:?} / Invalid concrete package name: {name:?}"
+        )));
     }
     Ok(())
 }
@@ -93,7 +100,9 @@ pub(super) fn names(text: &str) -> Result<BTreeSet<String>> {
     for line in text.lines() {
         valid_name(line)?;
         if !result.insert(line.to_owned()) {
-            return Err(Error::Invalid(format!("重复包查询结果: {line}")));
+            return Err(Error::Invalid(format!(
+                "重复包查询结果: {line} / Duplicate package query result: {line}"
+            )));
         }
     }
     Ok(result)
@@ -108,17 +117,25 @@ pub(super) fn names(text: &str) -> Result<BTreeSet<String>> {
 pub(super) fn inventory(text: &str) -> Result<BTreeMap<String, bool>> {
     let mut result = BTreeMap::new();
     for line in text.lines() {
-        let (name, reason) = line
-            .split_once('\t')
-            .ok_or_else(|| Error::Invalid(format!("无效包清单行: {line:?}")))?;
+        let (name, reason) = line.split_once('\t').ok_or_else(|| {
+            Error::Invalid(format!(
+                "无效包清单行: {line:?} / Invalid package manifest line: {line:?}"
+            ))
+        })?;
         valid_name(name)?;
         let explicit = match reason {
             "explicit" => true,
             "dependency" => false,
-            _ => return Err(Error::Invalid(format!("无效安装原因: {reason:?}"))),
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "无效安装原因: {reason:?} / Invalid installation reason: {reason:?}"
+                )));
+            }
         };
         if result.insert(name.into(), explicit).is_some() {
-            return Err(Error::Invalid(format!("重复已安装包: {name}")));
+            return Err(Error::Invalid(format!(
+                "重复已安装包: {name} / Duplicate installed package: {name}"
+            )));
         }
     }
     Ok(result)
@@ -144,14 +161,16 @@ impl SoftwareState {
                 .insert(package.name.clone(), package.explicit)
                 .is_some()
             {
-                return Err(Error::Invalid("缓存包清单重复".into()));
+                return Err(Error::Invalid(
+                    "缓存包清单重复 / Duplicate cached package manifest".into(),
+                ));
             }
         }
         if requested
             .iter()
             .any(|name| installed.get(name) != Some(&true))
         {
-            return Err(Error::Invalid("缓存管理目标缺失或不是显式安装".into()));
+            return Err(Error::Invalid("缓存管理目标缺失或不是显式安装 / Cached management target is missing or is not explicitly installed".into()));
         }
         Ok(())
     }

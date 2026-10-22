@@ -63,7 +63,9 @@ impl ConfigStore {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         if !root.is_absolute() {
-            return Err(Error::Invalid("工作目录必须是绝对路径".into()));
+            return Err(Error::Invalid(
+                "工作目录必须是绝对路径 / work directory must be an absolute path".into(),
+            ));
         }
         Ok(Self { root })
     }
@@ -220,7 +222,7 @@ impl ConfigStore {
         let layout = self.system_layout(id)?;
         if !self.global_config_path().is_file() {
             return Err(Error::Invalid(
-                "请先初始化并挂载 RStarSleep 工作目录".into(),
+                "请先初始化并挂载 RStarSleep 工作目录 / initialize and mount the RStarSleep work directory first".into(),
             ));
         }
         for path in [

@@ -20,10 +20,9 @@ impl CopyBudget {
     /// # Arguments
     /// - `bytes`: Captured byte count. 保存的字节数量。
     fn consume(&mut self, bytes: u64) -> Result<()> {
-        self.bytes = self
-            .bytes
-            .checked_sub(bytes)
-            .ok_or_else(|| Error::Invalid("guest copy data limit exceeded".into()))?;
+        self.bytes = self.bytes.checked_sub(bytes).ok_or_else(|| {
+            Error::Invalid("客体复制数据超出限制 / guest copy data limit exceeded".into())
+        })?;
         Ok(())
     }
 }
@@ -53,7 +52,7 @@ fn data_filesystem(source: &File) -> Result<()> {
             | 0x62656570
     ) {
         return Err(Error::Invalid(
-            "guest capture refuses kernel and process pseudo-filesystems".into(),
+            "客体采集拒绝内核和进程伪文件系统 / guest capture refuses kernel and process pseudo-filesystems".into(),
         ));
     }
     Ok(())
@@ -66,9 +65,12 @@ fn data_filesystem(source: &File) -> Result<()> {
 pub(super) fn child_object(directory: &File, name: &std::ffi::OsStr) -> Result<File> {
     let bytes = name.as_encoded_bytes();
     if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
-        return Err(Error::Invalid("invalid guest directory component".into()));
+        return Err(Error::Invalid(
+            "客体目录组件无效 / invalid guest directory component".into(),
+        ));
     }
-    let name = CString::new(bytes).map_err(|_| Error::Invalid("invalid guest filename".into()))?;
+    let name = CString::new(bytes)
+        .map_err(|_| Error::Invalid("客体文件名无效 / invalid guest filename".into()))?;
     let fd = unsafe {
         libc::openat(
             directory.as_raw_fd(),
@@ -96,7 +98,7 @@ pub(super) fn copy_object(
     use std::io::{Read, Write};
     if depth > 64 || budget.entries == 0 {
         return Err(Error::Invalid(
-            "guest copy depth/entry limit exceeded".into(),
+            "客体复制深度或条目数超出限制 / guest copy depth/entry limit exceeded".into(),
         ));
     }
     budget.entries -= 1;
@@ -116,13 +118,15 @@ pub(super) fn copy_object(
             return Err(io::Error::last_os_error().into());
         }
         if n as usize == link.len() {
-            return Err(Error::Invalid("guest link exceeds limit".into()));
+            return Err(Error::Invalid(
+                "客体链接超出限制 / guest link exceeds limit".into(),
+            ));
         }
         budget.consume(n as u64)?;
         use std::os::unix::ffi::OsStrExt;
         std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&link[..n as usize]), target)?;
         let path = CString::new(target.as_os_str().as_encoded_bytes())
-            .map_err(|_| Error::Invalid("invalid captured path".into()))?;
+            .map_err(|_| Error::Invalid("采集路径无效 / invalid captured path".into()))?;
         if unsafe { libc::lchown(path.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -130,7 +134,8 @@ pub(super) fn copy_object(
     }
     if !metadata.is_dir() && !metadata.is_file() {
         return Err(Error::Invalid(
-            "guest capture refuses devices, sockets and FIFOs".into(),
+            "客体采集拒绝设备、套接字和 FIFO / guest capture refuses devices, sockets and FIFOs"
+                .into(),
         ));
     }
     let mut input = OpenOptions::new()
@@ -157,7 +162,9 @@ pub(super) fn copy_object(
             return Ok(());
         }
         if metadata.len() > budget.bytes {
-            return Err(Error::Invalid("guest copy data limit exceeded".into()));
+            return Err(Error::Invalid(
+                "客体复制数据超出限制 / guest copy data limit exceeded".into(),
+            ));
         }
         let mut output = OpenOptions::new()
             .read(true)
@@ -176,14 +183,18 @@ pub(super) fn copy_object(
                 }
                 copied += n as u64;
                 if copied > budget.bytes {
-                    return Err(Error::Invalid("guest copy data limit exceeded".into()));
+                    return Err(Error::Invalid(
+                        "客体复制数据超出限制 / guest copy data limit exceeded".into(),
+                    ));
                 }
                 output.write_all(&bytes[..n])?;
             }
         }
         let actual = output.metadata()?.len();
         if actual > budget.bytes {
-            return Err(Error::Invalid("guest copy data limit exceeded".into()));
+            return Err(Error::Invalid(
+                "客体复制数据超出限制 / guest copy data limit exceeded".into(),
+            ));
         }
         budget.consume(actual)?;
         attributes(&input, &output, &metadata, budget)?;
@@ -232,7 +243,9 @@ fn attributes(
         return Err(error.into());
     }
     if count > 1024 * 1024 {
-        return Err(Error::Invalid("guest xattr list exceeds limit".into()));
+        return Err(Error::Invalid(
+            "客体扩展属性列表超出限制 / guest xattr list exceeds limit".into(),
+        ));
     }
     budget.consume(count as u64)?;
     let mut names = vec![0u8; count as usize];
@@ -242,21 +255,28 @@ fn attributes(
         return Err(io::Error::last_os_error().into());
     }
     if read as usize > names.len() {
-        return Err(Error::Invalid("guest xattrs changed during copy".into()));
+        return Err(Error::Invalid(
+            "复制期间客体扩展属性已改变 / guest xattrs changed during copy".into(),
+        ));
     }
     names.truncate(read as usize);
     for name in names.split(|b| *b == 0).filter(|s| !s.is_empty()) {
-        let name = CString::new(name).map_err(|_| Error::Invalid("invalid xattr name".into()))?;
+        let name = CString::new(name)
+            .map_err(|_| Error::Invalid("扩展属性名称无效 / invalid xattr name".into()))?;
         let count =
             unsafe { libc::fgetxattr(source.as_raw_fd(), name.as_ptr(), std::ptr::null_mut(), 0) };
         if count < 0 {
             return Err(io::Error::last_os_error().into());
         }
         if count > 1024 * 1024 {
-            return Err(Error::Invalid("guest xattr exceeds limit".into()));
+            return Err(Error::Invalid(
+                "客体扩展属性超出限制 / guest xattr exceeds limit".into(),
+            ));
         }
         if count as u64 > budget.bytes {
-            return Err(Error::Invalid("guest xattrs exceed data limit".into()));
+            return Err(Error::Invalid(
+                "客体扩展属性超出数据限制 / guest xattrs exceed data limit".into(),
+            ));
         }
         let mut value = vec![0u8; count as usize];
         let n = unsafe {
@@ -271,7 +291,9 @@ fn attributes(
             return Err(io::Error::last_os_error().into());
         }
         if n as usize > value.len() {
-            return Err(Error::Invalid("guest xattr changed during copy".into()));
+            return Err(Error::Invalid(
+                "复制期间客体扩展属性已改变 / guest xattr changed during copy".into(),
+            ));
         }
         budget.consume(n as u64)?;
         if unsafe {
@@ -299,7 +321,9 @@ fn shell_path(target: &Path) -> Result<String> {
         "'{}'",
         target
             .to_str()
-            .ok_or_else(|| Error::Invalid("guest target must be UTF-8".into()))?
+            .ok_or_else(|| Error::Invalid(
+                "客体目标必须为 UTF-8 / guest target must be UTF-8".into()
+            ))?
             .replace('\'', "'\"'\"'")
     ))
 }

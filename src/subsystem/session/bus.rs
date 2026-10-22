@@ -96,7 +96,7 @@ pub(super) fn private_bus(runtime: &PreparedRuntime, uid: u32, context: &Context
             .success()
         {
             return Err(Error::Invalid(
-                "cannot refresh a hidden guest session bus".into(),
+                "无法刷新隐藏的客体会话总线 / cannot refresh a hidden guest session bus".into(),
             ));
         }
     }
@@ -134,7 +134,7 @@ pub(super) fn private_bus(runtime: &PreparedRuntime, uid: u32, context: &Context
         let output = commands::output(command, Duration::from_secs(10))?;
         if !output.status.success() {
             return Err(Error::Invalid(format!(
-                "cannot start guest session D-Bus: {}",
+                "无法启动客体会话 D-Bus: {0} / cannot start guest session D-Bus: {0}",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
@@ -150,7 +150,7 @@ pub(super) fn private_bus(runtime: &PreparedRuntime, uid: u32, context: &Context
         }
         if Instant::now() >= deadline {
             return Err(Error::Invalid(
-                "guest session D-Bus did not become ready".into(),
+                "客体会话 D-Bus 未就绪 / guest session D-Bus did not become ready".into(),
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -166,7 +166,7 @@ pub(super) fn starttime(pid: u32) -> Result<u64> {
     stat.rsplit_once(')')
         .and_then(|(_, fields)| fields.split_whitespace().nth(19))
         .and_then(|value| value.parse().ok())
-        .ok_or_else(|| Error::Invalid("invalid proxy process identity".into()))
+        .ok_or_else(|| Error::Invalid("代理进程身份无效 / invalid proxy process identity".into()))
 }
 
 /// Pin an active recorded proxy and reject stale PID reuse or changed ownership.
@@ -280,7 +280,7 @@ fn primary_group(uid: u32) -> Result<u32> {
     }
     if found.is_null() {
         return Err(Error::Invalid(
-            "native session caller has no host account".into(),
+            "原生会话调用者没有宿主账户 / native session caller has no host account".into(),
         ));
     }
     Ok(user.pw_gid)
@@ -340,7 +340,7 @@ pub(super) fn stop_proxy(runtime: &PreparedRuntime, uid: u32) -> Result<()> {
         let record: ProxyRecord = super::super::read_record(&path)?;
         if record.schema_version != 1 || record.uid != uid {
             return Err(Error::Invalid(
-                "native proxy receipt identity mismatch".into(),
+                "原生代理回执身份不匹配 / native proxy receipt identity mismatch".into(),
             ));
         }
         terminate(&record)?;
@@ -348,7 +348,7 @@ pub(super) fn stop_proxy(runtime: &PreparedRuntime, uid: u32) -> Result<()> {
     }
     if let Some(mut child) = CHILDREN
         .lock()
-        .map_err(|_| Error::Invalid("proxy child lock poisoned".into()))?
+        .map_err(|_| Error::Invalid("代理子进程锁损坏 / proxy child lock poisoned".into()))?
         .remove(&(runtime.machine.clone(), uid))
     {
         let _ = child.kill();
@@ -382,7 +382,7 @@ pub(super) fn native_bus(
         .is_some_and(|address| address != &expected)
     {
         return Err(Error::Invalid(
-            "native D-Bus must use the authenticated caller's runtime bus".into(),
+            "原生 D-Bus 必须使用已认证调用者的运行时总线 / native D-Bus must use the authenticated caller's runtime bus".into(),
         ));
     }
     let directory = runtime_directory(&host, uid)?;
@@ -412,7 +412,7 @@ pub(super) fn native_bus(
         let record: ProxyRecord = super::super::read_record(&receipt)?;
         if record.uid != uid || record.schema_version != 1 {
             return Err(Error::Invalid(
-                "native proxy receipt identity mismatch".into(),
+                "原生代理回执身份不匹配 / native proxy receipt identity mismatch".into(),
             ));
         }
         if (record.dev, record.ino) == (source_metadata.dev(), source_metadata.ino())
@@ -429,7 +429,9 @@ pub(super) fn native_bus(
     }
     if let Ok(metadata) = fs::symlink_metadata(&output_path) {
         if !metadata.file_type().is_socket() || metadata.uid() != uid {
-            return Err(Error::Invalid("unexpected native proxy socket".into()));
+            return Err(Error::Invalid(
+                "原生代理套接字不符合预期 / unexpected native proxy socket".into(),
+            ));
         }
         fs::remove_file(&output_path)?;
     }
@@ -449,14 +451,14 @@ pub(super) fn native_bus(
     loop {
         if let Some(status) = starting.0.as_mut().unwrap().try_wait()? {
             return Err(Error::Invalid(format!(
-                "filtered native D-Bus proxy exited: {status}"
+                "经过滤的原生 D-Bus 代理已退出: {status} / filtered native D-Bus proxy exited: {status}"
             )));
         }
         if let Ok(source) = beneath(&output_root, Path::new("bus")) {
             let source = socket(source, uid, false)?;
             CHILDREN
                 .lock()
-                .map_err(|_| Error::Invalid("proxy child lock poisoned".into()))?
+                .map_err(|_| Error::Invalid("代理子进程锁损坏 / proxy child lock poisoned".into()))?
                 .insert((runtime.machine.clone(), uid), starting.0.take().unwrap());
             return Ok(Resource {
                 source,
@@ -466,7 +468,8 @@ pub(super) fn native_bus(
         }
         if Instant::now() >= deadline {
             return Err(Error::Invalid(
-                "filtered native D-Bus proxy did not become ready".into(),
+                "经过滤的原生 D-Bus 代理未就绪 / filtered native D-Bus proxy did not become ready"
+                    .into(),
             ));
         }
         std::thread::sleep(Duration::from_millis(20));

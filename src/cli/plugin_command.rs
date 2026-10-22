@@ -40,14 +40,17 @@ pub(super) fn run(name: &str, arguments: &[OsString]) -> super::Result<()> {
                 .insert(command.to_owned(), index)
                 .is_some()
             {
-                return Err(format!("多个插件声明同一子命令: {command}").into());
+                return Err(format!("多个插件声明同一子命令: {command} / multiple plugins declare the same subcommand: {command}").into());
             }
         }
         loaded.push(plugin);
     }
-    let index = plugins_by_command
-        .get(name)
-        .ok_or_else(|| format!("未知子命令 {name}；插件诊断：{}", warnings.join("; ")))?;
+    let index = plugins_by_command.get(name).ok_or_else(|| {
+        format!(
+            "未知子命令 {name}；插件诊断：{0} / unknown subcommand {name}; plugin diagnostics: {0}",
+            warnings.join("; ")
+        )
+    })?;
     loaded[*index].invoke_command(name, arguments, store.root())?;
     Ok(())
 }

@@ -16,17 +16,17 @@ pub enum Error {
     Config(#[from] crate::config::Error),
     #[error(transparent)]
     Controller(#[from] crate::controller::Error),
-    #[error("无法访问 {path}: {source}")]
+    #[error("无法访问 {path} / cannot access {path}: {source}")]
     Io {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("子系统无效: {0}")]
+    #[error("子系统无效 / invalid subsystem: {0}")]
     Invalid(String),
-    #[error("子系统协议错误: {0}")]
+    #[error("子系统协议错误 / subsystem protocol error: {0}")]
     Protocol(String),
-    #[error("应用退出码 {0}")]
+    #[error("应用退出码 {0} / application exit code {0}")]
     Exit(i32),
 }
 

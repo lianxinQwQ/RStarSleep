@@ -64,7 +64,7 @@ pub(crate) fn output(mut command: Command, timeout: Duration) -> Result<Output> 
             || stderr.metadata()?.len() > 1024 * 1024
         {
             return Err(Error::Invalid(
-                "management command exceeded time/output limit".into(),
+                "管理命令超出时间或输出限制 / management command exceeded time/output limit".into(),
             ));
         }
         thread::sleep(Duration::from_millis(20));
@@ -76,7 +76,9 @@ pub(crate) fn output(mut command: Command, timeout: Duration) -> Result<Output> 
     stdout.take(1024 * 1024 + 1).read_to_end(&mut out)?;
     stderr.take(1024 * 1024 + 1).read_to_end(&mut err)?;
     if out.len() > 1024 * 1024 || err.len() > 1024 * 1024 {
-        return Err(io::Error::other("management output exceeded limit").into());
+        return Err(
+            io::Error::other("管理命令输出超出限制 / management output exceeded limit").into(),
+        );
     }
     Ok(Output {
         status,
@@ -102,7 +104,9 @@ pub(crate) fn alive(machine: &str) -> Result<bool> {
     let mut probe = Command::new(MACHINECTL);
     probe.args(["list", "--no-legend", "--no-pager"]);
     if !output(probe, Duration::from_secs(5))?.status.success() {
-        return Err(Error::Invalid("systemd-machined unavailable".into()));
+        return Err(Error::Invalid(
+            "systemd-machined 不可用 / systemd-machined unavailable".into(),
+        ));
     }
     Ok(false)
 }
@@ -148,7 +152,7 @@ pub(crate) fn guest(runtime: &PreparedRuntime, argv: &[String]) -> Result<Output
     };
     if !result.status.success() {
         return Err(Error::Invalid(format!(
-            "guest command failed: {}",
+            "客体命令失败: {0} / guest command failed: {0}",
             String::from_utf8_lossy(&result.stderr)
         )));
     }
@@ -164,14 +168,16 @@ pub(crate) fn leader(runtime: &PreparedRuntime) -> Result<u32> {
     command.args(["show", "--property=Leader", "--value", &runtime.machine]);
     let result = output(command, Duration::from_secs(5))?;
     if !result.status.success() {
-        return Err(Error::Invalid("cannot query machine leader".into()));
+        return Err(Error::Invalid(
+            "无法查询机器主进程 / cannot query machine leader".into(),
+        ));
     }
     String::from_utf8_lossy(&result.stdout)
         .trim()
         .parse::<u32>()
         .ok()
         .filter(|p| *p > 0)
-        .ok_or_else(|| Error::Invalid("invalid machine leader".into()))
+        .ok_or_else(|| Error::Invalid("机器主进程无效 / invalid machine leader".into()))
 }
 
 #[cfg(test)]

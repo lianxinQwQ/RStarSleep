@@ -214,7 +214,12 @@ fn stream_to_with_control(
             let mut child = spawned?;
             let child_stdout: Box<dyn Read + Send> = match child_stdout {
                 Some(reader) => Box::new(reader),
-                None => Box::new(child.stdout.take().expect("piped query stdout")),
+                None => Box::new(
+                    child
+                        .stdout
+                        .take()
+                        .expect("管道查询标准输出 / piped query stdout"),
+                ),
             };
             (child, child_stdout, Box::new(child_stderr))
         } else {
@@ -223,8 +228,8 @@ fn stream_to_with_control(
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
-            let stdout = child.stdout.take().expect("piped stdout");
-            let stderr = child.stderr.take().expect("piped stderr");
+            let stdout = child.stdout.take().expect("管道标准输出 / piped stdout");
+            let stderr = child.stderr.take().expect("管道标准错误 / piped stderr");
             (child, Box::new(stdout), Box::new(stderr))
         };
     thread::scope(|scope| {
@@ -253,10 +258,10 @@ fn stream_to_with_control(
         };
         let stdout = stdout
             .join()
-            .map_err(|_| io::Error::other("stdout reader panicked"))??;
+            .map_err(|_| io::Error::other("标准输出读取线程异常终止 / stdout reader panicked"))??;
         let stderr = stderr
             .join()
-            .map_err(|_| io::Error::other("stderr reader panicked"))??;
+            .map_err(|_| io::Error::other("标准错误读取线程异常终止 / stderr reader panicked"))??;
         Ok(Output {
             status: status?,
             stdout,

@@ -41,7 +41,7 @@ impl Wire {
         let mut stream = self
             .stream
             .lock()
-            .map_err(|_| io::Error::other("socket writer poisoned"))?;
+            .map_err(|_| io::Error::other("套接字写入器锁损坏 / socket writer poisoned"))?;
         let result = protocol::write_frame(&mut *stream, event);
         if result.is_err() {
             self.disconnected.store(true, Ordering::SeqCst);
@@ -67,7 +67,7 @@ fn signal(machine: &str, unit: &str, signal: i32) -> Result<()> {
             | libc::SIGCONT
             | libc::SIGTSTP
     ) {
-        return Err(Error::Invalid("unsupported signal".into()));
+        return Err(Error::Invalid("不支持的信号 / unsupported signal".into()));
     }
     let mut command = Command::new(commands::SYSTEMCTL);
     command
@@ -79,7 +79,9 @@ fn signal(machine: &str, unit: &str, signal: i32) -> Result<()> {
         .status
         .success()
     {
-        return Err(Error::Invalid("cannot signal guest application".into()));
+        return Err(Error::Invalid(
+            "无法向客体应用发送信号 / cannot signal guest application".into(),
+        ));
     }
     Ok(())
 }
@@ -228,11 +230,13 @@ fn controls(
         match protocol::read_frame::<ClientMessage>(&mut reader)? {
             Some(ClientMessage::Input { bytes }) => {
                 if bytes.len() > protocol::STREAM_CHUNK_BYTES {
-                    return Err(Error::Invalid("oversized stdin frame".into()));
+                    return Err(Error::Invalid(
+                        "标准输入帧过大 / oversized stdin frame".into(),
+                    ));
                 }
                 let pipe = input
                     .as_mut()
-                    .ok_or_else(|| Error::Invalid("stdin after EOF".into()))?;
+                    .ok_or_else(|| Error::Invalid("EOF 后仍有标准输入 / stdin after EOF".into()))?;
                 let mut remaining = bytes.as_slice();
                 while !remaining.is_empty() && !finished.load(Ordering::SeqCst) {
                     match pipe.write(remaining) {
@@ -263,7 +267,9 @@ fn controls(
                 protocol::validate_window(window)?;
                 let fd = resize
                     .as_ref()
-                    .ok_or_else(|| Error::Invalid("resize requires PTY".into()))?
+                    .ok_or_else(|| {
+                        Error::Invalid("调整终端尺寸需要 PTY / resize requires PTY".into())
+                    })?
                     .as_raw_fd();
                 let size = libc::winsize {
                     ws_row: window.rows,
@@ -276,7 +282,7 @@ fn controls(
                 }
             }
             Some(ClientMessage::Request { .. }) => {
-                return Err(Error::Invalid("duplicate request".into()));
+                return Err(Error::Invalid("重复请求 / duplicate request".into()));
             }
             None => return Ok(()),
         }
@@ -326,20 +332,14 @@ fn stream_child(
         (master.try_clone()?, master.try_clone()?, None, Some(master))
     } else {
         (
-            file(
-                child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| Error::Invalid("missing child stdin".into()))?,
-            ),
-            file(
-                child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| Error::Invalid("missing child stdout".into()))?,
-            ),
+            file(child.stdin.take().ok_or_else(|| {
+                Error::Invalid("缺少子进程标准输入 / missing child stdin".into())
+            })?),
+            file(child.stdout.take().ok_or_else(|| {
+                Error::Invalid("缺少子进程标准输出 / missing child stdout".into())
+            })?),
             Some(file(child.stderr.take().ok_or_else(|| {
-                Error::Invalid("missing child stderr".into())
+                Error::Invalid("缺少子进程标准错误 / missing child stderr".into())
             })?)),
             None,
         )
@@ -365,7 +365,11 @@ fn stream_child(
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     pump(stdout, false, w.clone(), f)
                 }))
-                .unwrap_or_else(|_| Err(io::Error::other("output worker panicked")));
+                .unwrap_or_else(|_| {
+                    Err(io::Error::other(
+                        "输出工作线程发生 panic / output worker panicked",
+                    ))
+                });
                 if result.is_err() {
                     w.disconnected.store(true, Ordering::SeqCst);
                 }
@@ -379,7 +383,11 @@ fn stream_child(
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     pump(p, true, w.clone(), f)
                 }))
-                .unwrap_or_else(|_| Err(io::Error::other("stderr worker panicked")));
+                .unwrap_or_else(|_| {
+                    Err(io::Error::other(
+                        "标准错误工作线程发生 panic / stderr worker panicked",
+                    ))
+                });
                 if result.is_err() {
                     w.disconnected.store(true, Ordering::SeqCst);
                 }
@@ -395,7 +403,11 @@ fn stream_child(
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     controls(reader, Some(input), resize, f.clone(), m, u)
                 }))
-                .unwrap_or_else(|_| Err(Error::Invalid("control worker panicked".into())));
+                .unwrap_or_else(|_| {
+                    Err(Error::Invalid(
+                        "控制工作线程发生 panic / control worker panicked".into(),
+                    ))
+                });
                 if !f.load(Ordering::SeqCst) {
                     w.disconnected.store(true, Ordering::SeqCst);
                 }
@@ -421,14 +433,14 @@ fn stream_child(
         // 先回收再传播错误，避免提前 ? 使其他线程仍等待客户端输入或活跃管道。
         let control = control
             .join()
-            .map_err(|_| Error::Invalid("control worker panicked".into()));
+            .map_err(|_| Error::Invalid("控制工作线程发生 panic / control worker panicked".into()));
         let out = out
             .join()
-            .map_err(|_| Error::Invalid("output worker panicked".into()));
+            .map_err(|_| Error::Invalid("输出工作线程发生 panic / output worker panicked".into()));
         let err = err.map(|worker| {
-            worker
-                .join()
-                .map_err(|_| Error::Invalid("stderr worker panicked".into()))
+            worker.join().map_err(|_| {
+                Error::Invalid("标准错误工作线程发生 panic / stderr worker panicked".into())
+            })
         });
         let status = status?;
         if wire.disconnected.load(Ordering::SeqCst) {
@@ -468,7 +480,7 @@ fn detached_child(child: &mut Child, wire: &Wire, machine: &str, unit: &str) -> 
         }
         if Instant::now() >= deadline {
             return Err(Error::Invalid(
-                "detached application did not become ready".into(),
+                "后台应用未就绪 / detached application did not become ready".into(),
             ));
         }
         thread::sleep(Duration::from_millis(50));
@@ -478,7 +490,7 @@ fn detached_child(child: &mut Child, wire: &Wire, machine: &str, unit: &str) -> 
     // 保留调用者租约，直到 ExitType=cgroup 报告所有后代已结束。
     let status = child.wait()?;
     if !status.success() {
-        eprintln!("detached guest application {unit}: {status}");
+        eprintln!("后台客体应用 {unit}: {status} / detached guest application {unit}: {status}");
     }
     Ok(())
 }
@@ -644,11 +656,14 @@ fn occupancy_units(
     let output = commands::output(command, Duration::from_secs(5))?;
     if !output.status.success() {
         return Err(Error::Invalid(
-            "cannot recover guest application occupancy".into(),
+            "无法恢复客体应用占用状态 / cannot recover guest application occupancy".into(),
         ));
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| Error::Invalid(format!("invalid guest application occupancy: {e}")))
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        Error::Invalid(format!(
+            "客体应用占用状态无效 / invalid guest application occupancy: {e}"
+        ))
+    })
 }
 
 /// Retain applications activated outside the launcher's original service cgroup.
@@ -682,15 +697,19 @@ fn occupied_units(
             .strip_prefix("user@")
             .and_then(|unit| unit.strip_suffix(".service"))
         {
-            let uid = uid
-                .parse::<u32>()
-                .map_err(|_| Error::Invalid("invalid guest user manager identity".into()))?;
+            let uid = uid.parse::<u32>().map_err(|_| {
+                Error::Invalid(
+                    "客体用户管理器身份无效 / invalid guest user manager identity".into(),
+                )
+            })?;
             if unit.active != "active" || user_apps(uid)? {
                 return Ok(true);
             }
             continue;
         }
-        return Err(Error::Invalid("unexpected guest occupancy unit".into()));
+        return Err(Error::Invalid(
+            "客体占用单元不符合预期 / unexpected guest occupancy unit".into(),
+        ));
     }
     Ok(false)
 }
@@ -722,12 +741,16 @@ pub(crate) fn occupied(runtime: &PreparedRuntime) -> Result<bool> {
             ]);
             let output = commands::output(command, Duration::from_secs(5))?;
             if !output.status.success() {
-                return Err(Error::Invalid("cannot inspect guest session tasks".into()));
+                return Err(Error::Invalid(
+                    "无法检查客体会话任务 / cannot inspect guest session tasks".into(),
+                ));
             }
             String::from_utf8_lossy(&output.stdout)
                 .trim()
                 .parse()
-                .map_err(|_| Error::Invalid("invalid guest session task count".into()))
+                .map_err(|_| {
+                    Error::Invalid("客体会话任务数无效 / invalid guest session task count".into())
+                })
         },
         |uid| {
             occupancy_units(runtime, Some(uid), &["app-*.scope", "app-*.service"])

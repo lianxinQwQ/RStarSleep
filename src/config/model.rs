@@ -74,7 +74,9 @@ impl PackageConfig {
             .iter()
             .any(|package| package.trim().is_empty())
         {
-            return Err(Error::Invalid("软件包名称不能为空".into()));
+            return Err(Error::Invalid(
+                "软件包名称不能为空 / package name must not be empty".into(),
+            ));
         }
         Ok(())
     }

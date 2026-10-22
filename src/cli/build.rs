@@ -6,7 +6,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 /// Help describing system selection, manager location, and scratch defaults.
 /// 描述系统选择、管理器位置和临时目录默认值的帮助。
-const USAGE: &str = "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]\n\n省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep。\n构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。";
+const USAGE: &str = "用法：RStarSleep build [<系统标识> | --all] [--root <管理根绝对路径>]\n\n省略系统或使用 --all 时构建全部系统；默认管理根为 /rstarsleep。\n构建临时目录从全局 work_dir 读取，默认使用管理根下的 work/。 / Usage: RStarSleep build [<system-id> | --all] [--root <absolute-management-root>]\n\nOmit the system or use --all to build every system; the management root defaults to /rstarsleep.\nTemporary build directories use the global work_dir setting, which defaults to work/ under the management root.";
 
 /// Parse arguments and run one system or every managed system.
 /// 解析参数并构建一个系统或全部被管理系统。
@@ -83,26 +83,35 @@ fn parse(arguments: &[OsString]) -> super::Result<(PathBuf, Option<String>)> {
     while let Some(argument) = arguments.next() {
         if argument == "--root" {
             if root.is_some() {
-                return Err(format!("--root 只能指定一次\n{USAGE}").into());
+                return Err(format!(
+                    "--root 只能指定一次 / --root may only be specified once\n{USAGE}"
+                )
+                .into());
             }
-            let path = PathBuf::from(
-                arguments
-                    .next()
-                    .ok_or_else(|| format!("--root 缺少路径\n{USAGE}"))?,
-            );
+            let path =
+                PathBuf::from(arguments.next().ok_or_else(|| {
+                    format!("--root 缺少路径 / --root is missing a path\n{USAGE}")
+                })?);
             if !path.is_absolute() {
-                return Err("管理根必须为绝对路径".into());
+                return Err(
+                    "管理根必须为绝对路径 / management root must be an absolute path".into(),
+                );
             }
             root = Some(path);
         } else if argument == "--all" {
             if all || system.is_some() {
-                return Err(format!("--all 不能重复或与系统标识同时使用\n{USAGE}").into());
+                return Err(format!("--all 不能重复或与系统标识同时使用 / --all must not be repeated or combined with a system identifier\n{USAGE}").into());
             }
             all = true;
         } else {
-            let text = argument.to_str().ok_or("系统标识必须是 UTF-8")?;
+            let text = argument
+                .to_str()
+                .ok_or("系统标识必须是 UTF-8 / system identifier must be UTF-8")?;
             if text.starts_with('-') || all || system.is_some() {
-                return Err(format!("无效构建参数: {text}\n{USAGE}").into());
+                return Err(format!(
+                    "无效构建参数: {text} / invalid build argument: {text}\n{USAGE}"
+                )
+                .into());
             }
             system = Some(text.to_owned());
         }

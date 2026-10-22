@@ -71,7 +71,10 @@ pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<L
         let plugin = match load(&path) {
             Ok(plugin) => plugin,
             Err(error) => {
-                warnings.push(format!("跳过插件 {}: {error}", path.display()));
+                warnings.push(format!(
+                    "跳过插件 {0} / skipping plugin {0}: {error}",
+                    path.display()
+                ));
                 continue;
             }
         };
@@ -101,7 +104,7 @@ pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<L
             .collect::<Vec<_>>()
             .join(", ");
         return Err(Error::Invalid(format!(
-            "系统类型 {system_type}、架构 {architecture} 匹配多个插件: {paths}"
+            "系统类型 {system_type}、架构 {architecture} 匹配多个插件: {paths} / system type {system_type} and architecture {architecture} match multiple plugins: {paths}"
         )));
     }
     if let Some(mut plugin) = matches.pop() {
@@ -110,12 +113,12 @@ pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<L
     }
     Err({
         Error::Invalid(format!(
-            "{} 中没有匹配系统类型 {system_type}、架构 {architecture} 的插件{}{}",
+            "{0} 中没有匹配系统类型 {system_type}、架构 {architecture} 的插件{1}{2} / no plugin in {0} matches system type {system_type} and architecture {architecture}{1}{2}",
             directory.display(),
             if unsupported.is_empty() {
                 String::new()
             } else {
-                "（存在该类型但不支持目标架构的插件）".into()
+                "（存在该类型但不支持目标架构的插件） / (plugins exist for this type but do not support the target architecture)".into()
             },
             if warnings.is_empty() {
                 String::new()

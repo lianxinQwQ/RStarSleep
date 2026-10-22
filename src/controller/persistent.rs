@@ -104,7 +104,10 @@ fn lock_pool(pool: &Path, state: &Path) -> Result<File> {
     disk::checked(pool)?;
     disk::checked(state)?;
     if pool.starts_with(state) || state.starts_with(pool) {
-        return Err(Error::Invalid("持久数据与事务记录必须独立".into()));
+        return Err(Error::Invalid(
+            "持久数据与事务记录必须独立 / Persistent data and transaction records must be separate"
+                .into(),
+        ));
     }
     disk::directory(pool)?;
     disk::directory(state)?;
@@ -115,7 +118,9 @@ fn lock_pool(pool: &Path, state: &Path) -> Result<File> {
             .map_err(|e| disk::io(&lock_path, e))?
             .is_file()
     {
-        return Err(Error::Invalid("持久锁必须是普通文件".into()));
+        return Err(Error::Invalid(
+            "持久锁必须是普通文件 / Persistent lock must be a regular file".into(),
+        ));
     }
     let lock = OpenOptions::new()
         .create(true)
@@ -124,8 +129,11 @@ fn lock_pool(pool: &Path, state: &Path) -> Result<File> {
         .write(true)
         .open(&lock_path)
         .map_err(|e| disk::io(&lock_path, e))?;
-    lock.try_lock()
-        .map_err(|e| Error::Invalid(format!("全局持久目录正在使用: {e}")))?;
+    lock.try_lock().map_err(|e| {
+        Error::Invalid(format!(
+            "全局持久目录正在使用 / Global persistent directory is in use: {e}"
+        ))
+    })?;
     Ok(lock)
 }
 impl PersistentTransaction {
@@ -144,7 +152,9 @@ impl PersistentTransaction {
         for mapping in mappings {
             super::plugins::validate_identity(&mapping.name)?;
             if !names.insert(&mapping.name) {
-                return Err(Error::Invalid("重复持久目录".into()));
+                return Err(Error::Invalid(
+                    "重复持久目录 / Duplicate persistent directory".into(),
+                ));
             }
             let source = pool.join(&mapping.name);
             let had_original = disk::exists(&source)?;
@@ -198,7 +208,7 @@ impl PersistentTransaction {
             return match tx.rollback(backend) {
                 Ok(()) => Err(error),
                 Err(c) => Err(Error::Invalid(format!(
-                    "{error}; 持久事务准备回滚失败: {c}"
+                    "{error}; 持久事务准备回滚失败: {c} / {error}; persistent transaction preparation rollback failed: {c}"
                 ))),
             };
         }
@@ -211,12 +221,16 @@ impl PersistentTransaction {
     /// 持久发布快照，不移动或解锁正在挂载的工作副本。
     pub fn save(&mut self, backend: &impl BuildBackend) -> Result<()> {
         if self.lock.is_none() {
-            return Err(Error::Invalid("持久事务已经结束".into()));
+            return Err(Error::Invalid(
+                "持久事务已经结束 / Persistent transaction has already ended".into(),
+            ));
         }
         let work = self.state.join("transaction");
         let working = read(&work)?;
         if working.phase != Phase::Preparing || !working.working {
-            return Err(Error::Invalid("持久事务保存状态不符".into()));
+            return Err(Error::Invalid(
+                "持久事务保存状态不符 / Persistent transaction save-state mismatch".into(),
+            ));
         }
         let root = self.state.join("save");
         recover(backend, &self.pool, &root)?;
@@ -260,19 +274,23 @@ impl PersistentTransaction {
             Err(error) => match recover(backend, &self.pool, &root) {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(Error::Invalid(format!(
-                    "{error}; 持久保存恢复失败: {cleanup}"
+                    "{error}; 持久保存恢复失败: {cleanup} / {error}; persistent save recovery failed: {cleanup}"
                 ))),
             },
         }
     }
     pub fn commit(&mut self, backend: &impl BuildBackend) -> Result<()> {
         if self.lock.is_none() {
-            return Err(Error::Invalid("持久事务已经结束".into()));
+            return Err(Error::Invalid(
+                "持久事务已经结束 / Persistent transaction has already ended".into(),
+            ));
         }
         let root = self.state.join("transaction");
         let mut record = read(&root)?;
         if record.phase != Phase::Preparing {
-            return Err(Error::Invalid("持久事务提交状态不符".into()));
+            return Err(Error::Invalid(
+                "持久事务提交状态不符 / Persistent transaction commit-state mismatch".into(),
+            ));
         }
         let result = (|| {
             recover(backend, &self.pool, &self.state.join("save"))?;
@@ -292,7 +310,9 @@ impl PersistentTransaction {
             }
             Err(error) => match self.rollback(backend) {
                 Ok(()) => Err(error),
-                Err(c) => Err(Error::Invalid(format!("{error}; 持久提交恢复失败: {c}"))),
+                Err(c) => Err(Error::Invalid(format!(
+                    "{error}; 持久提交恢复失败: {c} / {error}; persistent commit recovery failed: {c}"
+                ))),
             },
         }
     }
@@ -328,10 +348,12 @@ fn publish(
             backend.check_subvolume(&original, false)?;
             backend.check_no_nested_subvolumes(&original)?;
         } else if disk::exists(&original)? {
-            return Err(Error::Invalid("事务期间出现新的正式持久子卷".into()));
+            return Err(Error::Invalid("事务期间出现新的正式持久子卷 / A new final persistent subvolume appeared during the transaction".into()));
         }
         if disk::exists(&root.join("old").join(&entry.name))? {
-            return Err(Error::Invalid("事务已有旧卷".into()));
+            return Err(Error::Invalid(
+                "事务已有旧卷 / Transaction already has an old volume".into(),
+            ));
         }
     }
     flush(root)?;
@@ -355,22 +377,34 @@ fn read(root: &Path) -> Result<Journal> {
         .map_err(|e| disk::io(&path, e))?
         .is_file()
     {
-        return Err(Error::Invalid("持久事务日志必须是普通文件".into()));
+        return Err(Error::Invalid(
+            "持久事务日志必须是普通文件 / Persistent transaction journal must be a regular file"
+                .into(),
+        ));
     }
-    let record: Journal =
-        toml::from_str(&fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?)
-            .map_err(|e| Error::Invalid(format!("持久事务日志无效: {e}")))?;
+    let record: Journal = toml::from_str(
+        &fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?,
+    )
+    .map_err(|e| {
+        Error::Invalid(format!(
+            "持久事务日志无效 / Invalid persistent transaction journal: {e}"
+        ))
+    })?;
     if record.schema_version != 1 {
-        return Err(Error::Invalid("不支持的持久事务日志版本".into()));
+        return Err(Error::Invalid(
+            "不支持的持久事务日志版本 / Unsupported persistent transaction journal version".into(),
+        ));
     }
     if record.working && record.phase != Phase::Preparing {
-        return Err(Error::Invalid("工作卷日志不能处于发布阶段".into()));
+        return Err(Error::Invalid("工作卷日志不能处于发布阶段 / Working-volume journal cannot be in the publication stage".into()));
     }
     let mut names = BTreeSet::new();
     for entry in &record.entries {
         super::plugins::validate_identity(&entry.name)?;
         if !names.insert(&entry.name) {
-            return Err(Error::Invalid("持久日志名称重复".into()));
+            return Err(Error::Invalid(
+                "持久日志名称重复 / Duplicate persistent journal name".into(),
+            ));
         }
     }
     Ok(record)
@@ -385,7 +419,10 @@ fn validate_layout(root: &Path, record: &Journal) -> Result<()> {
                     .map_err(|e| disk::io(&entry.path(), e))?
                     .is_file()
                 {
-                    return Err(Error::Invalid("日志暂存必须是普通文件".into()));
+                    return Err(Error::Invalid(
+                        "日志暂存必须是普通文件 / Journal staging entry must be a regular file"
+                            .into(),
+                    ));
                 }
             }
             Some("new" | "old") => {
@@ -397,14 +434,14 @@ fn validate_layout(root: &Path, record: &Journal) -> Result<()> {
                         .iter()
                         .any(|e| child.file_name() == std::ffi::OsStr::new(&e.name))
                     {
-                        return Err(Error::Invalid("持久事务有未记录子卷".into()));
+                        return Err(Error::Invalid("持久事务有未记录子卷 / Persistent transaction contains an unrecorded subvolume".into()));
                     }
                     disk::checked(&child.path())?;
                 }
             }
             _ => {
                 return Err(Error::Invalid(format!(
-                    "持久事务有未知条目: {}",
+                    "持久事务有未知条目: {0} / Persistent transaction contains an unknown entry: {0}",
                     entry.path().display()
                 )));
             }
@@ -425,7 +462,7 @@ fn recover(backend: &impl BuildBackend, pool: &Path, root: &Path) -> Result<()> 
                     .map_err(|e| disk::io(&item.path(), e))?
                     .is_file()
             {
-                return Err(Error::Invalid("持久事务目录存在数据但缺少日志".into()));
+                return Err(Error::Invalid("持久事务目录存在数据但缺少日志 / Persistent transaction directory contains data but has no journal".into()));
             }
             fs::remove_file(item.path()).map_err(|e| disk::io(&item.path(), e))?;
         }
@@ -454,7 +491,7 @@ fn recover(backend: &impl BuildBackend, pool: &Path, root: &Path) -> Result<()> 
             };
             if !valid {
                 return Err(Error::Invalid(format!(
-                    "持久事务恢复状态不符: {}",
+                    "持久事务恢复状态不符: {0} / Persistent transaction recovery-state mismatch: {0}",
                     entry.name
                 )));
             }
@@ -488,11 +525,16 @@ fn recover(backend: &impl BuildBackend, pool: &Path, root: &Path) -> Result<()> 
         if record.phase == Phase::Committed {
             backend.check_subvolume(&published, false)?;
             if disk::exists(&new)? || (!entry.had_original && disk::exists(&old)?) {
-                return Err(Error::Invalid("已提交持久事务布局不符".into()));
+                return Err(Error::Invalid(
+                    "已提交持久事务布局不符 / Committed persistent transaction layout mismatch"
+                        .into(),
+                ));
             }
         } else {
             if disk::exists(&old)? {
-                return Err(Error::Invalid("准备阶段不能存在旧卷".into()));
+                return Err(Error::Invalid(
+                    "准备阶段不能存在旧卷 / Old volumes must not exist during preparation".into(),
+                ));
             }
             if record.working {
                 // Explicit saves may have replaced or first published this volume.
@@ -502,7 +544,7 @@ fn recover(backend: &impl BuildBackend, pool: &Path, root: &Path) -> Result<()> 
             } else if entry.had_original {
                 backend.check_subvolume(&published, false)?;
             } else if disk::exists(&published)? {
-                return Err(Error::Invalid("未提交的新持久卷已发布".into()));
+                return Err(Error::Invalid("未提交的新持久卷已发布 / An uncommitted new persistent volume has been published".into()));
             }
         }
     }
@@ -544,7 +586,9 @@ fn write_journal(root: &Path, record: &Journal) -> Result<()> {
             .map_err(|e| disk::io(&path, e))?
             .is_file()
     {
-        return Err(Error::Invalid("日志暂存必须是普通文件".into()));
+        return Err(Error::Invalid(
+            "日志暂存必须是普通文件 / Journal staging entry must be a regular file".into(),
+        ));
     }
     let text = toml::to_string(record).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut file = OpenOptions::new()
@@ -562,7 +606,7 @@ fn write_journal(root: &Path, record: &Journal) -> Result<()> {
 fn rename(source: &Path, destination: &Path) -> Result<()> {
     if disk::exists(destination)? {
         return Err(Error::Invalid(format!(
-            "不覆盖持久事务目标: {}",
+            "不覆盖持久事务目标: {0} / Refusing to overwrite persistent transaction target: {0}",
             destination.display()
         )));
     }

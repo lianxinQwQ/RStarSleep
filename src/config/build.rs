@@ -71,7 +71,7 @@ impl BuildConfig {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             return Err(Error::Invalid(
-                "仅支持构建格式版本 1（INI: [Config] SchemaVersion=1）".into(),
+                "仅支持构建格式版本 1（INI: [Config] SchemaVersion=1） / only build format version 1 is supported (INI: [Config] SchemaVersion=1)".into(),
             ));
         }
         validate_identifier(&self.system_type)?;
@@ -130,14 +130,14 @@ pub fn read_deduplicate_packages_at(directory: &Path) -> Result<bool> {
             };
             let [value] = values.as_slice() else {
                 return Err(Error::Invalid(
-                    "DeduplicatePackages 必须恰好配置一个布尔值".into(),
+                    "DeduplicatePackages 必须恰好配置一个布尔值 / DeduplicatePackages must specify exactly one boolean value".into(),
                 ));
             };
             match value.to_ascii_lowercase().as_str() {
                 "yes" | "true" | "1" | "on" => Ok(true),
                 "no" | "false" | "0" | "off" => Ok(false),
                 _ => Err(Error::Invalid(
-                    "DeduplicatePackages 必须是 yes/no 或 true/false".into(),
+                    "DeduplicatePackages 必须是 yes/no 或 true/false / DeduplicatePackages must be yes/no or true/false".into(),
                 )),
             }
         }
@@ -148,7 +148,7 @@ pub fn read_deduplicate_packages_at(directory: &Path) -> Result<bool> {
                 None => Ok(false),
                 Some(value) => value
                     .as_bool()
-                    .ok_or_else(|| Error::Invalid("deduplicate_packages 必须是布尔值".into())),
+                    .ok_or_else(|| Error::Invalid("deduplicate_packages 必须是布尔值 / deduplicate_packages must be a boolean".into())),
             }
         }
     }
@@ -180,19 +180,21 @@ pub fn read_distribution_options_at(directory: &Path) -> Result<BTreeMap<String,
             if let Some(custom) = value.get("distribution_options") {
                 let table = custom.as_table().ok_or_else(|| {
                     Error::Invalid(format!(
-                        "{}: distribution_options 必须是字符串表",
+                        "{0}: distribution_options 必须是字符串表 / {0}: distribution_options must be a string table",
                         path.display()
                     ))
                 })?;
                 for (name, value) in table {
                     let value = value.as_str().ok_or_else(|| {
                         Error::Invalid(format!(
-                            "{}: distribution_options.{name} 必须是字符串",
+                            "{0}: distribution_options.{name} 必须是字符串 / {0}: distribution_options.{name} must be a string",
                             path.display()
                         ))
                     })?;
                     if name == "Distribution" || name == "Architecture" {
-                        return Err(Error::Invalid(format!("旧 TOML 的 {name} 应使用顶层字段")));
+                        return Err(Error::Invalid(format!(
+                            "旧 TOML 的 {name} 应使用顶层字段 / legacy TOML {name} must use a top-level field"
+                        )));
                     }
                     options.insert(name.clone(), value.into());
                 }
@@ -211,10 +213,9 @@ pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParame
             let value: toml::Value =
                 toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
             let mut parameters = super::PluginParameters::default();
-            for (name, value) in value
-                .as_table()
-                .ok_or_else(|| Error::Invalid("构建配置不是表".into()))?
-            {
+            for (name, value) in value.as_table().ok_or_else(|| {
+                Error::Invalid("构建配置不是表 / build configuration is not a table".into())
+            })? {
                 match name.as_str() {
                     "schema_version" => {
                         parameters.insert("Config", "SchemaVersion", value.to_string())?
@@ -237,13 +238,15 @@ pub fn read_plugin_parameters_at(directory: &Path) -> Result<super::PluginParame
                     "Environment" => (),
                     "distribution_options" => {
                         let table = value.as_table().ok_or_else(|| {
-                            Error::Invalid("distribution_options 必须是字符串表".into())
+                            Error::Invalid("distribution_options 必须是字符串表 / distribution_options must be a string table".into())
                         })?;
                         for (key, value) in table {
                             if matches!(key.as_str(), "Distribution" | "Architecture")
                                 || !value.is_str()
                             {
-                                return Err(Error::Invalid(format!("无效旧 TOML 插件选项: {key}")));
+                                return Err(Error::Invalid(format!(
+                                    "无效旧 TOML 插件选项: {key} / invalid legacy TOML plugin option: {key}"
+                                )));
                             }
                             parameters.insert("Distribution", key, legacy_parameter(value)?)?;
                         }
@@ -285,9 +288,9 @@ pub fn read_environment_at(directory: &Path) -> Result<super::Environment> {
                 toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
             let mut assignments = BTreeMap::new();
             if let Some(environment) = value.get("Environment") {
-                let table = environment
-                    .as_table()
-                    .ok_or_else(|| Error::Invalid("[Environment] 必须是表".into()))?;
+                let table = environment.as_table().ok_or_else(|| {
+                    Error::Invalid("[Environment] 必须是表 / [Environment] must be a table".into())
+                })?;
                 for (name, value) in table {
                     assignments.insert(name.clone(), legacy_list(value)?);
                 }
@@ -319,7 +322,9 @@ fn legacy_parameter(value: &toml::Value) -> Result<String> {
             .map(legacy_parameter)
             .collect::<Result<Vec<_>>>()
             .map(|values| values.join("\n")),
-        toml::Value::Table(_) => Err(Error::Invalid("插件参数不支持嵌套表".into())),
+        toml::Value::Table(_) => Err(Error::Invalid(
+            "插件参数不支持嵌套表 / plugin parameters do not support nested tables".into(),
+        )),
         _ => Ok(value.to_string()),
     }
 }
@@ -356,7 +361,7 @@ impl Input {
             let info = fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
             if !info.is_file() {
                 return Err(Error::Invalid(format!(
-                    "build 配置必须为普通文件: {}",
+                    "build 配置必须为普通文件: {0} / build configuration must be a regular file: {0}",
                     path.display()
                 )));
             }
@@ -446,7 +451,10 @@ impl ConfigStore {
         let options: GlobalBuildOptions =
             toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
         if options.schema_version != 1 {
-            return Err(Error::Invalid("仅支持全局 schema_version = 1".into()));
+            return Err(Error::Invalid(
+                "仅支持全局 schema_version = 1 / only global schema_version = 1 is supported"
+                    .into(),
+            ));
         }
         let parameters = read_plugin_parameters_at(directory)?;
         let system = parameters
@@ -458,20 +466,22 @@ impl ConfigStore {
             Some(values) => {
                 let [value] = values.as_slice() else {
                     return Err(Error::Invalid(
-                        "CacheReuseMinutes 必须是单个非负整数".into(),
+                        "CacheReuseMinutes 必须是单个非负整数 / CacheReuseMinutes must be a single nonnegative integer".into(),
                     ));
                 };
                 if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(Error::Invalid("CacheReuseMinutes 必须是非负整数".into()));
+                    return Err(Error::Invalid("CacheReuseMinutes 必须是非负整数 / CacheReuseMinutes must be a nonnegative integer".into()));
                 }
-                value
-                    .parse::<u64>()
-                    .map_err(|_| Error::Invalid("CacheReuseMinutes 超出范围".into()))?
+                value.parse::<u64>().map_err(|_| {
+                    Error::Invalid(
+                        "CacheReuseMinutes 超出范围 / CacheReuseMinutes is out of range".into(),
+                    )
+                })?
             }
         };
         minutes
             .checked_mul(60)
-            .ok_or_else(|| Error::Invalid("cache_reuse_minutes 换算秒数溢出".into()))?;
+            .ok_or_else(|| Error::Invalid("cache_reuse_minutes 换算秒数溢出 / cache_reuse_minutes overflows when converted to seconds".into()))?;
         Ok(minutes)
     }
 
@@ -538,7 +548,10 @@ impl ConfigStore {
         let options: GlobalBuildOptions =
             toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
         if options.schema_version != 1 {
-            return Err(Error::Invalid("仅支持全局 schema_version = 1".into()));
+            return Err(Error::Invalid(
+                "仅支持全局 schema_version = 1 / only global schema_version = 1 is supported"
+                    .into(),
+            ));
         }
         let selected = options.work_dir.unwrap_or_else(|| PathBuf::from("work"));
         if selected.as_os_str().is_empty()
@@ -546,7 +559,7 @@ impl ConfigStore {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
         {
-            return Err(Error::Invalid("work_dir 不能为空或包含父级跳转".into()));
+            return Err(Error::Invalid("work_dir 不能为空或包含父级跳转 / work_dir must not be empty or contain parent traversal".into()));
         }
         Ok(if selected.is_absolute() {
             selected
@@ -572,16 +585,17 @@ impl ConfigStore {
         let mut systems = Vec::new();
         for entry in fs::read_dir(&path).map_err(|source| io_error(&path, source))? {
             let entry = entry.map_err(|source| io_error(&path, source))?;
-            let id = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| Error::Invalid("系统标识必须是 UTF-8".into()))?;
+            let id = entry.file_name().into_string().map_err(|_| {
+                Error::Invalid("系统标识必须是 UTF-8 / system identifier must be UTF-8".into())
+            })?;
             validate_identifier(&id)?;
             let info = entry
                 .file_type()
                 .map_err(|source| io_error(entry.path(), source))?;
             if !info.is_dir() || info.is_symlink() {
-                return Err(Error::Invalid(format!("系统条目必须是普通目录: {id}")));
+                return Err(Error::Invalid(format!(
+                    "系统条目必须是普通目录: {id} / system entry must be a regular directory: {id}"
+                )));
             }
             systems.push(id);
         }

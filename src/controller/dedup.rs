@@ -37,8 +37,12 @@ impl Source {
     ) -> Result<Self> {
         backend.check_subvolume(&root, true)?;
         let path = root.parent().unwrap().join(INDEX);
-        let index = read_index(&path)?
-            .ok_or_else(|| Error::Invalid(format!("缺少二阶段包文件索引: {}", path.display())))?;
+        let index = read_index(&path)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "缺少二阶段包文件索引: {0} / Missing phase-two package file index: {0}",
+                path.display()
+            ))
+        })?;
         let mut packages = BTreeMap::<String, BTreeSet<String>>::new();
         for (owner, path) in index {
             packages.entry(owner).or_default().insert(path);
@@ -67,7 +71,7 @@ pub(super) fn read_index(path: &Path) -> Result<Option<Index>> {
     };
     if !file.metadata().map_err(|e| disk::io(path, e))?.is_file() {
         return Err(Error::Invalid(format!(
-            "包文件索引必须为普通文件: {}",
+            "包文件索引必须为普通文件: {0} / Package file index must be a regular file: {0}",
             path.display()
         )));
     }
@@ -111,7 +115,7 @@ fn open_file(root: &File, guest: &str, writable: bool) -> Result<Option<File>> {
         resolve: u64,
     }
     let path = CString::new(guest.trim_start_matches('/'))
-        .map_err(|_| Error::Invalid("无效包文件路径".into()))?;
+        .map_err(|_| Error::Invalid("无效包文件路径 / Invalid package file path".into()))?;
     let how = How {
         flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
         mode: 0,
@@ -220,7 +224,7 @@ pub(super) fn run(
                 .deduplicate_file(&source_file, &target_file)
                 .map_err(|error| {
                     Error::Invalid(format!(
-                        "软件包 {owner} 文件去重失败 {} -> {}: {error}",
+                        "软件包 {owner} 文件去重失败 {0} -> {1} / File deduplication for package {owner} failed {0} -> {1}: {error}",
                         source.root.join(path.trim_start_matches('/')).display(),
                         root.join(path.trim_start_matches('/')).display()
                     ))

@@ -13,15 +13,20 @@ pub(crate) const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// - `bytes`: UTF-8 TSV from the target plugin. 目标插件提供的 UTF-8 TSV。
 pub(crate) fn parse(bytes: &[u8]) -> Result<BTreeSet<(String, String)>> {
     if bytes.len() > MAX_BYTES {
-        return Err(Error::Invalid("package file index too large".into()));
+        return Err(Error::Invalid(
+            "软件包文件索引过大 / package file index too large".into(),
+        ));
     }
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| Error::Invalid("package file index is not UTF-8".into()))?;
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        Error::Invalid("软件包文件索引不是 UTF-8 / package file index is not UTF-8".into())
+    })?;
     let mut result = BTreeSet::new();
     for line in text.split_terminator('\n') {
-        let (package, path) = line
-            .split_once('\t')
-            .ok_or_else(|| Error::Invalid("package index requires owner TAB path".into()))?;
+        let (package, path) = line.split_once('\t').ok_or_else(|| {
+            Error::Invalid(
+                "软件包索引需要所有者、制表符和路径 / package index requires owner TAB path".into(),
+            )
+        })?;
         crate::software::valid_name(package).map_err(|e| Error::Invalid(e.to_string()))?;
         if line.len() > 8192
             || path.contains(['\t', '\r', '\0'])
@@ -33,7 +38,9 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<BTreeSet<(String, String)>> {
                 .components()
                 .any(|p| !matches!(p, Component::RootDir | Component::Normal(_)))
         {
-            return Err(Error::Invalid("invalid package index path".into()));
+            return Err(Error::Invalid(
+                "软件包索引路径无效 / invalid package index path".into(),
+            ));
         }
         result.insert((package.into(), path.into()));
     }

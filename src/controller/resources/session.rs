@@ -40,7 +40,7 @@ pub(in crate::controller) fn prepare(
     let info = fs::symlink_metadata(path).map_err(|e| disk::io(path, e))?;
     if !(info.is_file() || info.is_dir()) {
         return Err(Error::Invalid(format!(
-            "资源必须是普通文件或目录: {}",
+            "资源必须是普通文件或目录: {0} / Resource must be a regular file or directory: {0}",
             path.display()
         )));
     }
@@ -97,7 +97,11 @@ pub(in crate::controller) fn prepare(
 fn normalize_root(staging: &Path, entrypoint: &str) -> Result<PathBuf> {
     match fs::symlink_metadata(staging.join(entrypoint)) {
         Ok(info) if info.is_file() => return Ok(staging.into()),
-        Ok(_) => return Err(Error::Invalid(format!("{entrypoint} 必须是根中的普通文件"))),
+        Ok(_) => {
+            return Err(Error::Invalid(format!(
+                "{entrypoint} 必须是根中的普通文件 / {entrypoint} must be a regular file in the root"
+            )));
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
         Err(e) => return Err(disk::io(&staging.join(entrypoint), e)),
     }
@@ -112,7 +116,7 @@ fn normalize_root(staging: &Path, entrypoint: &str) -> Result<PathBuf> {
             .is_dir()
     {
         return Err(Error::Invalid(format!(
-            "资源根缺少 {entrypoint}，且顶层不是单个包装目录"
+            "资源根缺少 {entrypoint}，且顶层不是单个包装目录 / Resource root has no {entrypoint}, and its top level is not a single wrapper directory"
         )));
     }
     let wrapper = entries[0].path();
@@ -122,7 +126,7 @@ fn normalize_root(staging: &Path, entrypoint: &str) -> Result<PathBuf> {
         .is_file()
     {
         return Err(Error::Invalid(format!(
-            "包装目录内必须直接包含普通 {entrypoint} 文件"
+            "包装目录内必须直接包含普通 {entrypoint} 文件 / Wrapper directory must directly contain a regular {entrypoint} file"
         )));
     }
     Ok(wrapper)
@@ -143,7 +147,7 @@ pub(super) fn relative_path(path: &Path) -> Result<()> {
         })
     {
         return Err(Error::Invalid(format!(
-            "资源路径必须位于资源根内: {}",
+            "资源路径必须位于资源根内: {0} / Resource path must remain within the resource root: {0}",
             path.display()
         )));
     }

@@ -45,7 +45,7 @@ pub(crate) fn activity(
     } != 0
     {
         return Err(Error::Invalid(
-            "subsystem has an active execution or persistent migration".into(),
+            "子系统有正在执行的任务或持久化迁移 / subsystem has an active execution or persistent migration".into(),
         ));
     }
     Ok(file)
@@ -94,7 +94,9 @@ pub(crate) fn open_runtime_root(runtime: &super::PreparedRuntime) -> Result<fs::
         || actual.ino() != expected.ino()
         || super::commands::leader(runtime)? != leader
     {
-        return Err(Error::Invalid("live machine root identity changed".into()));
+        return Err(Error::Invalid(
+            "运行中机器的根目录身份已改变 / live machine root identity changed".into(),
+        ));
     }
     Ok(file)
 }
@@ -109,7 +111,7 @@ pub(crate) fn open_at_guest(directory: &fs::File, guest: &Path, flags: i32) -> R
     use std::os::fd::{AsRawFd, FromRawFd};
     super::config::absolute(guest, true)?;
     let path = std::ffi::CString::new(guest.as_os_str().as_encoded_bytes())
-        .map_err(|_| Error::Invalid("invalid guest path".into()))?;
+        .map_err(|_| Error::Invalid("客体路径无效 / invalid guest path".into()))?;
     #[repr(C)]
     struct How {
         flags: u64,
@@ -145,7 +147,10 @@ pub(crate) fn open_at_guest(directory: &fs::File, guest: &Path, flags: i32) -> R
 /// - `path`: Absolute manager-owned path. 管理器所属绝对路径。
 pub(crate) fn checked(path: &Path) -> Result<()> {
     if !path.is_absolute() || path.components().any(|p| matches!(p, Component::ParentDir)) {
-        return Err(Error::Invalid(format!("所属路径无效: {}", path.display())));
+        return Err(Error::Invalid(format!(
+            "所属路径无效: {0} / invalid owned path: {0}",
+            path.display()
+        )));
     }
     let mut current = PathBuf::new();
     for part in path.components() {
@@ -153,7 +158,7 @@ pub(crate) fn checked(path: &Path) -> Result<()> {
         match fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() || (current != path && !meta.is_dir()) => {
                 return Err(Error::Invalid(format!(
-                    "所属路径祖先无效: {}",
+                    "所属路径祖先无效: {0} / invalid ancestor of owned path: {0}",
                     current.display()
                 )));
             }
@@ -180,7 +185,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     checked(path)?;
     let parent = path
         .parent()
-        .ok_or_else(|| Error::Invalid("文件缺少父目录".into()))?;
+        .ok_or_else(|| Error::Invalid("文件缺少父目录 / file has no parent directory".into()))?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(mode))?;
@@ -247,7 +252,9 @@ pub(crate) fn guest_path(root: &Path, guest: &Path) -> Result<PathBuf> {
             Ok(meta) if meta.file_type().is_symlink() => {
                 links += 1;
                 if links > 40 {
-                    return Err(Error::Invalid("容器路径链接循环".into()));
+                    return Err(Error::Invalid(
+                        "容器路径链接循环 / container path symlink loop".into(),
+                    ));
                 }
                 let target = fs::read_link(&current)?;
                 if target.is_absolute() {

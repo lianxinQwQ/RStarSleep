@@ -10,7 +10,7 @@ source "$plugin_root/lib/common.sh"
 validate_packages "$@"
 if (( $# )); then
     for package in "$@"; do
-        [[ $package != base ]] || { log 'Cannot remove protected base package'; exit 64; }
+        [[ $package != base ]] || { log '不能移除受保护的 base 软件包 / Cannot remove protected base package'; exit 64; }
     done
     pacman -Rns --noconfirm -- "$@"
 fi

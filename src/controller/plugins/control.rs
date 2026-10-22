@@ -108,7 +108,9 @@ impl Server {
 
     pub(super) fn check(&self) -> Result<()> {
         match &self.failure {
-            Some(error) => Err(Error::Invalid(format!("插件持久卷保存失败: {error}"))),
+            Some(error) => Err(Error::Invalid(format!(
+                "插件持久卷保存失败 / failed to save plugin persistent volume: {error}"
+            ))),
             None => Ok(()),
         }
     }
@@ -166,14 +168,14 @@ impl Server {
                             };
                             (Some(request.id), result)
                         }
-                        Ok(request) => (Some(request.id), Err("Unsupported control request".into())),
-                        Err(_) => (None, Err("Invalid control request".into())),
+                        Ok(request) => (Some(request.id), Err("不支持的控制请求 / Unsupported control request".into())),
+                        Err(_) => (None, Err("无效控制请求 / Invalid control request".into())),
                     };
                     let response = match result {
                         Ok(()) => serde_json::json!({"id":id,"ok":true}),
                         Err(error) => serde_json::json!({"id":id,"ok":false,"error":error.chars().take(1024).collect::<String>()}),
                     };
-                    client.output = serde_json::to_vec(&response).expect("JSON response");
+                    client.output = serde_json::to_vec(&response).expect("JSON 响应 / JSON response");
                     client.output.push(b'\n');
                     client.started = Instant::now();
                 }

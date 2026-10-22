@@ -6,16 +6,20 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Require a canonical RSTAR_ parameter name and protect controller-owned context.
 /// 要求规范的 RSTAR_ 参数名，并保护控制器所属上下文。
 pub(crate) fn environment_name(name: &str) -> Result<String> {
-    let suffix = name
-        .strip_prefix("RSTAR_")
-        .ok_or_else(|| Error::Invalid(format!("插件参数须使用 RSTAR_ 名称: {name}")))?;
+    let suffix = name.strip_prefix("RSTAR_").ok_or_else(|| {
+        Error::Invalid(format!(
+            "插件参数须使用 RSTAR_ 名称: {name} / plugin parameters must use RSTAR_ names: {name}"
+        ))
+    })?;
     if suffix.is_empty()
         || !suffix.as_bytes()[0].is_ascii_uppercase()
         || !suffix
             .bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
     {
-        return Err(Error::Invalid(format!("无效插件参数名称: {name:?}")));
+        return Err(Error::Invalid(format!(
+            "无效插件参数名称: {name:?} / invalid plugin parameter name: {name:?}"
+        )));
     }
     if matches!(
         suffix,
@@ -28,7 +32,7 @@ pub(crate) fn environment_name(name: &str) -> Result<String> {
             | "PARAMETERS_JSON"
     ) {
         return Err(Error::Invalid(format!(
-            "插件参数占用控制器保留变量: {name}"
+            "插件参数占用控制器保留变量: {name} / plugin parameter uses a controller-reserved variable: {name}"
         )));
     }
     Ok(name.into())
@@ -40,25 +44,34 @@ impl ConfigRequirements {
         for name in self.required.iter().chain(&self.optional) {
             if !names.insert(environment_name(name)?) {
                 return Err(Error::Invalid(format!(
-                    "插件配置声明重复或环境变量冲突: {name}"
+                    "插件配置声明重复或环境变量冲突: {name} / duplicate plugin configuration declaration or environment variable collision: {name}"
                 )));
             }
         }
         for (name, constraint) in &self.constraints {
             if !names.contains(name) {
-                return Err(Error::Invalid(format!("约束字段未声明: {name}")));
+                return Err(Error::Invalid(format!(
+                    "约束字段未声明: {name} / constraint field is not declared: {name}"
+                )));
             }
             if !matches!(
                 constraint.kind.as_str(),
                 "free-single" | "free-list" | "enum-single" | "enum-list" | "number"
             ) {
-                return Err(Error::Invalid(format!("未知配置约束: {}", constraint.kind)));
+                return Err(Error::Invalid(format!(
+                    "未知配置约束: {0} / unknown configuration constraint: {0}",
+                    constraint.kind
+                )));
             }
             if constraint.kind.starts_with("enum-") && constraint.values.is_empty() {
-                return Err(Error::Invalid(format!("枚举约束没有候选值: {name}")));
+                return Err(Error::Invalid(format!(
+                    "枚举约束没有候选值: {name} / enum constraint has no candidate values: {name}"
+                )));
             }
             if !constraint.kind.starts_with("enum-") && !constraint.values.is_empty() {
-                return Err(Error::Invalid(format!("非枚举约束不能声明候选值: {name}")));
+                return Err(Error::Invalid(format!(
+                    "非枚举约束不能声明候选值: {name} / non-enum constraint must not declare candidate values: {name}"
+                )));
             }
         }
         Ok(())
@@ -76,7 +89,9 @@ impl CacheRequirements {
                     .unwrap_or_else(|| selector.clone());
                 environment_name(&name)?;
                 if !names.insert(name.clone()) {
-                    return Err(Error::Invalid(format!("缓存检测字段重复: {selector}")));
+                    return Err(Error::Invalid(format!(
+                        "缓存检测字段重复: {selector} / duplicate cache detection field: {selector}"
+                    )));
                 }
                 let fields = config.required.iter().chain(&config.optional);
                 let declared = if selector.starts_with("RSTAR_*") {
@@ -92,7 +107,7 @@ impl CacheRequirements {
                 };
                 if !declared {
                     return Err(Error::Invalid(format!(
-                        "缓存检测字段未在 config 中声明: {selector}"
+                        "缓存检测字段未在 config 中声明: {selector} / cache detection field is not declared in config: {selector}"
                     )));
                 }
             }
@@ -128,7 +143,7 @@ impl LoadedPlugin {
             .collect();
         if !missing.is_empty() || !unknown.is_empty() {
             return Err(Error::Invalid(format!(
-                "插件 {} 的配置不满足声明：缺少或为空的必选配置 [{}]；未声明的配置 [{}]",
+                "插件 {0} 的配置不满足声明：缺少或为空的必选配置 [{1}]；未声明的配置 [{2}] / plugin {0} configuration does not satisfy its declaration: missing or empty required settings [{1}]; undeclared settings [{2}]",
                 self.metadata.id,
                 missing.join(", "),
                 unknown.join(", ")
@@ -137,7 +152,9 @@ impl LoadedPlugin {
         for (name, value) in options {
             environment_name(name)?;
             if value.contains('\0') {
-                return Err(Error::Invalid(format!("插件配置 {name} 包含 NUL")));
+                return Err(Error::Invalid(format!(
+                    "插件配置 {name} 包含 NUL / plugin configuration {name} contains NUL"
+                )));
             }
         }
         Ok(())
@@ -173,7 +190,7 @@ impl LoadedPlugin {
                 && values.len() != 1
             {
                 return Err(Error::Invalid(format!(
-                    "配置 {name} 要求单项，实际 {} 项",
+                    "配置 {name} 要求单项，实际 {0} 项 / configuration {name} requires a single item, but received {0} items",
                     values.len()
                 )));
             }
@@ -181,7 +198,7 @@ impl LoadedPlugin {
                 && values.iter().any(|value| !rule.values.contains(value))
             {
                 return Err(Error::Invalid(format!(
-                    "配置 {name} 不在枚举候选值中: {values:?}"
+                    "配置 {name} 不在枚举候选值中: {values:?} / configuration {name} is not among the enum candidate values: {values:?}"
                 )));
             }
             if rule.kind == "number"
@@ -190,7 +207,7 @@ impl LoadedPlugin {
                 })
             {
                 return Err(Error::Invalid(format!(
-                    "配置 {name} 必须是有限数字: {values:?}"
+                    "配置 {name} 必须是有限数字: {values:?} / configuration {name} must be a finite number: {values:?}"
                 )));
             }
         }

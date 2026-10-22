@@ -30,7 +30,9 @@ pub(crate) fn credentials(fd: i32) -> Result<Peer> {
         return Err(std::io::Error::last_os_error().into());
     }
     if n as usize != std::mem::size_of::<libc::ucred>() || c.pid <= 0 {
-        return Err(Error::Invalid("invalid peer credentials".into()));
+        return Err(Error::Invalid(
+            "对端凭据无效 / invalid peer credentials".into(),
+        ));
     }
     Ok(Peer {
         uid: c.uid,
@@ -44,7 +46,9 @@ pub(crate) fn credentials(fd: i32) -> Result<Peer> {
 /// - `peer`: Kernel credentials. 内核凭据。
 pub(crate) fn admin(peer: Peer) -> Result<()> {
     if peer.uid != 0 {
-        return Err(Error::Invalid("this operation requires root".into()));
+        return Err(Error::Invalid(
+            "此操作需要 root / this operation requires root".into(),
+        ));
     }
     Ok(())
 }
@@ -56,11 +60,13 @@ pub(crate) fn admin(peer: Peer) -> Result<()> {
 /// - `peer`: Authenticated caller. 已认证调用者。
 pub(crate) fn ensure(runtime: &PreparedRuntime, peer: Peer) -> Result<(String, String)> {
     if !runtime.config.allows(peer.uid) {
-        return Err(Error::Invalid("subsystem identity access denied".into()));
+        return Err(Error::Invalid(
+            "子系统身份访问被拒绝 / subsystem identity access denied".into(),
+        ));
     }
     let _accounts = ACCOUNTS
         .lock()
-        .map_err(|_| Error::Invalid("guest account lock poisoned".into()))?;
+        .map_err(|_| Error::Invalid("客体账户锁损坏 / guest account lock poisoned".into()))?;
     // Lookup failures are distinguished from missing accounts by getent status 2.
     // 通过 getent 状态 2 区分查找失败和缺失账户。
     let lookup = |database: &str, key: String| -> Result<Option<String>> {
@@ -75,10 +81,12 @@ pub(crate) fn ensure(runtime: &PreparedRuntime, peer: Peer) -> Result<(String, S
             return Ok(None);
         }
         if !output.status.success() {
-            return Err(Error::Invalid("guest NSS lookup failed".into()));
+            return Err(Error::Invalid(
+                "客体 NSS 查询失败 / guest NSS lookup failed".into(),
+            ));
         }
         Ok(Some(String::from_utf8(output.stdout).map_err(|_| {
-            Error::Invalid("invalid guest NSS record".into())
+            Error::Invalid("客体 NSS 记录无效 / invalid guest NSS record".into())
         })?))
     };
     if lookup("group", peer.gid.to_string())?.is_none() {
@@ -109,7 +117,7 @@ pub(crate) fn ensure(runtime: &PreparedRuntime, peer: Peer) -> Result<(String, S
         )?;
     }
     let record = lookup("passwd", peer.uid.to_string())?
-        .ok_or_else(|| Error::Invalid("guest account missing".into()))?;
+        .ok_or_else(|| Error::Invalid("客体账户缺失 / guest account missing".into()))?;
     let fields: Vec<_> = record.trim_end().split(':').collect();
     if fields.len() != 7
         || fields[2].parse::<u32>().ok() != Some(peer.uid)
@@ -118,7 +126,7 @@ pub(crate) fn ensure(runtime: &PreparedRuntime, peer: Peer) -> Result<(String, S
         || fields[0].chars().any(char::is_control)
     {
         return Err(Error::Invalid(
-            "guest account UID/GID conflicts with the authenticated caller".into(),
+            "客体账户的 UID/GID 与已认证调用者冲突 / guest account UID/GID conflicts with the authenticated caller".into(),
         ));
     }
     super::config::absolute(std::path::Path::new(fields[5]), false)?;

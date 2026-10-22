@@ -63,7 +63,7 @@ fn bundle_dependencies(executable: &Path, destination: &Path) -> Result<Option<S
     }
     if !output.status.success() || text.contains("not found") {
         return Err(Error::Invalid(format!(
-            "无法打包 initramfs 执行器依赖: {text}"
+            "无法打包 initramfs 执行器依赖: {text} / Cannot package initramfs executor dependencies: {text}"
         )));
     }
     let mut loader = None;
@@ -89,14 +89,19 @@ fn bundle_dependencies(executable: &Path, destination: &Path) -> Result<Option<S
                 let name = source
                     .file_name()
                     .and_then(|s| s.to_str())
-                    .ok_or_else(|| Error::Invalid("动态加载器名称无效".into()))?
+                    .ok_or_else(|| {
+                        Error::Invalid("动态加载器名称无效 / Invalid dynamic loader name".into())
+                    })?
                     .to_owned();
                 (name, source, true)
             }
             _ => continue,
         };
         if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-            return Err(Error::Invalid("动态依赖名称必须是单个文件名".into()));
+            return Err(Error::Invalid(
+                "动态依赖名称必须是单个文件名 / Dynamic dependency name must be a single filename"
+                    .into(),
+            ));
         }
         if interpreter {
             loader = Some(name.clone());
@@ -107,7 +112,9 @@ fn bundle_dependencies(executable: &Path, destination: &Path) -> Result<Option<S
         if let Some(previous) = bundled.insert(name, bytes.clone())
             && previous != bytes
         {
-            return Err(Error::Invalid("动态依赖文件名冲突".into()));
+            return Err(Error::Invalid(
+                "动态依赖文件名冲突 / Dynamic dependency filename conflict".into(),
+            ));
         }
         fs::write(&target, bytes).map_err(|e| disk::io(&target, e))?;
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755))
@@ -115,7 +122,7 @@ fn bundle_dependencies(executable: &Path, destination: &Path) -> Result<Option<S
     }
     if loader.is_none() {
         return Err(Error::Invalid(
-            "无法识别 initramfs 执行器的动态加载器".into(),
+            "无法识别 initramfs 执行器的动态加载器 / Cannot identify the initramfs executor's dynamic loader".into(),
         ));
     }
     Ok(loader)

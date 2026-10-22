@@ -19,7 +19,9 @@ struct BuildJob {
 /// - `store`, `id`, `packages`: Fixed system and validated package names. 固定系统及已校验包名。
 pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String]) -> Result<()> {
     if packages.is_empty() {
-        return Err(Error::Invalid("guest install requires packages".into()));
+        return Err(Error::Invalid(
+            "客体安装需要指定软件包 / guest install requires packages".into(),
+        ));
     }
     for package in packages {
         crate::software::valid_target(package)?;
@@ -36,7 +38,9 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
             continue;
         }
         if !entry.file_type()?.is_file() {
-            return Err(Error::Invalid("build config requires regular files".into()));
+            return Err(Error::Invalid(
+                "构建配置必须为普通文件 / build config requires regular files".into(),
+            ));
         }
         let text = fs::read_to_string(entry.path())?;
         if text.lines().any(|l| l.trim() == "[Config]") {
@@ -45,7 +49,7 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
     }
     if !ini_present {
         return Err(Error::Invalid(
-            "guest install requires existing INI build configuration; migrate legacy TOML first"
+            "客体安装需要已有的 INI 构建配置，请先迁移旧版 TOML / guest install requires existing INI build configuration; migrate legacy TOML first"
                 .into(),
         ));
     }
@@ -55,7 +59,9 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
         checked(&path)?;
         let text = fs::read_to_string(&path)?;
         if text.len() > 1024 * 1024 {
-            return Err(Error::Invalid("guest package requests exceed limit".into()));
+            return Err(Error::Invalid(
+                "客体软件包请求超出限制 / guest package requests exceed limit".into(),
+            ));
         }
         let mut section = false;
         for line in text.lines().map(str::trim) {
@@ -70,7 +76,7 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
                 .strip_prefix("Packages=")
                 .filter(|_| section)
                 .ok_or_else(|| {
-                    Error::Invalid("guest-packages.conf contains unmanaged settings".into())
+                    Error::Invalid("guest-packages.conf 包含非托管设置 / guest-packages.conf contains unmanaged settings".into())
                 })?;
             for name in names.split_ascii_whitespace() {
                 crate::software::valid_target(name)?;
@@ -87,7 +93,7 @@ pub(super) fn install_packages(store: &ConfigStore, id: &str, packages: &[String
     }
     if requested.len() > 4096 {
         return Err(Error::Invalid(
-            "guest package request limit exceeded".into(),
+            "客体软件包请求超出数量限制 / guest package request limit exceeded".into(),
         ));
     }
     let text = format!(
@@ -115,7 +121,9 @@ pub(super) fn rebuild(store: &ConfigStore, id: &str) -> Result<String> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(directory.join("build.lock"))?;
     if unsafe { libc::flock(job_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(Error::Invalid("a guest rebuild is already running".into()));
+        return Err(Error::Invalid(
+            "已有客体重建正在运行 / a guest rebuild is already running".into(),
+        ));
     }
     let binary = fs::canonicalize(std::env::current_exe()?)?;
     trust::path(&binary)?;
@@ -181,11 +189,11 @@ pub(super) fn rebuild(store: &ConfigStore, id: &str) -> Result<String> {
             }
             Err(error) => {
                 job.state = "failed".into();
-                eprintln!("guest rebuild wait: {error}");
+                eprintln!("等待客体重建 / guest rebuild wait: {error}");
             }
         }
         if let Err(error) = write_record(&status_path, &job) {
-            eprintln!("guest rebuild record: {error}");
+            eprintln!("客体重建记录 / guest rebuild record: {error}");
         }
     });
     Ok(format!(

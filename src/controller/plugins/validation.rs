@@ -21,14 +21,14 @@ use std::{
 pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> {
     if metadata.schema_version != 1 || !matches!(metadata.api_version, 2 | 3) {
         return Err(Error::Invalid(format!(
-            "插件 {} 的元数据或任务接口版本不受支持",
+            "插件 {0} 的元数据或任务接口版本不受支持 / plugin {0} metadata or task interface version is unsupported",
             metadata.id
         )));
     }
     identifier(&metadata.id)?;
     identifier(&metadata.cache_format)?;
     if metadata.version.trim().is_empty() || metadata.architectures.is_empty() {
-        return Err(Error::Invalid("插件版本和支持架构不能为空".into()));
+        return Err(Error::Invalid("插件版本和支持架构不能为空 / plugin version and supported architectures must not be empty".into()));
     }
     for value in metadata.system_types.iter().chain(&metadata.architectures) {
         identifier(value)?;
@@ -52,7 +52,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
                 .any(|part| !matches!(part, Component::Normal(_)))
         {
             return Err(Error::Invalid(
-                "package_database_paths 必须是目标根内的相对目录".into(),
+                "package_database_paths 必须是目标根内的相对目录 / package_database_paths must be relative directories within the target root".into(),
             ));
         }
     }
@@ -65,7 +65,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
                 | "query_package_database_paths"
         ) {
             return Err(Error::Invalid(
-                "readonly_queries 只支持本地软件数据库查询".into(),
+                "readonly_queries 只支持本地软件数据库查询 / readonly_queries only supports local package database queries".into(),
             ));
         }
     }
@@ -73,7 +73,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
         && metadata.package_plan.is_none()
     {
         return Err(Error::Invalid(
-            "统一软件准备及维护需要声明 [package_plan]".into(),
+            "统一软件准备及维护需要声明 [package_plan] / unified package preparation and maintenance requires a [package_plan] declaration".into(),
         ));
     }
     if metadata.package_maintenance {
@@ -96,7 +96,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
                 .any(|c| !matches!(c, Component::Normal(_)))
         {
             return Err(Error::Invalid(
-                "账户工作目录必须是临时目录下的规范相对路径".into(),
+                "账户工作目录必须是临时目录下的规范相对路径 / account work directory must be a canonical relative path under the temporary directory".into(),
             ));
         }
         let mut paths = Vec::new();
@@ -106,12 +106,14 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
                 .iter()
                 .any(|other: &&PathBuf| path.starts_with(other) || other.starts_with(path))
             {
-                return Err(Error::Invalid("账户输入路径不能重复或重叠".into()));
+                return Err(Error::Invalid("账户输入路径不能重复或重叠 / account input paths must not be duplicated or overlap".into()));
             }
             paths.push(path);
         }
         if paths.is_empty() {
-            return Err(Error::Invalid("账户输入路径不能为空".into()));
+            return Err(Error::Invalid(
+                "账户输入路径不能为空 / account input path must not be empty".into(),
+            ));
         }
         for tool in &accounts.tools {
             tool_requirement(tool)?;
@@ -123,7 +125,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     if let Some(plan) = &metadata.package_plan {
         if metadata.api_version != 3 {
             return Err(Error::Invalid(
-                "软件包计划解析环境需要 API 3 系统初始化接口".into(),
+                "软件包计划解析环境需要 API 3 系统初始化接口 / package plan resolution environment requires the API 3 system initialization interface".into(),
             ));
         }
         for package in &plan.base_packages {
@@ -177,7 +179,7 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     super::persistent::parse(&metadata.persistent_dirs, root)?;
     if metadata.predownload {
         if metadata.api_version != 3 {
-            return Err(Error::Invalid("预下载环境需要 API 3 系统初始化接口".into()));
+            return Err(Error::Invalid("预下载环境需要 API 3 系统初始化接口 / predownload environment requires the API 3 system initialization interface".into()));
         }
         for operation in ["predownload", "predownload_install", "predownload_update"] {
             operation_path(root, operation)?;
@@ -208,19 +210,19 @@ pub(crate) fn validate_boot(boot: &BootRequirements) -> Result<()> {
                 .any(|part| !matches!(part, Component::Normal(_)))
         {
             return Err(Error::Invalid(format!(
-                "启动产物 source 必须是目标系统根内的规范相对文件路径: {source:?}"
+                "启动产物 source 必须是目标系统根内的规范相对文件路径: {source:?} / boot artifact source must be a canonical relative file path within the target system root: {source:?}"
             )));
         }
         identifier(&artifact.destination)?;
         if artifact.destination.ends_with('.') {
             return Err(Error::Invalid(format!(
-                "启动产物 destination 必须是安全的 ESP 文件名: {:?}",
+                "启动产物 destination 必须是安全的 ESP 文件名: {0:?} / boot artifact destination must be a safe ESP filename: {0:?}",
                 artifact.destination
             )));
         }
         if !destinations.insert(artifact.destination.to_ascii_lowercase()) {
             return Err(Error::Invalid(format!(
-                "启动产物 destination 重复: {}",
+                "启动产物 destination 重复: {0} / duplicate boot artifact destination: {0}",
                 artifact.destination
             )));
         }
@@ -232,7 +234,7 @@ pub(crate) fn validate_boot(boot: &BootRequirements) -> Result<()> {
         .collect();
     if kernels.len() != 1 || kernels[0].optional {
         return Err(Error::Invalid(
-            "启动产物必须声明恰好一个必需的 kernel".into(),
+            "启动产物必须声明恰好一个必需的 kernel / boot artifacts must declare exactly one required kernel".into(),
         ));
     }
     if !boot
@@ -241,7 +243,7 @@ pub(crate) fn validate_boot(boot: &BootRequirements) -> Result<()> {
         .any(|artifact| artifact.kind == BootArtifactKind::Initrd && !artifact.optional)
     {
         return Err(Error::Invalid(
-            "启动产物必须声明至少一个必需的 initrd".into(),
+            "启动产物必须声明至少一个必需的 initrd / boot artifacts must declare at least one required initrd".into(),
         ));
     }
     Ok(())
@@ -259,14 +261,16 @@ fn tool_requirement(tool: &str) -> Result<()> {
             .any(|part| matches!(part, Component::Normal(_)))
         {
             return Err(Error::Invalid(format!(
-                "工具路径必须指向插件内文件: {tool:?}"
+                "工具路径必须指向插件内文件: {tool:?} / tool path must point to a file within the plugin: {tool:?}"
             )));
         }
     } else {
         identifier(tool)?;
     }
     if tool.chars().any(char::is_control) || tool.trim() != tool {
-        return Err(Error::Invalid(format!("无效工具声明: {tool:?}")));
+        return Err(Error::Invalid(format!(
+            "无效工具声明: {tool:?} / invalid tool declaration: {tool:?}"
+        )));
     }
     Ok(())
 }
@@ -291,7 +295,7 @@ pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
     if let Some(parent) = path.parent() {
         let info = fs::symlink_metadata(parent).map_err(|e| io_error(parent, e))?;
         if !info.is_dir() || info.file_type().is_symlink() {
-            return Err(Error::Invalid("操作资源目录必须是普通目录".into()));
+            return Err(Error::Invalid("操作资源目录必须是普通目录 / operation resource directory must be a regular directory".into()));
         }
     }
     let (info, script) = match fs::symlink_metadata(&path) {
@@ -301,7 +305,7 @@ pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
             let info = fs::symlink_metadata(&path).map_err(|error| {
                 if error.kind() == io::ErrorKind::NotFound {
                     Error::Invalid(format!(
-                        "插件操作 {operation} 缺少同名普通文件: {}.sh 或 {}",
+                        "插件操作 {operation} 缺少同名普通文件: {0}.sh 或 {1} / plugin operation {operation} is missing a regular file with the same name: {0}.sh or {1}",
                         path.display(),
                         path.display()
                     ))
@@ -315,7 +319,7 @@ pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
     };
     if !info.is_file() {
         return Err(Error::Invalid(format!(
-            "插件操作 {operation} 必须是同名普通文件: {}",
+            "插件操作 {operation} 必须是同名普通文件: {0} / plugin operation {operation} must be a regular file with the same name: {0}",
             path.display()
         )));
     }
@@ -324,7 +328,7 @@ pub(super) fn operation_path(root: &Path, operation: &str) -> Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         if info.permissions().mode() & 0o111 == 0 {
             return Err(Error::Invalid(format!(
-                "插件操作 {operation} 的无后缀入口必须具备可执行权限: {}",
+                "插件操作 {operation} 的无后缀入口必须具备可执行权限: {0} / plugin operation {operation} entry without a suffix must be executable: {0}",
                 path.display()
             )));
         }
@@ -349,7 +353,7 @@ pub(super) fn relative_path(path: &Path) -> Result<()> {
         })
     {
         return Err(Error::Invalid(format!(
-            "插件路径必须位于资源根内: {}",
+            "插件路径必须位于资源根内: {0} / plugin path must stay within the resource root: {0}",
             path.display()
         )));
     }
@@ -370,7 +374,9 @@ pub(crate) fn identifier(value: &str) -> Result<()> {
         .is_some_and(|byte| byte.is_ascii_alphanumeric())
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
     {
-        return Err(Error::Invalid(format!("无效插件类型或架构标识: {value:?}")));
+        return Err(Error::Invalid(format!(
+            "无效插件类型或架构标识: {value:?} / invalid plugin type or architecture identifier: {value:?}"
+        )));
     }
     Ok(())
 }

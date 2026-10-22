@@ -23,7 +23,9 @@ fn version_id(version: &str) -> Result<()> {
     if !version.strip_prefix('v').is_some_and(|v| {
         !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()) && v.parse::<u64>().is_ok()
     }) {
-        return Err(Error::Invalid(format!("产物版本无效: {version}")));
+        return Err(Error::Invalid(format!(
+            "产物版本无效: {version} / Invalid artifact version: {version}"
+        )));
     }
     Ok(())
 }
@@ -45,7 +47,9 @@ fn validate_state(system: &Path, current: &CurrentBuild) -> Result<()> {
         || state.get("version").and_then(|v| v.as_str()) != Some(&current.version)
         || state.get("schema_version").and_then(|v| v.as_integer()) != Some(1)
     {
-        return Err(Error::Invalid("当前产物状态身份不匹配".into()));
+        return Err(Error::Invalid(
+            "当前产物状态身份不匹配 / Current artifact state identity mismatch".into(),
+        ));
     }
     let root = match state.get("state").and_then(|v| v.as_str()) {
         Some("complete") => directory.join("root"),
@@ -53,15 +57,17 @@ fn validate_state(system: &Path, current: &CurrentBuild) -> Result<()> {
             let manifest = directory.join("inheritance-pending.toml");
             let pending = super::deferred::read_manifest(&manifest)?;
             if pending.system_id != current.system_id || pending.version != current.version {
-                return Err(Error::Invalid("当前产物待办身份不匹配".into()));
+                return Err(Error::Invalid("当前产物待办身份不匹配 / Current artifact pending-task identity mismatch".into()));
             }
             directory.join("prepared-root")
         }
-        _ => return Err(Error::Invalid("当前产物未成功交付或已经取消".into())),
+        _ => return Err(Error::Invalid("当前产物未成功交付或已经取消 / Current artifact was not successfully delivered or has already been canceled".into())),
     };
     disk::checked(&root)?;
     if !root.is_dir() {
-        return Err(Error::Invalid("当前产物根不存在".into()));
+        return Err(Error::Invalid(
+            "当前产物根不存在 / Current artifact root does not exist".into(),
+        ));
     }
     Ok(())
 }
@@ -82,7 +88,9 @@ pub fn read_current_build(store: &ConfigStore, id: &str) -> Result<CurrentBuild>
             .map_err(|e| Error::Invalid(e.to_string()))?;
     version_id(&current.version)?;
     if current.schema_version != 1 || current.system_id != id {
-        return Err(Error::Invalid("当前产物引用身份不匹配".into()));
+        return Err(Error::Invalid(
+            "当前产物引用身份不匹配 / Current artifact reference identity mismatch".into(),
+        ));
     }
     validate_state(&system, &current)?;
     Ok(current)
@@ -130,17 +138,22 @@ pub(super) fn check_retained(store: &ConfigStore, id: &str, selected: &[String])
             || value.get("system_id").and_then(|v| v.as_str()) != Some(id)
             || value.get("version").and_then(|v| v.as_str()).is_none()
         {
-            return Err(Error::Invalid(format!("引用记录无效: {}", path.display())));
+            return Err(Error::Invalid(format!(
+                "引用记录无效: {0} / Invalid reference record: {0}",
+                path.display()
+            )));
         }
         for key in ["version", "previous_version"] {
             if let Some(raw) = value.get(key) {
-                let version = raw
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("引用版本必须为字符串".into()))?;
+                let version = raw.as_str().ok_or_else(|| {
+                    Error::Invalid(
+                        "引用版本必须为字符串 / Referenced version must be a string".into(),
+                    )
+                })?;
                 version_id(version)?;
                 if selected.iter().any(|v| v == version) {
                     return Err(Error::Invalid(format!(
-                        "不能清理被 {} 引用的版本 {version}",
+                        "不能清理被 {0} 引用的版本 {version} / Cannot clean version {version} referenced by {0}",
                         path.display()
                     )));
                 }

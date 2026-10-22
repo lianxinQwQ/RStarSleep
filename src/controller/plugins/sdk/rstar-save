@@ -5,5 +5,5 @@ from rstar import save
 try:
     save()
 except Exception as error:
-    print(f"RStarSleep save: {error}", file=sys.stderr)
+    print(f'RStarSleep 保存失败 / RStarSleep save failed: {error}', file=sys.stderr)
     sys.exit(1)

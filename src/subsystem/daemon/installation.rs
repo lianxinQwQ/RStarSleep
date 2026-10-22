@@ -7,11 +7,11 @@ use super::*;
 /// # Arguments
 /// - `path`: Literal UTF-8 path. 字面 UTF-8 路径。
 pub(super) fn argument(path: &Path) -> Result<String> {
-    let s = path
-        .to_str()
-        .ok_or_else(|| Error::Invalid("service paths must be UTF-8".into()))?;
+    let s = path.to_str().ok_or_else(|| {
+        Error::Invalid("服务路径必须为 UTF-8 / service paths must be UTF-8".into())
+    })?;
     if s.chars().any(char::is_control) {
-        return Err(Error::Invalid("invalid service path".into()));
+        return Err(Error::Invalid("服务路径无效 / invalid service path".into()));
     }
     Ok(format!(
         "\"{}\"",
@@ -61,7 +61,9 @@ pub fn install(store: &ConfigStore) -> Result<()> {
         .status
         .success()
     {
-        return Err(Error::Invalid("daemon-reload failed".into()));
+        return Err(Error::Invalid(
+            "daemon-reload 失败 / daemon-reload failed".into(),
+        ));
     }
     println!("{}\nsystemctl enable --now {unit}", path.display());
     Ok(())

@@ -219,7 +219,7 @@ pub fn build_with_backend_and_warning(
                 return Err(error);
             }
             failures.push(format!(
-                "预下载 {}: {error}",
+                "预下载 {0} / Predownload {0}: {error}",
                 prepared[indices[0]].plugin.metadata.id
             ));
         }
@@ -240,7 +240,9 @@ pub fn build_with_backend_and_warning(
             Err(archive) => {
                 let error = match built {
                     Ok(_) => archive,
-                    Err(error) => Error::Invalid(format!("{error}; 安装日志归档失败: {archive}")),
+                    Err(error) => Error::Invalid(format!(
+                        "{error}; 安装日志归档失败: {archive} / {error}; installation-log archiving failed: {archive}"
+                    )),
                 };
                 Err(error)
             }
@@ -255,7 +257,7 @@ pub fn build_with_backend_and_warning(
             )
         {
             return Err(Error::Invalid(format!(
-                "{error}; 失败记录写入失败: {record_error}"
+                "{error}; 失败记录写入失败: {record_error} / {error}; writing the failure record failed: {record_error}"
             )));
         }
         match built {
@@ -322,7 +324,7 @@ fn check_workspace(store: &ConfigStore, work: &Path) -> Result<()> {
     ] {
         if work.starts_with(&path) || path.starts_with(work) {
             return Err(Error::Invalid(format!(
-                "work_dir 必须独立于管理配置、插件、持久数据和系统记录: {}",
+                "work_dir 必须独立于管理配置、插件、持久数据和系统记录: {0} / work_dir must be separate from management configuration, plugins, persistent data, and system records: {0}",
                 work.display()
             )));
         }
@@ -424,7 +426,7 @@ fn collect_plan(
                 .metadata
                 .package_plan
                 .as_ref()
-                .expect("package-plan groups contain only capable plugins");
+                .expect("package-plan 分组仅包含具备相应能力的插件 / package-plan groups contain only capable plugins");
             let mut targets: std::collections::BTreeSet<_> =
                 value.config.packages.iter().cloned().collect();
             targets.extend(requirements.base_packages.iter().cloned());
@@ -479,7 +481,7 @@ fn check_system(
     let plugin = plugins::find(&store.plugins_path(), &config.system_type, &architecture)?;
     if deduplicate_packages && !plugin.metadata.query_package_files {
         return Err(Error::Invalid(format!(
-            "系统 {id} 开启 DeduplicatePackages，但插件 {} 未声明 query_package_files",
+            "系统 {id} 开启 DeduplicatePackages，但插件 {0} 未声明 query_package_files / System {id} enables DeduplicatePackages, but plugin {0} does not declare query_package_files",
             plugin.metadata.id
         )));
     }
@@ -619,8 +621,11 @@ fn collect_plans(
                         schema_version: u32,
                         systems: std::collections::BTreeMap<String, serde_json::Value>,
                     }
-                    let mut response: Plans = serde_json::from_str(&output)
-                        .map_err(|e| Error::Invalid(format!("软件下载计划返回无效: {e}")))?;
+                    let mut response: Plans = serde_json::from_str(&output).map_err(|e| {
+                        Error::Invalid(format!(
+                            "软件下载计划返回无效 / Invalid software download plan: {e}"
+                        ))
+                    })?;
                     if response.schema_version != 1
                         || response
                             .systems
@@ -628,7 +633,7 @@ fn collect_plans(
                             .map(String::as_str)
                             .ne(systems.keys().map(|id| id.as_str()))
                     {
-                        return Err(Error::Invalid("软件下载计划的版本或系统集合不符".into()));
+                        return Err(Error::Invalid("软件下载计划的版本或系统集合不符 / Software download plan version or system set mismatch".into()));
                     }
                     let mut plans = Vec::new();
                     for &index in indices {
@@ -677,7 +682,9 @@ fn collect_plans(
                 for &index in indices {
                     failures.push((
                         index,
-                        Error::Invalid(format!("软件包收集环境失败: {error}")),
+                        Error::Invalid(format!(
+                            "软件包收集环境失败 / Package collection environment failed: {error}"
+                        )),
                     ));
                 }
             }
@@ -840,14 +847,14 @@ fn validate_boot_capabilities(
     }
     if plugin.metadata.boot.is_none() {
         return Err(Error::Invalid(format!(
-            "主系统 {id} 的插件 {} 未声明通用启动要求 [boot]",
+            "主系统 {id} 的插件 {0} 未声明通用启动要求 [boot] / Plugin {0} for primary system {id} does not declare general boot requirements [boot]",
             plugin.metadata.id
         )));
     }
     if !inheritance.copy_on_write_boot.is_empty() {
         if plugin.metadata.initramfs_inheritance.is_none() {
             return Err(Error::Invalid(format!(
-                "主系统 {id} 启用启动时 CoW 继承，但插件 {} 未声明 [initramfs_inheritance] 要求",
+                "主系统 {id} 启用启动时 CoW 继承，但插件 {0} 未声明 [initramfs_inheritance] 要求 / Primary system {id} enables boot-time CoW inheritance, but plugin {0} does not declare [initramfs_inheritance] requirements",
                 plugin.metadata.id
             )));
         }
@@ -855,7 +862,7 @@ fn validate_boot_capabilities(
     }
     if plugin.metadata.package_plan.is_none() {
         return Err(Error::Invalid(format!(
-            "主系统 {id} 的插件 {} 未声明 [package_plan]，无法收集目标软件包并检查启动要求",
+            "主系统 {id} 的插件 {0} 未声明 [package_plan]，无法收集目标软件包并检查启动要求 / Plugin {0} for primary system {id} does not declare [package_plan]; cannot collect target packages or check boot requirements",
             plugin.metadata.id
         )));
     }
@@ -874,14 +881,14 @@ fn validate_boot_packages(
     }
     require_planned_packages(
         id,
-        "通用启动",
+        ("通用启动", "general boot"),
         &plugin.metadata.boot.as_ref().unwrap().packages,
         packages,
     )?;
     if !inheritance.copy_on_write_boot.is_empty() {
         require_planned_packages(
             id,
-            "启动时 CoW 继承",
+            ("启动时 CoW 继承", "boot-time CoW inheritance"),
             &plugin
                 .metadata
                 .initramfs_inheritance
@@ -896,7 +903,7 @@ fn validate_boot_packages(
 
 fn require_planned_packages(
     id: &str,
-    flow: &str,
+    (flow_zh, flow_en): (&str, &str),
     required: &[String],
     planned: &[String],
 ) -> Result<()> {
@@ -907,7 +914,7 @@ fn require_planned_packages(
         .collect();
     if !missing.is_empty() {
         return Err(Error::Invalid(format!(
-            "系统 {id} 的{flow}要求未满足：展开软件组、基础包和运行依赖后的目标安装计划缺少 {}（由插件元数据声明）；请调整 Packages 后重新构建",
+            "系统 {id} 的{flow_zh}要求未满足：展开软件组、基础包和运行依赖后的目标安装计划缺少 {0}（由插件元数据声明）；请调整 Packages 后重新构建 / System {id} does not meet its {flow_en} requirements: after expanding package groups, base packages, and runtime dependencies, the target installation plan lacks {0} as declared by plugin metadata; adjust Packages and rebuild",
             missing.join(", ")
         )));
     }
@@ -955,7 +962,7 @@ fn build_system(
         let (base, packages) = previous_caches(attempt, &identity, loaded, backend)?;
         if fs::exists(&scratch)? {
             return Err(Error::Invalid(format!(
-                "构建工作目录已存在: {}",
+                "构建工作目录已存在: {0} / Build working directory already exists: {0}",
                 scratch.display()
             )));
         }
@@ -1019,7 +1026,7 @@ fn build_system(
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(cleanup)) => Err(Error::Invalid(format!(
-            "{error}; 工作根清理失败: {cleanup}"
+            "{error}; 工作根清理失败: {cleanup} / {error}; working-root cleanup failed: {cleanup}"
         ))),
     };
     let result = result.and_then(|(outcome, source)| {

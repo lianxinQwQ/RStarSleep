@@ -2,7 +2,7 @@
 build() {
     local runtime=/usr/lib/rstarsleep/early-runtime file name
     [[ -x "$runtime/bin/rstarsleep" && -x "$runtime/run-rstarsleep" ]] || {
-        error 'RStarSleep runtime is incomplete'; return 1;
+        error 'RStarSleep 运行时不完整 / RStarSleep runtime is incomplete'; return 1;
     }
     add_module btrfs || return 1
     for name in cp btrfs mount findmnt mkdir sleep; do

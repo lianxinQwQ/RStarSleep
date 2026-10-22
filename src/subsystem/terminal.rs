@@ -35,7 +35,7 @@ impl TerminalGuard {
     pub fn acquire(raw: bool) -> io::Result<Self> {
         let owner = OWNER
             .try_lock()
-            .map_err(|_| io::Error::other("another execution owns terminal signal handlers"))?;
+            .map_err(|_| io::Error::other("另一个执行任务占用了终端信号处理器 / another execution owns terminal signal handlers"))?;
         let mut guard = Self {
             original: None,
             signals: Vec::new(),

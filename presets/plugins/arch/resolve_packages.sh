@@ -32,11 +32,11 @@ resolve_packages() {
                 :
             else
                 status=$?
-                log "Cannot resolve package or group: $target"
+                log "无法解析软件包或软件包组：$target / Cannot resolve package or group: $target"
                 return "$status"
             fi
         fi
-        [[ -n $members ]] || { log "No packages resolved for target: $target"; return 1; }
+        [[ -n $members ]] || { log "未解析出目标的软件包：$target / No packages resolved for target: $target"; return 1; }
         while IFS= read -r package; do
             validate_packages "$package" || return $?
             if [[ -z ${seen[$package]:-} ]]; then

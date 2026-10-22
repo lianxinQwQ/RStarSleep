@@ -113,7 +113,9 @@ pub(super) fn lock_system(layout: &SystemLayout) -> Result<Lock> {
 pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
     disk::checked(root)?;
     if !root.is_dir() {
-        return Err(Error::Invalid("系统未初始化".into()));
+        return Err(Error::Invalid(
+            "系统未初始化 / System is not initialized".into(),
+        ));
     }
     let lock_path = root.join("build.lock");
     disk::checked(&lock_path)?;
@@ -124,8 +126,11 @@ pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
         .write(true)
         .open(&lock_path)
         .map_err(|e| disk::io(&lock_path, e))?;
-    lock.try_lock()
-        .map_err(|e| Error::Invalid(format!("无法取得系统构建锁: {e}")))?;
+    lock.try_lock().map_err(|e| {
+        Error::Invalid(format!(
+            "无法取得系统构建锁 / Cannot acquire the system build lock: {e}"
+        ))
+    })?;
     Ok(lock)
 }
 
@@ -150,16 +155,20 @@ impl Attempt {
                 && !number.is_empty()
                 && number.bytes().all(|b| b.is_ascii_digit())
             {
-                let number = number
-                    .parse::<u64>()
-                    .map_err(|_| Error::Invalid(format!("版本序号溢出: {text}")))?;
+                let number = number.parse::<u64>().map_err(|_| {
+                    Error::Invalid(format!(
+                        "版本序号溢出: {text} / Version sequence number overflow: {text}"
+                    ))
+                })?;
                 disk::checked(&entry.path())?;
                 if !entry
                     .file_type()
                     .map_err(|e| disk::io(&entry.path(), e))?
                     .is_dir()
                 {
-                    return Err(Error::Invalid(format!("版本记录不是目录: {text}")));
+                    return Err(Error::Invalid(format!(
+                        "版本记录不是目录: {text} / Version record is not a directory: {text}"
+                    )));
                 }
                 if number > highest {
                     highest = number;
@@ -173,12 +182,14 @@ impl Attempt {
                 .map_err(|e| disk::io(&counter, e))?
                 .trim()
                 .parse::<u64>()
-                .map_err(|e| Error::Invalid(format!("版本计数无效: {e}")))?;
+                .map_err(|e| {
+                    Error::Invalid(format!("版本计数无效 / Invalid version count: {e}"))
+                })?;
             highest = highest.max(saved);
         }
-        let next = highest
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("版本序号耗尽".into()))?;
+        let next = highest.checked_add(1).ok_or_else(|| {
+            Error::Invalid("版本序号耗尽 / Version sequence numbers exhausted".into())
+        })?;
         disk::write_text(&counter, &next.to_string())?;
         let version = format!("v{next:08}");
         let directory = layout.versions.join(&version);
@@ -222,8 +233,11 @@ pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<Lock> {
         .write(true)
         .open(&path)
         .map_err(|e| disk::io(&path, e))?;
-    lock.try_lock()
-        .map_err(|e| Error::Invalid(format!("无法取得继承事务锁: {e}")))?;
+    lock.try_lock().map_err(|e| {
+        Error::Invalid(format!(
+            "无法取得继承事务锁 / Cannot acquire the inheritance transaction lock: {e}"
+        ))
+    })?;
     Ok(Lock(lock))
 }
 

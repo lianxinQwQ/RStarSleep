@@ -53,16 +53,18 @@ pub(super) fn prepare(
     source_root: Option<&InheritanceRoot>,
 ) -> Result<()> {
     let (uuid, prepared_root) = backend.filesystem_location(prepared)?;
-    let directory = prepared
-        .parent()
-        .ok_or_else(|| Error::Invalid("准备根没有父目录".into()))?;
+    let directory = prepared.parent().ok_or_else(|| {
+        Error::Invalid("准备根没有父目录 / Preparation root has no parent directory".into())
+    })?;
     let (_, final_root) = backend.filesystem_location(directory)?;
     let manager = directory
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("准备版本缺少管理根".into()))?;
+        .ok_or_else(|| {
+            Error::Invalid("准备版本缺少管理根 / Prepared version has no management root".into())
+        })?;
     let _pins_lock = super::records::lock_inheritance(manager)?;
     // Never inspect configured sources here: missing paths and today's mount overlays
     // do not describe the clean source tree that will be available at first boot.
@@ -82,7 +84,7 @@ pub(super) fn prepare(
         version: directory
             .file_name()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| Error::Invalid("版本号无效".into()))?
+            .ok_or_else(|| Error::Invalid("版本号无效 / Invalid version number".into()))?
             .into(),
         filesystem_uuid: uuid,
         prepared_subvolume_id: backend.source_subvolume_id(prepared)?,
@@ -102,7 +104,9 @@ fn validate_top_location(location: &Path) -> Result<()> {
             .components()
             .any(|p| !matches!(p, Component::RootDir | Component::Normal(_)))
     {
-        return Err(Error::Invalid("继承清单中的文件系统路径无效".into()));
+        return Err(Error::Invalid(
+            "继承清单中的文件系统路径无效 / Invalid filesystem path in inheritance manifest".into(),
+        ));
     }
     Ok(())
 }
@@ -120,22 +124,32 @@ pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
         .map_err(|e| disk::io(path, e))?
         .is_file()
     {
-        return Err(Error::Invalid("待继承清单必须为普通文件".into()));
+        return Err(Error::Invalid(
+            "待继承清单必须为普通文件 / Pending inheritance manifest must be a regular file".into(),
+        ));
     }
     let text = fs::read_to_string(path).map_err(|e| disk::io(path, e))?;
     let manifest: PendingInheritance =
         toml::from_str(&text).map_err(|e| Error::Invalid(e.to_string()))?;
     if !matches!(manifest.schema_version, 1 | 2) || manifest.sources.is_empty() {
-        return Err(Error::Invalid("待继承清单格式或来源无效".into()));
+        return Err(Error::Invalid(
+            "待继承清单格式或来源无效 / Invalid pending inheritance manifest format or source"
+                .into(),
+        ));
     }
     if manifest.schema_version == 1 && manifest.source_root.is_some() {
-        return Err(Error::Invalid("旧继承清单不能指定来源根".into()));
+        return Err(Error::Invalid(
+            "旧继承清单不能指定来源根 / Legacy inheritance manifest cannot specify a source root"
+                .into(),
+        ));
     }
     if manifest.schema_version == 2 {
         if let Some(root) = &manifest.source_root {
             validate_top_location(&root.path)?;
             if root.filesystem_uuid.is_empty() || root.subvolume_id.is_empty() {
-                return Err(Error::Invalid("来源根身份无效".into()));
+                return Err(Error::Invalid(
+                    "来源根身份无效 / Invalid source root identity".into(),
+                ));
             }
         }
         for source in &manifest.sources {
@@ -144,13 +158,13 @@ pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
             if source.path.as_os_str() != source.target.as_os_str()
                 || !source.subvolume_id.is_empty()
             {
-                return Err(Error::Invalid("启动清单必须保留配置原路径".into()));
+                return Err(Error::Invalid("启动清单必须保留配置原路径 / Boot manifest must retain the original configured paths".into()));
             }
         }
     }
     if manifest.nocow_handling == NocowHandling::MoveSnapshot && !manifest.directory_subvolume {
         return Err(Error::Invalid(
-            "move-snapshot 清单要求 DirectorySubvolume=yes".into(),
+            "move-snapshot 清单要求 DirectorySubvolume=yes / move-snapshot manifest requires DirectorySubvolume=yes".into(),
         ));
     }
     crate::config::validate_identifier(&manifest.system_id)?;
@@ -158,7 +172,9 @@ pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
         || manifest.version.len() < 2
         || !manifest.version[1..].bytes().all(|b| b.is_ascii_digit())
     {
-        return Err(Error::Invalid("待继承版本号无效".into()));
+        return Err(Error::Invalid(
+            "待继承版本号无效 / Invalid pending inheritance version number".into(),
+        ));
     }
     Ok(manifest)
 }
@@ -178,7 +194,12 @@ pub fn finalize_inheritance_with_backend(
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("待继承清单缺少系统目录".into()))?;
+        .ok_or_else(|| {
+            Error::Invalid(
+                "待继承清单缺少系统目录 / Pending inheritance manifest has no system directory"
+                    .into(),
+            )
+        })?;
     let _lock = super::records::lock_directory(system)?;
     finalize_inheritance_locked(manifest_path, filesystem_root, backend)
 }
@@ -206,40 +227,44 @@ pub fn finalize_inheritance_locked(
     let (uuid, _) = backend.filesystem_location(filesystem_root)?;
     if uuid != manifest.filesystem_uuid {
         return Err(Error::Invalid(
-            "待继承清单与挂载文件系统 UUID 不匹配".into(),
+            "待继承清单与挂载文件系统 UUID 不匹配 / Pending inheritance manifest does not match the mounted filesystem UUID".into(),
         ));
     }
     let prepared = top_path(filesystem_root, &manifest.prepared_root)?;
     let final_root = top_path(filesystem_root, &manifest.final_root)?;
-    let directory = manifest_path
-        .parent()
-        .ok_or_else(|| Error::Invalid("清单缺少父目录".into()))?;
+    let directory = manifest_path.parent().ok_or_else(|| {
+        Error::Invalid("清单缺少父目录 / Manifest has no parent directory".into())
+    })?;
     if prepared != directory.join("prepared-root")
         || final_root != directory.join("root")
         || directory.file_name().and_then(|p| p.to_str()) != Some(&manifest.version)
     {
         return Err(Error::Invalid(
-            "清单必须与其准备根及最终根位于同一版本目录".into(),
+            "清单必须与其准备根及最终根位于同一版本目录 / Manifest must reside in the same version directory as its preparation root and final root".into(),
         ));
     }
-    let system = directory
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("待继承版本缺少系统目录".into()))?;
+    let system = directory.parent().and_then(Path::parent).ok_or_else(|| {
+        Error::Invalid(
+            "待继承版本缺少系统目录 / Pending inheritance version has no system directory".into(),
+        )
+    })?;
     if system.file_name().and_then(|s| s.to_str()) != Some(&manifest.system_id) {
-        return Err(Error::Invalid("清单系统身份不匹配".into()));
+        return Err(Error::Invalid(
+            "清单系统身份不匹配 / Manifest system identity mismatch".into(),
+        ));
     }
-    let manager = system
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("继承系统缺少管理根".into()))?;
+    let manager = system.parent().and_then(Path::parent).ok_or_else(|| {
+        Error::Invalid("继承系统缺少管理根 / Inheritance system has no management root".into())
+    })?;
     let _pins_lock = super::records::lock_inheritance(manager)?;
     let state_path = directory.join("state.toml");
     let state_text = fs::read_to_string(&state_path).map_err(|e| disk::io(&state_path, e))?;
     let state: toml::Value =
         toml::from_str(&state_text).map_err(|e| Error::Invalid(e.to_string()))?;
     if state.get("state").and_then(|v| v.as_str()) == Some("cancelled") {
-        return Err(Error::Invalid("此版本的继承任务已取消".into()));
+        return Err(Error::Invalid(
+            "此版本的继承任务已取消 / Inheritance task for this version has been canceled".into(),
+        ));
     }
     let digest = format!(
         "{:x}",
@@ -263,7 +288,9 @@ pub fn finalize_inheritance_locked(
     }
     backend.check_subvolume(&prepared, true)?;
     if backend.source_subvolume_id(&prepared)? != manifest.prepared_subvolume_id {
-        return Err(Error::Invalid("准备根子卷身份已改变".into()));
+        return Err(Error::Invalid(
+            "准备根子卷身份已改变 / Preparation root subvolume identity has changed".into(),
+        ));
     }
     let staging = directory.join("inheritance-staging");
     if disk::exists(&staging)? {
@@ -271,16 +298,19 @@ pub fn finalize_inheritance_locked(
     }
     let source_root = if manifest.schema_version == 2 {
         let root = manifest.source_root.as_ref().ok_or_else(|| {
-            Error::Invalid("构建时无法固定启动继承来源根，请在 Btrfs 来源根环境重新构建".into())
+            Error::Invalid("构建时无法固定启动继承来源根，请在 Btrfs 来源根环境重新构建 / Cannot pin the boot inheritance source root during build; rebuild in the Btrfs source-root environment".into())
         })?;
         if root.filesystem_uuid != manifest.filesystem_uuid {
             return Err(Error::Invalid(
-                "启动继承来源根与目标 Btrfs UUID 不一致".into(),
+                "启动继承来源根与目标 Btrfs UUID 不一致 / Boot inheritance source root and target Btrfs UUIDs do not match".into(),
             ));
         }
         let path = top_path(filesystem_root, &root.path)?;
         if !path.is_dir() || backend.source_subvolume_id(&path)? != root.subvolume_id {
-            return Err(Error::Invalid("启动继承来源根身份已改变".into()));
+            return Err(Error::Invalid(
+                "启动继承来源根身份已改变 / Boot inheritance source root identity has changed"
+                    .into(),
+            ));
         }
         Some(path)
     } else {
@@ -297,7 +327,7 @@ pub fn finalize_inheritance_locked(
             top_path(filesystem_root, &source.path)?
         };
         if path.starts_with(directory) || directory.starts_with(&path) {
-            return Err(Error::Invalid("继承来源与候选版本存储重叠".into()));
+            return Err(Error::Invalid("继承来源与候选版本存储重叠 / Inheritance source overlaps candidate version storage".into()));
         }
         let info = fs::symlink_metadata(&path).map_err(|e| disk::io(&path, e))?;
         validate_inheritance_type(&source.target, info.is_dir())?;
@@ -320,7 +350,7 @@ pub fn finalize_inheritance_locked(
             || !identity_valid
         {
             return Err(Error::Invalid(format!(
-                "来源类型或子卷身份已改变: {}",
+                "来源类型或子卷身份已改变: {0} / Source type or subvolume identity has changed: {0}",
                 source.target.display()
             )));
         }
@@ -411,7 +441,7 @@ fn verify_commit(
         || receipt.root_subvolume_id != backend.source_subvolume_id(root)?
     {
         return Err(Error::Invalid(
-            "最终根与继承提交记录不匹配，拒绝继续启动".into(),
+            "最终根与继承提交记录不匹配，拒绝继续启动 / Final root does not match the inheritance commit record; refusing to continue booting".into(),
         ));
     }
     for (child, _) in &receipt.children {
@@ -420,7 +450,9 @@ fn verify_commit(
                 .components()
                 .any(|p| !matches!(p, Component::Normal(_)))
         {
-            return Err(Error::Invalid("提交记录子卷路径无效".into()));
+            return Err(Error::Invalid(
+                "提交记录子卷路径无效 / Invalid subvolume path in commit record".into(),
+            ));
         }
     }
     // Completed roots can change during normal use; recovery still verifies the full published tree.
@@ -434,13 +466,16 @@ fn verify_commit(
     expected.sort();
     if actual != expected {
         return Err(Error::Invalid(
-            "最终根与继承提交记录不匹配，拒绝继续启动".into(),
+            "最终根与继承提交记录不匹配，拒绝继续启动 / Final root does not match the inheritance commit record; refusing to continue booting".into(),
         ));
     }
     for (child, id) in receipt.children {
         backend.check_subvolume(&root.join(&child), false)?;
         if backend.source_subvolume_id(&root.join(child))? != id {
-            return Err(Error::Invalid("最终根内部子卷身份已改变".into()));
+            return Err(Error::Invalid(
+                "最终根内部子卷身份已改变 / Subvolume identity inside the final root has changed"
+                    .into(),
+            ));
         }
     }
     Ok(())

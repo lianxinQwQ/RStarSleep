@@ -68,10 +68,9 @@ pub(super) fn freeze(
 ) -> Result<FrozenBuild> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
-    let manager = system
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("继承缺少管理根".into()))?;
+    let manager = system.parent().and_then(Path::parent).ok_or_else(|| {
+        Error::Invalid("继承缺少管理根 / Inheritance has no management root".into())
+    })?;
     let _migration_lock = if config.nocow_handling == NocowHandling::MoveSnapshot {
         Some(super::records::lock_inheritance(manager)?)
     } else {
@@ -262,7 +261,7 @@ fn hash(
         digest.update(info.rdev().to_le_bytes());
     } else {
         return Err(Error::Invalid(format!(
-            "不能缓存继承条目: {}",
+            "不能缓存继承条目: {0} / Cannot cache inheritance entry: {0}",
             path.display()
         )));
     }
@@ -276,7 +275,7 @@ fn hash(
 /// - `digest`: Accumulated hash state. 累积摘要状态。
 fn hash_xattrs(path: &Path, digest: &mut Sha256) -> Result<()> {
     let native = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| Error::Invalid("继承路径包含 NUL".into()))?;
+        .map_err(|_| Error::Invalid("继承路径包含 NUL / Inheritance path contains NUL".into()))?;
     // SAFETY: native is NUL-terminated and the first call passes no output buffer.
     let size = unsafe { libc::llistxattr(native.as_ptr(), std::ptr::null_mut(), 0) };
     if size < 0 {

@@ -38,7 +38,9 @@ struct Context {
 /// - `runtime`, `uid`: Runtime policy and kernel-authenticated UID. 运行策略和内核认证 UID。
 fn authorize(runtime: &PreparedRuntime, uid: u32) -> Result<()> {
     if !runtime.config.allows(uid) {
-        return Err(Error::Invalid("subsystem session access denied".into()));
+        return Err(Error::Invalid(
+            "子系统会话访问被拒绝 / subsystem session access denied".into(),
+        ));
     }
     Ok(())
 }
@@ -61,7 +63,7 @@ pub fn refresh(
     }
     let mut sessions = SESSIONS
         .lock()
-        .map_err(|_| Error::Invalid("session lock poisoned".into()))?;
+        .map_err(|_| Error::Invalid("会话锁损坏 / session lock poisoned".into()))?;
     let context = context(runtime)?;
     let mut resources = resources(uid, environment)?;
     let result = (|| -> Result<()> {
@@ -156,7 +158,9 @@ pub fn command_arguments(
                     .strip_prefix(&host)
                     .ok()
                     .and_then(|p| p.to_str())
-                    .ok_or_else(|| Error::Invalid("invalid Wayland path".into()))?
+                    .ok_or_else(|| {
+                        Error::Invalid("Wayland 路径无效 / invalid Wayland path".into())
+                    })?
             } else {
                 value
             };
@@ -176,7 +180,7 @@ pub fn command_arguments(
         }
         let sessions = SESSIONS
             .lock()
-            .map_err(|_| Error::Invalid("session lock poisoned".into()))?;
+            .map_err(|_| Error::Invalid("会话锁损坏 / session lock poisoned".into()))?;
         if let Some(paths) = sessions.get(&(runtime.machine.clone(), uid)) {
             if paths.contains_key(&host.join("pulse/native")) {
                 values.insert(
@@ -215,7 +219,7 @@ pub fn command_arguments(
 pub fn cleanup(runtime: &PreparedRuntime) -> Result<()> {
     SESSIONS
         .lock()
-        .map_err(|_| Error::Invalid("session lock poisoned".into()))?
+        .map_err(|_| Error::Invalid("会话锁损坏 / session lock poisoned".into()))?
         .retain(|(machine, _), _| machine != &runtime.machine);
     bus::cleanup_proxies(runtime)
 }
@@ -245,7 +249,7 @@ pub fn validate_files(runtime: &PreparedRuntime, args: &[String]) -> Result<()> 
     for path in paths {
         if !path.starts_with('/') || path.contains('%') {
             return Err(Error::Invalid(
-                "local file URLs must use an absolute unencoded guest path".into(),
+                "本地文件 URL 必须使用未编码的客体绝对路径 / local file URLs must use an absolute unencoded guest path".into(),
             ));
         }
         for mount in &runtime.config.mounts {
@@ -253,13 +257,13 @@ pub fn validate_files(runtime: &PreparedRuntime, args: &[String]) -> Result<()> 
                 let mapped = mount.target.join(relative);
                 if mapped != Path::new(path) {
                     return Err(Error::Invalid(format!(
-                        "host file is mounted under another guest path; pass {} instead of {path}",
+                        "宿主文件已挂载到其他客体路径，请传入 {0} 而不是 {path} / host file is mounted under another guest path; pass {0} instead of {path}",
                         mapped.display()
                     )));
                 }
             }
         }
-        open_at_guest(&context.root, Path::new(path), libc::O_PATH).map_err(|_|Error::Invalid(format!("file is not visible in subsystem {}; configure a runtime mount or use its guest path: {path}", runtime.system_id)))?;
+        open_at_guest(&context.root, Path::new(path), libc::O_PATH).map_err(|_|Error::Invalid(format!("文件在子系统 {0} 中不可见，请配置运行时挂载或使用其客体路径: {path} / file is not visible in subsystem {0}; configure a runtime mount or use its guest path: {path}", runtime.system_id)))?;
     }
     Ok(())
 }

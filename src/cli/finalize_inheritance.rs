@@ -11,20 +11,22 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
             &mut top
         } else {
             return Err(
-                "用法：finalize-inheritance --manifest <清单> --filesystem-root <Btrfs 顶层挂载>"
+                "用法：finalize-inheritance --manifest <清单> --filesystem-root <Btrfs 顶层挂载> / Usage: finalize-inheritance --manifest <manifest> --filesystem-root <Btrfs-top-level-mount>"
                     .into(),
             );
         };
         if destination.is_some() {
-            return Err("继承启动参数不能重复".into());
+            return Err(
+                "继承启动参数不能重复 / inheritance startup arguments must not be repeated".into(),
+            );
         }
-        *destination = Some(PathBuf::from(
-            arguments.next().ok_or("继承启动参数缺少路径")?,
-        ));
+        *destination = Some(PathBuf::from(arguments.next().ok_or(
+            "继承启动参数缺少路径 / inheritance startup argument is missing a path",
+        )?));
     }
     crate::controller::finalize_inheritance(
-        &manifest.ok_or("缺少 --manifest")?,
-        &top.ok_or("缺少 --filesystem-root")?,
+        &manifest.ok_or("缺少 --manifest / missing --manifest")?,
+        &top.ok_or("缺少 --filesystem-root / missing --filesystem-root")?,
     )?;
     Ok(())
 }

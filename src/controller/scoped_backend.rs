@@ -171,7 +171,9 @@ impl<B: BuildBackend> ScopedBackend<'_, B> {
         let mut save_failure = None;
         let mut save = || {
             if let Some(error) = &save_failure {
-                return Err(Error::Invalid(format!("此前保存失败: {error}")));
+                return Err(Error::Invalid(format!(
+                    "此前保存失败 / Previous save failed: {error}"
+                )));
             }
             let result = progress::run(
                 &context.system_id,
@@ -188,7 +190,9 @@ impl<B: BuildBackend> ScopedBackend<'_, B> {
             .backend
             .invoke_with_save(plugin, operation, args, root, &context, &mut save);
         let result = match save_failure {
-            Some(error) => Err(Error::Invalid(format!("插件持久卷保存失败: {error}"))),
+            Some(error) => Err(Error::Invalid(format!(
+                "插件持久卷保存失败 / failed to save plugin persistent volume: {error}"
+            ))),
             None => result,
         };
         match result {
@@ -211,7 +215,7 @@ impl<B: BuildBackend> ScopedBackend<'_, B> {
             ) {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(Error::Invalid(format!(
-                    "{error}; 持久副本回滚失败: {cleanup}"
+                    "{error}; 持久副本回滚失败: {cleanup} / {error}; persistent-copy rollback failed: {cleanup}"
                 ))),
             },
         }

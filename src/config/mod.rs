@@ -53,7 +53,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// A filesystem operation failed.
     /// 文件系统操作失败。
-    #[error("无法访问 {path}: {source}")]
+    #[error("无法访问 {path} / cannot access {path}: {source}")]
     Io {
         /// Path involved in the failed operation.
         /// 失败操作涉及的路径。
@@ -65,7 +65,7 @@ pub enum Error {
     },
     /// A configuration file is not valid TOML or has incompatible field types.
     /// 配置文件不是有效的 TOML，或字段类型不兼容。
-    #[error("无法解析 {path}: {source}")]
+    #[error("无法解析 {path} / cannot parse {path}: {source}")]
     Parse {
         /// Configuration file that could not be parsed.
         /// 无法解析的配置文件路径。
@@ -77,7 +77,7 @@ pub enum Error {
     },
     /// An INI build configuration has invalid syntax or a missing or invalid value.
     /// INI 构建配置的语法错误，或值缺失、无效。
-    #[error("无法解析 {path}:{line}: {message}")]
+    #[error("无法解析 {path}:{line} / cannot parse {path}:{line}: {message}")]
     Ini {
         /// Source configuration path.
         /// 源配置路径。
@@ -91,11 +91,11 @@ pub enum Error {
     },
     /// A path, identifier, prerequisite, or package value failed validation.
     /// 路径、标识、前置条件或软件包值未通过校验。
-    #[error("配置无效: {0}")]
+    #[error("配置无效 / invalid configuration: {0}")]
     Invalid(String),
     /// A Btrfs command could not run, failed, or returned an unexpected tree ID.
     /// Btrfs 命令无法启动、执行失败，或返回了不符合要求的树标识。
-    #[error("Btrfs 操作失败: {0}")]
+    #[error("Btrfs 操作失败 / Btrfs operation failed: {0}")]
     Btrfs(String),
 }
 
@@ -131,7 +131,7 @@ pub(crate) fn validate_identifier(id: &str) -> Result<()> {
         || !bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
     {
         return Err(Error::Invalid(format!(
-            "标识 {id:?} 必须以 ASCII 字母或数字开头，其余字符只能为字母、数字、点、下划线或连字符"
+            "标识 {id:?} 必须以 ASCII 字母或数字开头，其余字符只能为字母、数字、点、下划线或连字符 / identifier {id:?} must begin with an ASCII letter or digit; remaining characters may only be letters, digits, dots, underscores, or hyphens"
         )));
     }
     Ok(())

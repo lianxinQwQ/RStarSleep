@@ -20,7 +20,7 @@ fn entries(path: &Path) -> Result<Vec<fs::DirEntry>> {
         .is_dir()
     {
         return Err(Error::Invalid(format!(
-            "资源根必须是普通目录: {}",
+            "资源根必须是普通目录: {0} / Resource root must be a regular directory: {0}",
             path.display()
         )));
     }
@@ -71,11 +71,13 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             #[cfg(unix)]
             std::os::unix::fs::symlink(link, &target).map_err(|e| disk::io(&target, e))?;
             #[cfg(not(unix))]
-            return Err(Error::Invalid("此平台不支持资源链接".into()));
+            return Err(Error::Invalid(
+                "此平台不支持资源链接 / This platform does not support resource links".into(),
+            ));
             continue;
         } else {
             return Err(Error::Invalid(format!(
-                "不支持的资源条目: {}",
+                "不支持的资源条目: {0} / Unsupported resource entry: {0}",
                 path.display()
             )));
         }
@@ -158,7 +160,7 @@ fn hash(root: &Path, relative: &Path, digest: &mut Sha256) -> Result<()> {
             field(digest, target.as_os_str().as_encoded_bytes());
         } else {
             return Err(Error::Invalid(format!(
-                "不支持的资源条目: {}",
+                "不支持的资源条目: {0} / Unsupported resource entry: {0}",
                 path.display()
             )));
         }

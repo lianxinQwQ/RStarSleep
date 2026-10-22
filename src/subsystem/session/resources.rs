@@ -25,11 +25,11 @@ pub(super) fn beneath(directory: &File, relative: &Path) -> Result<File> {
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err(Error::Invalid(
-            "session resource path must stay below its runtime directory".into(),
+            "会话资源路径必须保持在其运行时目录之下 / session resource path must stay below its runtime directory".into(),
         ));
     }
     let name = std::ffi::CString::new(relative.as_os_str().as_encoded_bytes())
-        .map_err(|_| Error::Invalid("invalid session path".into()))?;
+        .map_err(|_| Error::Invalid("会话路径无效 / invalid session path".into()))?;
     #[repr(C)]
     struct How {
         flags: u64,
@@ -68,7 +68,7 @@ pub(super) fn runtime_directory(path: &Path, uid: u32) -> Result<File> {
     let metadata = directory.metadata()?;
     if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
         return Err(Error::Invalid(
-            "host runtime directory must be private and owned by the caller".into(),
+            "宿主运行时目录必须私有且归调用者所有 / host runtime directory must be private and owned by the caller".into(),
         ));
     }
     Ok(directory)
@@ -84,7 +84,8 @@ pub(super) fn socket(file: File, uid: u32, root_allowed: bool) -> Result<File> {
         || !(metadata.uid() == uid || (root_allowed && metadata.uid() == 0))
     {
         return Err(Error::Invalid(
-            "session socket has an unexpected type or owner".into(),
+            "会话套接字的类型或所有者不符合预期 / session socket has an unexpected type or owner"
+                .into(),
         ));
     }
     Ok(file)
@@ -101,7 +102,9 @@ pub(super) fn component(value: &str) -> Result<&str> {
         || value.contains('/')
         || value.chars().any(char::is_control)
     {
-        return Err(Error::Invalid("invalid session socket basename".into()));
+        return Err(Error::Invalid(
+            "会话套接字文件名无效 / invalid session socket basename".into(),
+        ));
     }
     Ok(value)
 }
@@ -113,7 +116,7 @@ pub(super) fn component(value: &str) -> Result<&str> {
 pub(super) fn xdisplay(value: &str) -> Result<String> {
     let Some(number) = value.strip_prefix(':') else {
         return Err(Error::Invalid(
-            "DISPLAY must name a local Unix X server".into(),
+            "DISPLAY 必须指定本地 Unix X 服务器 / DISPLAY must name a local Unix X server".into(),
         ));
     };
     let mut pieces = number.split('.');
@@ -126,7 +129,9 @@ pub(super) fn xdisplay(value: &str) -> Result<String> {
             .is_some_and(|s| s.is_empty() || s.len() > 5 || !s.bytes().all(|b| b.is_ascii_digit()))
         || pieces.next().is_some()
     {
-        return Err(Error::Invalid("invalid local DISPLAY".into()));
+        return Err(Error::Invalid(
+            "本地 DISPLAY 无效 / invalid local DISPLAY".into(),
+        ));
     }
     Ok(format!("X{display}"))
 }
@@ -148,7 +153,7 @@ fn authority(path: &Path, uid: u32) -> Result<File> {
         || metadata.len() > MAX_AUTHORITY_BYTES
     {
         return Err(Error::Invalid(
-            "XAUTHORITY must be a private bounded file owned by the caller".into(),
+            "XAUTHORITY 必须是归调用者所有、私有且大小受限的文件 / XAUTHORITY must be a private bounded file owned by the caller".into(),
         ));
     }
     Ok(file)
@@ -165,7 +170,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
         .is_some_and(|p| Path::new(p) != host)
     {
         return Err(Error::Invalid(
-            "XDG_RUNTIME_DIR does not match the authenticated caller".into(),
+            "XDG_RUNTIME_DIR 与已认证调用者不匹配 / XDG_RUNTIME_DIR does not match the authenticated caller".into(),
         ));
     }
     let runtime = match runtime_directory(&host, uid) {
@@ -188,7 +193,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
                 .ok()
                 .and_then(|p| p.to_str())
                 .ok_or_else(|| {
-                    Error::Invalid("Wayland socket is outside the caller runtime".into())
+                    Error::Invalid("Wayland 套接字位于调用者运行时目录之外 / Wayland socket is outside the caller runtime".into())
                 })?
         } else {
             wayland
@@ -196,9 +201,9 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
         let name = component(name)?;
         let source = socket(
             beneath(
-                runtime
-                    .as_ref()
-                    .ok_or_else(|| Error::Invalid("Wayland runtime missing".into()))?,
+                runtime.as_ref().ok_or_else(|| {
+                    Error::Invalid("缺少 Wayland 运行时目录 / Wayland runtime missing".into())
+                })?,
                 Path::new(name),
             )?,
             uid,
@@ -218,7 +223,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             .open("/tmp/.X11-unix")?;
         if directory.metadata()?.uid() != 0 {
             return Err(Error::Invalid(
-                "X11 socket directory must be root-owned".into(),
+                "X11 套接字目录必须归 root 所有 / X11 socket directory must be root-owned".into(),
             ));
         }
         let source = socket(beneath(&directory, Path::new(&name))?, uid, true)?;
@@ -231,7 +236,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             .get("XAUTHORITY")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                Error::Invalid("local X11 forwarding requires an explicit XAUTHORITY".into())
+                Error::Invalid("本地 X11 转发需要显式指定 XAUTHORITY / local X11 forwarding requires an explicit XAUTHORITY".into())
             })?;
         resources.push(Resource {
             source: authority(Path::new(path), uid)?,
@@ -261,7 +266,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             && server != &format!("unix:{}/pulse/native", host.display())
         {
             return Err(Error::Invalid(
-                "PULSE_SERVER must name the caller's pulse/native socket".into(),
+                "PULSE_SERVER 必须指定调用者的 pulse/native 套接字 / PULSE_SERVER must name the caller's pulse/native socket".into(),
             ));
         }
         match beneath(runtime, Path::new("pulse/native")) {

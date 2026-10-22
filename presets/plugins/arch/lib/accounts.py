@@ -14,16 +14,16 @@ FILES = {'passwd': 7, 'group': 4, 'shadow': 9, 'gshadow': 4}
 def safe(path):
     path = Path(path)
     if not path.is_absolute():
-        raise ValueError('account paths must be absolute')
+        raise ValueError('账户路径必须为绝对路径 / account paths must be absolute')
     for item in (path, *path.parents):
         if item.is_symlink():
-            raise ValueError('account paths must not traverse symbolic links')
+            raise ValueError('账户路径不得经过符号链接 / account paths must not traverse symbolic links')
     return path
 
 
 def number(value):
     if not value.isascii() or not value.isdigit() or not 0 <= int(value) < 2**32 - 1:
-        raise ValueError('invalid numeric account ID')
+        raise ValueError('数字账户 ID 无效 / invalid numeric account ID')
     return int(value)
 
 
@@ -37,24 +37,24 @@ def load(tree):
         path = safe(tree / 'etc' / name)
         if not path.exists():
             if name in ('passwd', 'group'):
-                raise ValueError('missing required account file: ' + name)
+                raise ValueError(f'缺少必需的账户文件：{name} / missing required account file: {name}')
             result[name] = None
             continue
         if not path.is_file():
-            raise ValueError('account input is not a regular file: ' + name)
+            raise ValueError(f'账户输入不是普通文件：{name} / account input is not a regular file: {name}')
         table = {}
         try:
             lines = path.read_text().splitlines()
         except UnicodeError:
-            raise ValueError('invalid account text encoding: ' + name) from None
+            raise ValueError(f'账户文本编码无效：{name} / invalid account text encoding: {name}') from None
         for line in lines:
             if not line:
                 continue
             fields = line.split(':')
             if '\x00' in line or len(fields) != width or not fields[0] or fields[0] in table:
-                raise ValueError('invalid or duplicate record in ' + name)
+                raise ValueError(f'存在无效或重复记录：{name} / invalid or duplicate record in {name}')
             if any(c.isspace() or c in '/,\\' for c in fields[0]):
-                raise ValueError('invalid account name in ' + name)
+                raise ValueError(f'账户名称无效：{name} / invalid account name in {name}')
             if name in ('passwd', 'group'):
                 number(fields[2])
             if name == 'passwd':
@@ -73,17 +73,17 @@ def selection(old, request):
     groups = set(request['groups'])
     for name in users:
         if name not in old['passwd']:
-            raise ValueError('selected source user does not exist: ' + name)
+            raise ValueError(f'所选源用户不存在：{name} / selected source user does not exist: {name}')
         gid = old['passwd'][name][3]
         primary = [g for g, fields in old['group'].items() if fields[2] == gid]
         if not primary:
-            raise ValueError('selected source user has no local primary group: ' + name)
+            raise ValueError(f'所选源用户没有本地主组：{name} / selected source user has no local primary group: {name}')
         groups.update(primary)
         if old['shadow'] is not None and old['passwd'][name][1] == 'x' and name not in old['shadow']:
-            raise ValueError('selected source user has no shadow record: ' + name)
+            raise ValueError(f'所选源用户没有 shadow 记录：{name} / selected source user has no shadow record: {name}')
     for name in groups:
         if name not in old['group']:
-            raise ValueError('selected source group does not exist: ' + name)
+            raise ValueError(f'所选源组不存在：{name} / selected source group does not exist: {name}')
     return users, groups
 
 
@@ -180,51 +180,51 @@ def report(old, candidate, request, new=None):
             actual = target.get(name)
             comparable = slice(None) if filename == 'passwd' else slice(0, 3)
             if actual is None or expected[comparable] != actual[comparable]:
-                result['differences'].append('selected account was not preserved: ' + name)
+                result['differences'].append(f'未保留所选账户：{name} / selected account was not preserved: {name}')
         if new is not None:
             for name, actual in target.items():
                 if name not in selected:
                     before = new[filename].get(name)
                     comparable = slice(None) if filename == 'passwd' else slice(0, 3)
                     if before is None or actual[comparable] != before[comparable]:
-                        result['differences'].append('undeclared account change: ' + name)
+                        result['differences'].append(f'存在未声明的账户更改：{name} / undeclared account change: {name}')
             for name in set(target) - set(source):
                 if name not in new[filename]:
-                    result['differences'].append('output introduced an account absent from the build: ' + name)
+                    result['differences'].append(f'输出引入了构建中不存在的账户：{name} / output introduced an account absent from the build: {name}')
     for name in users:
         expected = (old['shadow'] or {}).get(name)
         if expected is not None and (candidate['shadow'] or {}).get(name) != expected:
-            result['differences'].append('selected credential was not preserved: ' + name)
+            result['differences'].append(f'未保留所选凭据：{name} / selected credential was not preserved: {name}')
     if new is not None:
         for name, row in (candidate['shadow'] or {}).items():
             if name not in users and row != (new['shadow'] or {}).get(name):
-                result['differences'].append('undeclared credential change: ' + name)
+                result['differences'].append(f'存在未声明的凭据更改：{name} / undeclared credential change: {name}')
         for name, row in candidate['group'].items():
             source = members(old['group'].get(name, [name, '', '', ''])[3])
             built = members(new['group'].get(name, [name, '', '', ''])[3])
             inherited = source if name in groups else source & users
             expected = (built | inherited) & set(candidate['passwd'])
             if members(row[3]) != expected:
-                result['differences'].append('unexpected group membership: ' + name)
+                result['differences'].append(f'存在非预期的组成员关系：{name} / unexpected group membership: {name}')
         for name in groups:
             expected = (old['gshadow'] or {}).get(name)
             actual = (candidate['gshadow'] or {}).get(name)
             if expected is not None and (actual is None or actual[1] != expected[1]):
-                result['differences'].append('selected group credential was not preserved: ' + name)
+                result['differences'].append(f'未保留所选组的凭据：{name} / selected group credential was not preserved: {name}')
     for name, row in candidate['passwd'].items():
         if not any(g[2] == row[3] for g in candidate['group'].values()):
-            result['differences'].append('output user has no local primary group: ' + name)
+            result['differences'].append(f'输出用户没有本地主组：{name} / output user has no local primary group: {name}')
     if candidate['gshadow'] is not None:
         for name, row in candidate['group'].items():
             entry = candidate['gshadow'].get(name)
             if entry is None or members(row[3]) != members(entry[3]):
-                result['differences'].append('group and gshadow membership disagree: ' + name)
+                result['differences'].append(f'group 与 gshadow 的成员关系不一致：{name} / group and gshadow membership disagree: {name}')
             if new is not None and entry is not None:
                 source = members((old['gshadow'] or {}).get(name, [name, '!', '', ''])[2])
                 built = members((new['gshadow'] or {}).get(name, [name, '!', '', ''])[2])
                 inherited = source if name in groups else source & users
                 if members(entry[2]) != (built | inherited) & set(candidate['passwd']):
-                    result['differences'].append('unexpected group administrators: ' + name)
+                    result['differences'].append(f'存在非预期的组管理员：{name} / unexpected group administrators: {name}')
     result['consistent'] = not any(result[key] for key in ('dropped_users', 'dropped_groups', 'drifts', 'differences'))
     return result
 
@@ -236,7 +236,7 @@ def apply(work, root):
     for name, table in candidate.items():
         target = safe(root / 'etc' / name)
         if target.exists() and not target.is_file():
-            raise ValueError('account destination is not a regular file')
+            raise ValueError('账户目标不是普通文件 / account destination is not a regular file')
         targets.append((name, table, target))
     for name, table, target in targets:
         if table is None:
@@ -255,12 +255,12 @@ def main():
     work = safe(args.workspace)
     request = json.loads(safe(work / 'request.json').read_text())
     if request.get('schema_version') != 1 or any(not isinstance(request.get(k), list) or any(not isinstance(n, str) for n in request[k]) for k in ('users', 'groups')):
-        raise ValueError('unsupported account request')
+        raise ValueError('不支持的账户请求 / unsupported account request')
     old = load(work / 'old')
     users, groups = selection(old, request)
     if args.preflight:
         if args.operation != 'check':
-            raise ValueError('only check supports preflight')
+            raise ValueError('只有 check 支持预检 / only check supports preflight')
         # A candidate-loss warning, not a claim about an unbuilt system.
         result = dict(schema_version=1, consistent=True, added_users=[], added_groups=[],
                       dropped_users=sorted(set(old['passwd']) - users), dropped_groups=sorted(set(old['group']) - groups), drifts=[], differences=[])
@@ -278,5 +278,5 @@ if __name__ == '__main__':
         main()
     except (ValueError, OSError, KeyError) as error:
         # Exceptions never include account record contents or password hashes.
-        print('account operation failed: ' + (str(error) if isinstance(error, ValueError) else type(error).__name__), file=sys.stderr)
+        print(f'账户操作失败 / Account operation failed: {str(error) if isinstance(error, ValueError) else type(error).__name__}', file=sys.stderr)
         sys.exit(1)

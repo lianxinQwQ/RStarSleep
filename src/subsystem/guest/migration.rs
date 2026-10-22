@@ -44,7 +44,9 @@ pub(super) fn validate_migration(
         || record.target != target
         || record.source != volume.join("data")
     {
-        return Err(Error::Invalid("guest migration identity mismatch".into()));
+        return Err(Error::Invalid(
+            "客体迁移身份不匹配 / guest migration identity mismatch".into(),
+        ));
     }
     Ok(())
 }
@@ -67,7 +69,7 @@ pub(super) fn add_mount(
     if let Some(mount) = config.mounts.iter().find(|m| m.target == target) {
         if mount.source != volume.join("data") || mount.read_only {
             return Err(Error::Invalid(
-                "target already has another configured mount".into(),
+                "目标已有其他配置的挂载 / target already has another configured mount".into(),
             ));
         }
         let record: Migration = read_record(&record_path)?;
@@ -94,14 +96,14 @@ pub(super) fn add_mount(
         .any(|m| m.starts_with(target) || target.starts_with(m))
     {
         return Err(Error::Invalid(
-            "guest target overlaps a version persistent mount".into(),
+            "客体目标与版本持久挂载重叠 / guest target overlaps a version persistent mount".into(),
         ));
     }
     let source = open_target(&root.root, target)?;
     let metadata = source.metadata()?;
     if !metadata.is_file() && !metadata.is_dir() {
         return Err(Error::Invalid(
-            "persistent source must be a regular file or directory".into(),
+            "持久化来源必须为普通文件或目录 / persistent source must be a regular file or directory".into(),
         ));
     }
     config.mounts.push(RuntimeMount {
@@ -136,9 +138,9 @@ pub(super) fn add_mount(
 /// - `source`, `target`: Owned staging and final paths. 所属暂存与最终路径。
 pub(super) fn publish(source: &Path, target: &Path, exchange: bool) -> Result<()> {
     let from = CString::new(source.as_os_str().as_encoded_bytes())
-        .map_err(|_| Error::Invalid("invalid publication source".into()))?;
+        .map_err(|_| Error::Invalid("发布来源无效 / invalid publication source".into()))?;
     let to = CString::new(target.as_os_str().as_encoded_bytes())
-        .map_err(|_| Error::Invalid("invalid publication target".into()))?;
+        .map_err(|_| Error::Invalid("发布目标无效 / invalid publication target".into()))?;
     if unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -170,7 +172,7 @@ pub(super) fn migrate(
     let _activity = super::filesystem::activity(store, &runtime.system_id, true)?;
     if execution::occupied(runtime)? {
         return Err(Error::Invalid(
-            "stop managed applications and all other writers before migration".into(),
+            "迁移前请停止受管应用和所有其他写入进程 / stop managed applications and all other writers before migration".into(),
         ));
     }
     let layout = store.system_layout(&runtime.system_id)?;
@@ -183,7 +185,8 @@ pub(super) fn migrate(
         && (mount.source != record.source || mount.read_only)
     {
         return Err(Error::Invalid(
-            "persistent target now has another configured mount".into(),
+            "持久化目标现在已有其他配置的挂载 / persistent target now has another configured mount"
+                .into(),
         ));
     }
     let inherited = InheritanceConfig::read(&crate::config::read_plugin_parameters_at(
@@ -195,7 +198,7 @@ pub(super) fn migrate(
         .any(|m| m.starts_with(target) || target.starts_with(m))
     {
         return Err(Error::Invalid(
-            "guest target overlaps a version persistent mount".into(),
+            "客体目标与版本持久挂载重叠 / guest target overlaps a version persistent mount".into(),
         ));
     }
     if !config.mounts.iter().any(|m| m.target == target) {
@@ -221,20 +224,20 @@ pub(super) fn migrate(
             already_mounted = true;
         } else {
             return Err(Error::Invalid(
-                "target or descendant is already mounted; refusing migration".into(),
+                "目标或其后代已挂载，拒绝迁移 / target or descendant is already mounted; refusing migration".into(),
             ));
         }
     }
     if !volume.try_exists()? {
         if record.published {
             return Err(Error::Invalid(
-                "published guest volume is missing; refusing to overwrite its receipt".into(),
+                "已发布的客体卷缺失，拒绝覆盖其回执 / published guest volume is missing; refusing to overwrite its receipt".into(),
             ));
         }
         let source = open_target(&root.root, target)?;
         if source.metadata()?.is_dir() != record.directory {
             return Err(Error::Invalid(
-                "guest source changed type after registration".into(),
+                "登记后客体来源类型已改变 / guest source changed type after registration".into(),
             ));
         }
         let parent = volume.parent().unwrap();
@@ -258,12 +261,12 @@ pub(super) fn migrate(
                 &open_target(&root.root, target)?.metadata()?,
             ) {
                 return Err(Error::Invalid(
-                    "guest migration source path changed; retry after stopping writers".into(),
+                    "客体迁移来源路径已改变，请停止写入进程后重试 / guest migration source path changed; retry after stopping writers".into(),
                 ));
             }
             if execution::occupied(runtime)? || !mounts_at(root, target)?.is_empty() {
                 return Err(Error::Invalid(
-                    "guest writers or mounts changed during migration".into(),
+                    "迁移期间客体写入进程或挂载已改变 / guest writers or mounts changed during migration".into(),
                 ));
             }
             SystemBackend.sync_filesystem(&stage)?;
@@ -276,7 +279,10 @@ pub(super) fn migrate(
             // Preserve a failed-cleanup subvolume for administrator recovery.
             // 保留清理失败子卷供管理员恢复。
             let path = stage_parent.keep();
-            eprintln!("guest migration cleanup {}: {e}", path.display());
+            eprintln!(
+                "客体迁移清理 {0} / guest migration cleanup {0}: {e}",
+                path.display()
+            );
         }
         copied?;
     }
@@ -285,7 +291,7 @@ pub(super) fn migrate(
     let metadata = fs::symlink_metadata(&record.source)?;
     if metadata.is_dir() != record.directory || (!metadata.is_dir() && !metadata.is_file()) {
         return Err(Error::Invalid(
-            "published guest data has invalid type".into(),
+            "已发布的客体数据类型无效 / published guest data has invalid type".into(),
         ));
     }
     record.published = true;
@@ -305,7 +311,7 @@ pub(super) fn migrate(
     let result = commands::output(command, Duration::from_secs(15))?;
     if !result.status.success() {
         return Err(Error::Invalid(format!(
-            "数据已保存在 {}；立即挂载失败，重试 guest migrate：{}",
+            "数据已保存在 {0}；立即挂载失败，重试 guest migrate：{1} / data has been preserved at {0}; immediate mounting failed, retry guest migrate: {1}",
             record.source.display(),
             String::from_utf8_lossy(&result.stderr)
         )));
@@ -315,7 +321,7 @@ pub(super) fn migrate(
         &fs::symlink_metadata(&record.source)?,
     ) {
         return Err(Error::Invalid(
-            "volume published but guest bind is not visible; retry guest migrate".into(),
+            "卷已发布，但客体绑定挂载不可见，请重试 guest migrate / volume published but guest bind is not visible; retry guest migrate".into(),
         ));
     }
     Ok(format!("已迁移并挂载 {}", target.display()))

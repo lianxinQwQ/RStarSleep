@@ -54,7 +54,7 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             let output = names(&self.call("resolve_packages", std::slice::from_ref(target))?)?;
             if output.is_empty() {
                 return Err(Error::Invalid(format!(
-                    "目标 {target} 必须解析为至少一个具体包"
+                    "目标 {target} 必须解析为至少一个具体包 / Target {target} must resolve to at least one concrete package"
                 )));
             }
             resolved.extend(output);
@@ -105,7 +105,7 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             .collect();
         if !missing.is_empty() {
             return Err(Error::Invalid(format!(
-                "阶段根缺少显式基础目标: {}",
+                "阶段根缺少显式基础目标: {0} / Stage root lacks an explicit base target: {0}",
                 missing.join(", ")
             )));
         }

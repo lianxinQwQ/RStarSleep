@@ -61,19 +61,19 @@ class MetadataIndex:
     def decode(payload):
         records = json.loads(gzip.decompress(payload))
         if not isinstance(records, list) or not records:
-            raise ValueError('AUR snapshot must contain a nonempty package list')
+            raise ValueError('AUR 快照必须包含非空的软件包列表 / AUR snapshot must contain a nonempty package list')
         names, provides = {}, {}
         for entry in records:
             if not isinstance(entry, dict):
-                raise ValueError('Invalid AUR metadata')
+                raise ValueError('AUR 元数据无效 / Invalid AUR metadata')
             name, base = entry.get('Name'), entry.get('PackageBase')
             values = entry.get('Provides') or []
             if (not isinstance(name, str) or not NAME.fullmatch(name)
                     or not isinstance(base, str) or not NAME.fullmatch(base)
                     or not isinstance(values, list) or any(not isinstance(v, str) for v in values)):
-                raise ValueError('Invalid AUR package identity')
+                raise ValueError('AUR 软件包标识无效 / Invalid AUR package identity')
             if name in names:
-                raise ValueError('Duplicate AUR package identity')
+                raise ValueError('AUR 软件包标识重复 / Duplicate AUR package identity')
             names[name] = base
             for value in values:
                 match = DEPENDENCY.fullmatch(value)

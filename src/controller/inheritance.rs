@@ -33,10 +33,9 @@ pub(super) fn apply_build(
 ) -> Result<bool> {
     let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
     let config = InheritanceConfig::read(&parameters)?;
-    let manager = system
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("继承缺少管理根".into()))?;
+    let manager = system.parent().and_then(Path::parent).ok_or_else(|| {
+        Error::Invalid("继承缺少管理根 / Inheritance has no management root".into())
+    })?;
     let _migration_lock = if config.nocow_handling == NocowHandling::MoveSnapshot {
         Some(super::records::lock_inheritance(manager)?)
     } else {
@@ -90,7 +89,7 @@ pub(super) fn apply_mounts(
     let manager = system
         .parent()
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("系统缺少管理根".into()))?;
+        .ok_or_else(|| Error::Invalid("系统缺少管理根 / System has no management root".into()))?;
     let mut needs_manager_mount = false;
     for source in &config.mounts {
         let persistent = pool.join(inheritance_name(source)?);
@@ -155,7 +154,9 @@ pub(super) fn apply_mounts(
                 .map_err(|e| disk::io(&target, e))?
                 .is_file()
             {
-                return Err(Error::Invalid("文件挂载目标必须为普通文件".into()));
+                return Err(Error::Invalid(
+                    "文件挂载目标必须为普通文件 / File mount target must be a regular file".into(),
+                ));
             }
             let runtime_source = Path::new(DEFAULT_MOUNT_POINT).join(
                 persistent
@@ -171,7 +172,7 @@ pub(super) fn apply_mounts(
             needs_manager_mount = true;
         } else {
             return Err(Error::Invalid(
-                "持久继承项目必须为普通文件或子卷目录".into(),
+                "持久继承项目必须为普通文件或子卷目录 / Persistent inheritance item must be a regular file or subvolume directory".into(),
             ));
         }
         inherited_mounts.push(super::PersistentMount {
@@ -195,7 +196,7 @@ pub(super) fn apply_mounts(
     if !arguments.is_empty() || context.parameters.contains_key("RSTAR_CONTENT_FSTABLINES") {
         if !plugin.metadata.mount_inheritance {
             return Err(Error::Invalid(format!(
-                "插件 {} 未声明 mount_inheritance 接口",
+                "插件 {0} 未声明 mount_inheritance 接口 / Plugin {0} does not declare the mount_inheritance interface",
                 plugin.metadata.id
             )));
         }
@@ -253,11 +254,11 @@ pub(super) fn apply_mounts(
 /// - `subvolume`: Filesystem top-level path. 文件系统顶层路径。
 /// - `readonly`: Read-only mount choice. 只读挂载选择。
 fn subvolume_options(subvolume: &Path, readonly: bool) -> Result<String> {
-    let path = subvolume
-        .to_str()
-        .ok_or_else(|| Error::Invalid("挂载子卷路径必须为 UTF-8".into()))?;
+    let path = subvolume.to_str().ok_or_else(|| {
+        Error::Invalid("挂载子卷路径必须为 UTF-8 / Mounted subvolume path must be UTF-8".into())
+    })?;
     if path.contains(',') || path.chars().any(char::is_control) {
-        return Err(Error::Invalid("挂载子卷路径不能包含逗号或控制字符".into()));
+        return Err(Error::Invalid("挂载子卷路径不能包含逗号或控制字符 / Mounted subvolume path must not contain commas or control characters".into()));
     }
     Ok(format!(
         "{},subvol={path}",
@@ -275,13 +276,16 @@ pub(super) fn check_source(source: &Path, system: &Path) -> Result<bool> {
     let manager = system
         .parent()
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("系统缺少管理根".into()))?;
+        .ok_or_else(|| Error::Invalid("系统缺少管理根 / System has no management root".into()))?;
     if manager.starts_with(source) {
-        return Err(Error::Invalid("继承来源不能与管理器目录重叠".into()));
+        return Err(Error::Invalid("继承来源不能与管理器目录重叠 / Inheritance source must not overlap the manager directory".into()));
     }
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
     if !info.is_dir() && !info.is_file() {
-        return Err(Error::Invalid("继承来源必须为普通文件或目录".into()));
+        return Err(Error::Invalid(
+            "继承来源必须为普通文件或目录 / Inheritance source must be a regular file or directory"
+                .into(),
+        ));
     }
     Ok(info.is_dir())
 }
@@ -292,11 +296,9 @@ pub(super) fn check_source(source: &Path, system: &Path) -> Result<bool> {
 /// - `backend`: Checked storage backend. 经检查的存储后端。
 /// - `target`: Owned destination inside the writable build root. 可写构建根内的所属目标。
 fn replace_target(backend: &impl BuildBackend, target: &Path) -> Result<()> {
-    disk::checked(
-        target
-            .parent()
-            .ok_or_else(|| Error::Invalid("继承目标没有父目录".into()))?,
-    )?;
+    disk::checked(target.parent().ok_or_else(|| {
+        Error::Invalid("继承目标没有父目录 / Inheritance target has no parent directory".into())
+    })?)?;
     super::mounts::check_unmounted_tree(target)?;
     if fs::symlink_metadata(target).is_ok() {
         let info = fs::symlink_metadata(target).map_err(|e| disk::io(target, e))?;
@@ -317,14 +319,12 @@ fn replace_target(backend: &impl BuildBackend, target: &Path) -> Result<()> {
         } else if info.is_file() || info.file_type().is_symlink() {
             fs::remove_file(target).map_err(|e| disk::io(target, e))?;
         } else {
-            return Err(Error::Invalid("继承目标必须为普通文件或目录".into()));
+            return Err(Error::Invalid("继承目标必须为普通文件或目录 / Inheritance target must be a regular file or directory".into()));
         }
     }
-    disk::directory(
-        target
-            .parent()
-            .ok_or_else(|| Error::Invalid("继承目标没有父目录".into()))?,
-    )
+    disk::directory(target.parent().ok_or_else(|| {
+        Error::Invalid("继承目标没有父目录 / Inheritance target has no parent directory".into())
+    })?)
 }
 
 /// Remove only a validated owned tree, including any nested subvolumes.
@@ -373,7 +373,9 @@ fn seed_persistent(
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-        (Err(e), Err(c)) => Err(Error::Invalid(format!("{e}; 持久初始化清理失败: {c}"))),
+        (Err(e), Err(c)) => Err(Error::Invalid(format!(
+            "{e}; 持久初始化清理失败: {c} / {e}; persistent initialization cleanup failed: {c}"
+        ))),
     }
 }
 
@@ -403,7 +405,10 @@ pub(super) fn inherit_path(
 ) -> Result<()> {
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
     if !info.is_dir() && !info.is_file() {
-        return Err(Error::Invalid("继承来源必须为普通文件或目录".into()));
+        return Err(Error::Invalid(
+            "继承来源必须为普通文件或目录 / Inheritance source must be a regular file or directory"
+                .into(),
+        ));
     }
     if nocow_handling == NocowHandling::MoveSnapshot
         && ((!info.is_dir() && super::nocow::is_nocow(source)?)
@@ -412,7 +417,7 @@ pub(super) fn inherit_path(
                 && super::nocow::contains_nocow(source)?))
     {
         return Err(Error::Invalid(
-            "move-snapshot 需要先安全迁移来源目录；不能扩大单个 NOCOW 文件的继承范围".into(),
+            "move-snapshot 需要先安全迁移来源目录；不能扩大单个 NOCOW 文件的继承范围 / move-snapshot requires safely migrating the source directory first; the inheritance scope of an individual NOCOW file cannot be expanded".into(),
         ));
     }
     replace_target(backend, target)?;

@@ -78,7 +78,7 @@ pub(super) fn bind(option: &str, source: &Path, destination: &str) -> Result<OsS
         .any(|byte| b":\\".contains(byte))
     {
         return Err(Error::Invalid(format!(
-            "nspawn 绑定源路径不能包含冒号或反斜杠: {}",
+            "nspawn 绑定源路径不能包含冒号或反斜杠: {0} / nspawn bind source path must not contain colons or backslashes: {0}",
             source.display()
         )));
     }

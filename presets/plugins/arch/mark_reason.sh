@@ -7,13 +7,13 @@ source "$plugin_root/lib/common.sh"
 
 mark_reason() {
     local reason=${1:-} package
-    [[ $reason == explicit || $reason == dependency ]] || { log 'Expected explicit or dependency'; return 64; }
+    [[ $reason == explicit || $reason == dependency ]] || { log '应为 explicit 或 dependency / Expected explicit or dependency'; return 64; }
     shift
     validate_packages "$@"
     (( $# )) || return 0
     if [[ $reason == dependency ]]; then
         for package in "$@"; do
-            [[ $package != base ]] || { log 'Cannot demote protected base package'; return 64; }
+            [[ $package != base ]] || { log '不能将受保护的 base 软件包降为依赖安装 / Cannot demote protected base package'; return 64; }
         done
         pacman -D --asdeps -- "$@"
     else

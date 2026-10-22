@@ -41,17 +41,17 @@ fn resolve_with(
     for (name, values) in assignments {
         if !valid_name(name) {
             return Err(Error::Invalid(format!(
-                "[Environment] 无效环境变量名: {name:?}"
+                "[Environment] 无效环境变量名: {name:?} / [Environment] invalid environment variable name: {name:?}"
             )));
         }
         if name.starts_with("RSTAR_") || name.starts_with("RSTAT_") {
             return Err(Error::Invalid(format!(
-                "[Environment] 环境变量名由控制器保留: {name}"
+                "[Environment] 环境变量名由控制器保留: {name} / [Environment] environment variable name is reserved by the controller: {name}"
             )));
         }
         let [value] = values.as_slice() else {
             return Err(Error::Invalid(format!(
-                "[Environment] {name} 必须只赋值一次"
+                "[Environment] {name} 必须只赋值一次 / [Environment] {name} must be assigned exactly once"
             )));
         };
         let resolved = if let Some(literal) = value.strip_prefix("$$") {
@@ -59,7 +59,7 @@ fn resolve_with(
         } else if let Some(source) = value.strip_prefix('$') {
             if !valid_name(source) {
                 return Err(Error::Invalid(format!(
-                    "[Environment] {name} 无效继承环境变量名: {source:?}"
+                    "[Environment] {name} 无效继承环境变量名: {source:?} / [Environment] {name} has an invalid inherited environment variable name: {source:?}"
                 )));
             }
             lookup(source)
@@ -71,7 +71,7 @@ fn resolve_with(
             .is_some_and(|value| value.as_encoded_bytes().contains(&0))
         {
             return Err(Error::Invalid(format!(
-                "[Environment] 环境变量 {name} 包含 NUL"
+                "[Environment] 环境变量 {name} 包含 NUL / [Environment] environment variable {name} contains NUL"
             )));
         }
         environment.insert(name.clone(), resolved);

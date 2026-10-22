@@ -101,7 +101,11 @@ impl Endpoint {
         complete.store(true, Ordering::SeqCst);
         let request = match first? {
             Some(ClientMessage::Request { request }) => request,
-            _ => return Err(Error::Protocol("initial guest request required".into())),
+            _ => {
+                return Err(Error::Protocol(
+                    "需要初始客体请求 / initial guest request required".into(),
+                ));
+            }
         };
         protocol::validate_request(&request)?;
         let (action, path, packages) = match request.operation {
@@ -112,24 +116,27 @@ impl Endpoint {
             } => (action, path, packages),
             _ => {
                 return Err(Error::Invalid(
-                    "guest endpoint accepts only fixed-instance guest operations".into(),
+                    "客体端点仅接受固定实例的客体操作 / guest endpoint accepts only fixed-instance guest operations".into(),
                 ));
             }
         };
         trust::store(&self.store, Some(&self.id))?;
-        let _mutation = self
-            .mutation
-            .try_lock()
-            .map_err(|_| Error::Invalid("another guest management operation is active".into()))?;
+        let _mutation = self.mutation.try_lock().map_err(|_| {
+            Error::Invalid(
+                "另一个客体管理操作正在进行 / another guest management operation is active".into(),
+            )
+        })?;
         let target = path.as_deref().map(Path::new);
         let result = match action.as_str() {
             "add-copy" | "add-mount" | "migrate" => {
                 if !packages.is_empty() {
                     return Err(Error::Invalid(
-                        "path operation does not accept package names".into(),
+                        "路径操作不接受软件包名称 / path operation does not accept package names"
+                            .into(),
                     ));
                 }
-                let target = target.ok_or_else(|| Error::Invalid("guest path required".into()))?;
+                let target = target
+                    .ok_or_else(|| Error::Invalid("需要客体路径 / guest path required".into()))?;
                 match action.as_str() {
                     "add-copy" => add_copy(&self.store, &runtime, &root, target),
                     "add-mount" => add_mount(&self.store, &runtime, &root, target),
@@ -139,7 +146,7 @@ impl Endpoint {
             "install" => {
                 if target.is_some() {
                     return Err(Error::Invalid(
-                        "guest install does not accept a path".into(),
+                        "客体安装不接受路径 / guest install does not accept a path".into(),
                     ));
                 }
                 install_packages(&self.store, &self.id, &packages)?;
@@ -148,7 +155,7 @@ impl Endpoint {
             "rebuild" => {
                 if target.is_some() || !packages.is_empty() {
                     return Err(Error::Invalid(
-                        "guest rebuild accepts no extra arguments".into(),
+                        "客体重建不接受额外参数 / guest rebuild accepts no extra arguments".into(),
                     ));
                 }
                 rebuild(&self.store, &self.id)
@@ -156,7 +163,7 @@ impl Endpoint {
             "restart" => {
                 if target.is_some() || !packages.is_empty() {
                     return Err(Error::Invalid(
-                        "guest restart accepts no extra arguments".into(),
+                        "客体重启不接受额外参数 / guest restart accepts no extra arguments".into(),
                     ));
                 }
                 SubsystemConfig::read(&self.store, &self.id)?;
@@ -181,12 +188,12 @@ impl Endpoint {
                         super::client::request(&socket, Operation::Restart { id }).map(|_| ())
                     });
                     if let Err(error) = result {
-                        eprintln!("guest restart: {error}");
+                        eprintln!("客体重启 / guest restart: {error}");
                     }
                 });
                 return Ok(());
             }
-            _ => Err(Error::Invalid("unknown guest action".into())),
+            _ => Err(Error::Invalid("未知客体操作 / unknown guest action".into())),
         }?;
         protocol::write_frame(&mut stream, &Event::Message { text: result })?;
         protocol::write_frame(
@@ -217,16 +224,20 @@ pub fn listen(store: &ConfigStore, runtime: &PreparedRuntime) -> Result<PathBuf>
     let endpoints = ENDPOINTS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut endpoints = endpoints
         .lock()
-        .map_err(|_| Error::Invalid("guest endpoint lock poisoned".into()))?;
+        .map_err(|_| Error::Invalid("客体端点锁损坏 / guest endpoint lock poisoned".into()))?;
     if let Some(endpoint) = endpoints.get(&path) {
         if endpoint.id != runtime.system_id || endpoint.store.root() != store.root() {
-            return Err(Error::Invalid("guest endpoint identity conflict".into()));
+            return Err(Error::Invalid(
+                "客体端点身份冲突 / guest endpoint identity conflict".into(),
+            ));
         }
         return Ok(path);
     }
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if !metadata.file_type().is_socket() || metadata.uid() != 0 {
-            return Err(Error::Invalid("unexpected guest endpoint object".into()));
+            return Err(Error::Invalid(
+                "客体端点对象不符合预期 / unexpected guest endpoint object".into(),
+            ));
         }
         trust::path(&path)?;
         fs::remove_file(&path)?;
@@ -245,7 +256,7 @@ pub fn listen(store: &ConfigStore, runtime: &PreparedRuntime) -> Result<PathBuf>
             let stream = match stream {
                 Ok(stream) => stream,
                 Err(error) => {
-                    eprintln!("guest listener: {error}");
+                    eprintln!("客体监听器 / guest listener: {error}");
                     continue;
                 }
             };
@@ -266,7 +277,7 @@ pub fn listen(store: &ConfigStore, runtime: &PreparedRuntime) -> Result<PathBuf>
                             },
                         );
                     }
-                    eprintln!("guest {}: {error}", endpoint.id);
+                    eprintln!("客体 {0} / guest {0}: {error}", endpoint.id);
                 }
             });
         }
@@ -312,7 +323,7 @@ pub(crate) fn reconnect(store: &ConfigStore, runtime: &PreparedRuntime) -> Resul
     let output = commands::output(command, Duration::from_secs(15))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
-            "cannot restore guest endpoint: {}",
+            "无法恢复客体端点: {0} / cannot restore guest endpoint: {0}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
@@ -320,7 +331,8 @@ pub(crate) fn reconnect(store: &ConfigStore, runtime: &PreparedRuntime) -> Resul
         filesystem::open_at_guest(&root, Path::new(SOCKET), libc::O_PATH | libc::O_NOFOLLOW)?;
     if !same_inode(&visible.metadata()?, &fs::symlink_metadata(&endpoint)?) {
         return Err(Error::Invalid(
-            "restored guest endpoint is not visible in the machine".into(),
+            "恢复的客体端点在机器内不可见 / restored guest endpoint is not visible in the machine"
+                .into(),
         ));
     }
     Ok(())

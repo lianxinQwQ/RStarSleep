@@ -10,7 +10,7 @@ for rstarsleep_hook in "${HOOKS[@]}"; do
     rstarsleep_hooks+=("$rstarsleep_hook")
 done
 if [[ "$rstarsleep_inserted" != yes ]]; then
-    echo 'RStarSleep: mkinitcpio HOOKS must contain filesystems' >&2
+    echo 'RStarSleep：mkinitcpio HOOKS 必须包含 filesystems / RStarSleep: mkinitcpio HOOKS must contain filesystems' >&2
     return 1
 fi
 HOOKS=("${rstarsleep_hooks[@]}")

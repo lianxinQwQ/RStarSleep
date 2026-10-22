@@ -13,7 +13,7 @@ maintenance_inventory() {
     [[ -n $output ]] || return 0
     while IFS= read -r package; do
         validate_packages "$package" || return
-        [[ -z ${seen[$package]:-} ]] || { log "Duplicate installed package: $package"; return 1; }
+        [[ -z ${seen[$package]:-} ]] || { log "已安装的软件包重复：$package / Duplicate installed package: $package"; return 1; }
         seen["$package"]=1
         installed+=("$package")
     done <<<"$output"
@@ -48,7 +48,7 @@ maintenance_reasons() {
         while IFS= read -r package; do
             validate_packages "$package" || return
             [[ -n ${current_names[$package]:-} && -z ${current_explicit[$package]:-} ]] || {
-                log "Invalid explicit package query result: $package"; return 1;
+                log "显式安装软件包的查询结果无效：$package / Invalid explicit package query result: $package"; return 1;
             }
             current_explicit[$package]=1
         done <<<"$output"
@@ -122,19 +122,19 @@ maintain_packages() {
         keyring_targets+=("$keyring_target")
     done <<<"$keyring_output"
 
-    [[ ${1:-} == --plan ]] || { log 'Expected --plan PACKAGES --targets TARGETS'; return 64; }
+    [[ ${1:-} == --plan ]] || { log '应提供 --plan PACKAGES --targets TARGETS / Expected --plan PACKAGES --targets TARGETS'; return 64; }
     shift
     while (( $# )) && [[ $1 != --targets ]]; do plan+=("$1"); shift; done
-    [[ ${1:-} == --targets ]] || { log 'Missing --targets separator'; return 64; }
+    [[ ${1:-} == --targets ]] || { log '缺少 --targets 分隔符 / Missing --targets separator'; return 64; }
     shift
     targets=("$@")
     validate_packages "${plan[@]}" || return
     validate_targets "${targets[@]}" || return
     for package in "${plan[@]}"; do
-        [[ -z ${plan_names[$package]:-} ]] || { log "Duplicate planned package: $package"; return 64; }
+        [[ -z ${plan_names[$package]:-} ]] || { log "计划中的软件包重复：$package / Duplicate planned package: $package"; return 64; }
         plan_names["$package"]=1
     done
-    [[ -n ${plan_names[base]:-} ]] || { log 'Package plan must contain protected base'; return 64; }
+    [[ -n ${plan_names[base]:-} ]] || { log '软件包计划必须包含受保护的 base / Package plan must contain protected base'; return 64; }
 
     # The preparation stage supplies matching repository metadata even when
     # downloads are disabled. Do not refresh it and invalidate the frozen plan.
@@ -151,16 +151,16 @@ maintain_packages() {
         keyring_output=$(bash "$plugin_root/resolve_packages.sh" "${keyring_targets[@]}") || return
         output+=$'\n'$keyring_output
     fi
-    [[ -n $output ]] || { log 'No protected base target resolved'; return 1; }
+    [[ -n $output ]] || { log '未解析出受保护的 base 目标 / No protected base target resolved'; return 1; }
     while IFS= read -r package; do
         validate_packages "$package" || return
-        [[ -n ${plan_names[$package]:-} ]] || { log "Resolved target is absent from package plan: $package"; return 1; }
+        [[ -n ${plan_names[$package]:-} ]] || { log "解析出的目标不在软件包计划中：$package / Resolved target is absent from package plan: $package"; return 1; }
         [[ -z ${root_names[$package]:-} ]] || continue
         root_names["$package"]=1
         roots+=("$package")
         [[ -z ${requested_names[$package]:-} ]] || requested+=("$package")
     done <<<"$output"
-    [[ -n ${root_names[base]:-} ]] || { log 'Protected base target did not resolve to base'; return 1; }
+    [[ -n ${root_names[base]:-} ]] || { log '受保护的 base 目标未解析为 base / Protected base target did not resolve to base'; return 1; }
 
     local -a install_targets=() install_options=(--needed)
     local -A source_targets=() installed_names=()
@@ -199,25 +199,25 @@ maintain_packages() {
 
     maintenance_inventory || return
     for package in "${installed[@]}"; do
-        [[ -n ${plan_names[$package]:-} ]] || { log "Unexpected installed package after maintenance: $package"; return 1; }
+        [[ -n ${plan_names[$package]:-} ]] || { log "维护后存在非预期的已安装软件包：$package / Unexpected installed package after maintenance: $package"; return 1; }
         actual_names["$package"]=1
     done
     for package in "${plan[@]}"; do
-        [[ -n ${actual_names[$package]:-} ]] || { log "Planned package missing after maintenance: $package"; return 1; }
+        [[ -n ${actual_names[$package]:-} ]] || { log "维护后缺少计划中的软件包：$package / Planned package missing after maintenance: $package"; return 1; }
     done
     output=$(filtered_query -Qqe) || return
     if [[ -n $output ]]; then
         while IFS= read -r package; do
             validate_packages "$package" || return
             [[ -n ${actual_names[$package]:-} && -z ${explicit_names[$package]:-} ]] || {
-                log "Invalid explicit package query result: $package"; return 1;
+                log "显式安装软件包的查询结果无效：$package / Invalid explicit package query result: $package"; return 1;
             }
             explicit_names["$package"]=1
         done <<<"$output"
     fi
     for package in "${installed[@]}"; do
         [[ ${root_names[$package]:-} == "${explicit_names[$package]:-}" ]] || {
-            log "Incorrect installation reason after maintenance: $package"; return 1;
+            log "维护后软件包的安装原因不正确：$package / Incorrect installation reason after maintenance: $package"; return 1;
         }
     done
 

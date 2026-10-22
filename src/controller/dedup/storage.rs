@@ -106,7 +106,7 @@ pub(in crate::controller) fn share(source: &File, target: &File) -> Result<Dedup
         match range.info.status {
             0 => {
                 if range.info.bytes > length {
-                    return Err(Error::Invalid("去重返回字节数超过请求范围".into()));
+                    return Err(Error::Invalid("去重返回字节数超过请求范围 / Deduplication returned more bytes than requested".into()));
                 }
                 if range.info.bytes < length {
                     // Never mark a partially processed file as fully matched.
@@ -118,7 +118,11 @@ pub(in crate::controller) fn share(source: &File, target: &File) -> Result<Dedup
             1 => return Ok(DedupOutcome::Different),
             status if status < 0 && unsupported(-status) => return Ok(DedupOutcome::Unsupported),
             status if status < 0 => return Err(fail(io::Error::from_raw_os_error(-status))),
-            status => return Err(Error::Invalid(format!("无效去重返回状态: {status}"))),
+            status => {
+                return Err(Error::Invalid(format!(
+                    "无效去重返回状态: {status} / Invalid deduplication return status: {status}"
+                )));
+            }
         }
         offset += length;
     }

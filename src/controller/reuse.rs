@@ -38,7 +38,9 @@ impl Receipt {
         if self.inputs_sha256.len() != 64
             || !self.inputs_sha256.bytes().all(|b| b.is_ascii_hexdigit())
         {
-            return Err(Error::Invalid("缓存执行输入摘要无效".into()));
+            return Err(Error::Invalid(
+                "缓存执行输入摘要无效 / Invalid cache execution-input digest".into(),
+            ));
         }
         Ok(())
     }
@@ -67,7 +69,7 @@ pub(super) fn now() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_secs())
-        .map_err(|e| Error::Invalid(format!("系统时间无效: {e}")))
+        .map_err(|e| Error::Invalid(format!("系统时间无效 / Invalid system time: {e}")))
 }
 
 /// Require matching plugin content and a still-fresh execution receipt.

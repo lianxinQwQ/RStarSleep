@@ -55,7 +55,7 @@ impl LoadedPlugin {
             if is_section {
                 if parameters.lists.contains_key(&name) {
                     return Err(Error::Invalid(format!(
-                        "缓存选择器同时匹配裸参数和节，请使用不冲突的名称: {selector}"
+                        "缓存选择器同时匹配裸参数和节，请使用不冲突的名称: {selector} / cache selector matches both a bare parameter and a section; use a nonconflicting name: {selector}"
                     )));
                 }
                 digest.update(b"section");
@@ -86,7 +86,7 @@ impl LoadedPlugin {
                         .is_some_and(String::is_empty)
                 {
                     return Err(Error::Invalid(format!(
-                        "精确节字段选择器不能匹配裸参数: {selector}"
+                        "精确节字段选择器不能匹配裸参数: {selector} / exact section field selector must not match a bare parameter: {selector}"
                     )));
                 }
                 digest.update(b"parameter");

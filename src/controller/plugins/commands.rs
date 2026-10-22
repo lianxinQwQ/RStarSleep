@@ -25,7 +25,7 @@ pub(super) fn parse(declarations: &[String]) -> Result<BTreeMap<String, String>>
             || commands.insert(name.into(), entry.into()).is_some()
         {
             return Err(Error::Invalid(format!(
-                "插件命令重复或与内置命令冲突: {name}"
+                "插件命令重复或与内置命令冲突: {name} / plugin command is duplicated or conflicts with a built-in command: {name}"
             )));
         }
     }
@@ -45,14 +45,16 @@ pub(super) fn entry_path(root: &Path, entry: &str) -> Result<PathBuf> {
     let info = fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
     if !info.is_file() {
         return Err(Error::Invalid(format!(
-            "插件命令入口必须为普通文件: {}",
+            "插件命令入口必须为普通文件: {0} / plugin command entry must be a regular file: {0}",
             path.display()
         )));
     }
     if path.extension() != Some(OsStr::new("sh")) {
         use std::os::unix::fs::PermissionsExt;
         if info.permissions().mode() & 0o111 == 0 {
-            return Err(Error::Invalid("插件命令入口缺少执行权限".into()));
+            return Err(Error::Invalid(
+                "插件命令入口缺少执行权限 / plugin command entry lacks execute permission".into(),
+            ));
         }
     }
     Ok(path)
@@ -68,9 +70,11 @@ pub(super) fn entry_path(root: &Path, entry: &str) -> Result<PathBuf> {
 impl LoadedPlugin {
     pub fn invoke_command(&self, name: &str, arguments: &[OsString], manager: &Path) -> Result<()> {
         let commands = parse(&self.metadata.commands)?;
-        let entry = commands
-            .get(name)
-            .ok_or_else(|| Error::Invalid(format!("插件未声明命令: {name}")))?;
+        let entry = commands.get(name).ok_or_else(|| {
+            Error::Invalid(format!(
+                "插件未声明命令: {name} / plugin does not declare command: {name}"
+            ))
+        })?;
         let path = entry_path(self.root(), entry)?;
         let mut command = if path.extension() == Some(OsStr::new("sh")) {
             let mut command = Command::new("bash");
@@ -93,7 +97,7 @@ impl LoadedPlugin {
                 operation: name.into(),
                 status: status.to_string(),
                 stdout: String::new(),
-                stderr: "插件命令退出失败".into(),
+                stderr: "插件命令退出失败 / Plugin command exited unsuccessfully".into(),
             });
         }
         Ok(())

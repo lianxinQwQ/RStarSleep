@@ -36,7 +36,8 @@ pub(super) fn context(runtime: &PreparedRuntime) -> Result<Context> {
         .open(base.join("ns/mnt"))?;
     if commands::leader(runtime)? != pid {
         return Err(Error::Invalid(
-            "machine leader changed during session preparation".into(),
+            "会话准备期间机器主进程已改变 / machine leader changed during session preparation"
+                .into(),
         ));
     }
     Ok(Context { root, namespace })
@@ -89,7 +90,7 @@ pub(super) fn mount_command(
         }
         _ => {
             return Err(Error::Invalid(
-                "invalid internal session mount operation".into(),
+                "内部会话挂载操作无效 / invalid internal session mount operation".into(),
             ));
         }
     }
@@ -110,7 +111,7 @@ pub(super) fn mount_command(
     let output = commands::output(command, Duration::from_secs(10))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
-            "cannot {operation} caller session resource: {}",
+            "调用者会话资源操作 {operation} 失败: {0} / cannot {operation} caller session resource: {0}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
@@ -173,7 +174,7 @@ pub(super) fn bind(
     let mut target_metadata = target.metadata()?;
     if target_metadata.file_type().is_symlink() {
         return Err(Error::Invalid(
-            "guest session mount target is a symlink".into(),
+            "客体会话挂载目标是符号链接 / guest session mount target is a symlink".into(),
         ));
     }
     if (source_metadata.dev(), source_metadata.ino())
@@ -192,7 +193,7 @@ pub(super) fn bind(
             target_metadata = target.metadata()?;
             if target_metadata.file_type().is_symlink() {
                 return Err(Error::Invalid(
-                    "replaced guest session mount target is a symlink".into(),
+                    "替换后的客体会话挂载目标是符号链接 / replaced guest session mount target is a symlink".into(),
                 ));
             }
         }
@@ -209,7 +210,8 @@ pub(super) fn bind(
     let visible = target.metadata()?;
     if (source_metadata.dev(), source_metadata.ino()) != (visible.dev(), visible.ino()) {
         return Err(Error::Invalid(
-            "guest session bind is not visible after publication".into(),
+            "发布后客体会话绑定挂载不可见 / guest session bind is not visible after publication"
+                .into(),
         ));
     }
     Ok(())

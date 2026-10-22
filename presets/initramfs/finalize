@@ -12,12 +12,12 @@ set -f
 for arg in $cmdline; do
     case "$arg" in
         rstarsleep.pending=*)
-            [ "$seen_pending" -eq 0 ] || fatal 'duplicate pending parameter'
+            [ "$seen_pending" -eq 0 ] || fatal 'pending 参数重复 / duplicate pending parameter'
             seen_pending=1
             pending=${arg#rstarsleep.pending=}
             ;;
         rstarsleep.storage=*)
-            [ "$seen_storage" -eq 0 ] || fatal 'duplicate storage parameter'
+            [ "$seen_storage" -eq 0 ] || fatal 'storage 参数重复 / duplicate storage parameter'
             seen_storage=1
             storage=${arg#rstarsleep.storage=}
             ;;
@@ -25,31 +25,31 @@ for arg in $cmdline; do
 done
 set +f
 [ "$seen_pending" -eq 1 ] || exit 0
-case "$pending" in /*) ;; *) fatal 'manifest path must be absolute' ;; esac
-case "$pending" in /|*[[:space:]]*|*'/../'*|*/..|*'/./'*|*/.) fatal 'invalid manifest path' ;; esac
-case "$storage" in UUID=*) uuid=${storage#UUID=} ;; *) fatal 'storage UUID is required' ;; esac
-case "$uuid" in ''|*[!0123456789abcdefABCDEF-]*) fatal 'invalid storage UUID' ;; esac
+case "$pending" in /*) ;; *) fatal '清单路径必须为绝对路径 / manifest path must be absolute' ;; esac
+case "$pending" in /|*[[:space:]]*|*'/../'*|*/..|*'/./'*|*/.) fatal '清单路径无效 / invalid manifest path' ;; esac
+case "$storage" in UUID=*) uuid=${storage#UUID=} ;; *) fatal '必须提供存储 UUID / storage UUID is required' ;; esac
+case "$uuid" in ''|*[!0123456789abcdefABCDEF-]*) fatal '存储 UUID 无效 / invalid storage UUID' ;; esac
 device="/dev/disk/by-uuid/$uuid"
 attempt=0
 while [ ! -b "$device" ]; do
     attempt=$((attempt + 1))
-    [ "$attempt" -lt 120 ] || fatal "storage device did not appear: $device"
+    [ "$attempt" -lt 120 ] || fatal "存储设备未出现：$device / storage device did not appear: $device"
     sleep 1
 done
 top=/run/rstarsleep-top
 mkdir -p "$top"
 if findmnt -rn --mountpoint "$top" >/dev/null 2>&1; then
-    [ "$(findmnt -rn --mountpoint "$top" --output FSTYPE)" = btrfs ] || fatal 'wrong storage filesystem'
-    [ "$(findmnt -rn --mountpoint "$top" --output UUID)" = "$uuid" ] || fatal 'wrong storage UUID'
+    [ "$(findmnt -rn --mountpoint "$top" --output FSTYPE)" = btrfs ] || fatal '存储文件系统错误 / wrong storage filesystem'
+    [ "$(findmnt -rn --mountpoint "$top" --output UUID)" = "$uuid" ] || fatal '存储 UUID 错误 / wrong storage UUID'
     options=$(findmnt -rn --mountpoint "$top" --output OPTIONS)
-    case ",$options," in *,rw,*) ;; *) fatal 'storage is not writable' ;; esac
-    case ",$options," in *,subvolid=5,*) ;; *) fatal 'storage is not the top-level subvolume' ;; esac
+    case ",$options," in *,rw,*) ;; *) fatal '存储不可写 / storage is not writable' ;; esac
+    case ",$options," in *,subvolid=5,*) ;; *) fatal '存储不是顶级子卷 / storage is not the top-level subvolume' ;; esac
 else
-    mount -t btrfs -o rw,subvolid=5 "$device" "$top" || fatal 'cannot mount management storage'
+    mount -t btrfs -o rw,subvolid=5 "$device" "$top" || fatal '无法挂载管理存储 / cannot mount management storage'
 fi
 manifest="$top$pending"
-[ -f "$manifest" ] || fatal 'pending manifest is missing'
+[ -f "$manifest" ] || fatal '待处理清单缺失 / pending manifest is missing'
 printf 'RStarSleep: completing inheritance: %s\n' "$pending"
 /usr/lib/rstarsleep/early-runtime/run-rstarsleep finalize-inheritance \
-    --manifest "$manifest" --filesystem-root "$top" || fatal 'inheritance failed; refusing incomplete root'
+    --manifest "$manifest" --filesystem-root "$top" || fatal '继承失败；拒绝使用不完整的根目录 / inheritance failed; refusing incomplete root'
 printf '%s\n' 'RStarSleep: inheritance committed.'

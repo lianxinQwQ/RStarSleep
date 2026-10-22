@@ -28,7 +28,9 @@ pub(super) fn component(name: &str) -> Result<String> {
     if !bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(Error::Invalid(format!("无效插件参数名称: {name:?}")));
+        return Err(Error::Invalid(format!(
+            "无效插件参数名称: {name:?} / invalid plugin parameter name: {name:?}"
+        )));
     }
     Ok(name.to_ascii_uppercase())
 }
@@ -66,7 +68,9 @@ impl PluginParameters {
         };
         let name = format!("RSTAR_{suffix}");
         if self.values.insert(name.clone(), value).is_some() {
-            return Err(Error::Invalid(format!("插件参数环境变量冲突: {name}")));
+            return Err(Error::Invalid(format!(
+                "插件参数环境变量冲突: {name} / plugin parameter environment variable collision: {name}"
+            )));
         }
         self.lists.insert(name.clone(), values);
         self.field_sections.insert(name, normalized_section);

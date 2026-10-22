@@ -57,7 +57,7 @@ pub(super) fn set_nocow(path: &Path, nocow: bool) -> Result<()> {
     }
     if is_nocow(path)? != nocow {
         return Err(Error::Invalid(format!(
-            "无法匹配目标 NOCOW 属性: {}",
+            "无法匹配目标 NOCOW 属性: {0} / Cannot match the target NOCOW attribute: {0}",
             path.display()
         )));
     }
@@ -192,7 +192,10 @@ fn cp(
 /// Build a metadata skeleton, copy each inode exactly once, then restore metadata.
 pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Result<()> {
     if !matches!(policy, NocowHandling::Reflink | NocowHandling::Copy) {
-        return Err(Error::Invalid("NOCOW 复制策略不允许自动降级".into()));
+        return Err(Error::Invalid(
+            "NOCOW 复制策略不允许自动降级 / NOCOW copy policy does not permit automatic fallback"
+                .into(),
+        ));
     }
     disk::checked(source)?;
     disk::checked(target)?;
@@ -206,7 +209,9 @@ pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Resul
                 .next()
                 .is_some())
     {
-        return Err(Error::Invalid("NOCOW 复制目标必须为空".into()));
+        return Err(Error::Invalid(
+            "NOCOW 复制目标必须为空 / NOCOW copy target must be empty".into(),
+        ));
     }
     let entries = entries(source)?;
     cp(source, target, true, "always", directory)?;
@@ -292,7 +297,7 @@ pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Resul
             || is_nocow(&path)? != entry.nocow
         {
             return Err(Error::Invalid(format!(
-                "继承硬链接或 NOCOW 属性不匹配: {}",
+                "继承硬链接或 NOCOW 属性不匹配: {0} / Inheritance hard-link or NOCOW attribute mismatch: {0}",
                 path.display()
             )));
         }

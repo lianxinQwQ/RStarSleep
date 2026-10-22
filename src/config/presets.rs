@@ -80,7 +80,7 @@ fn destination_exists(destination: &Path) -> Result<bool> {
     match fs::symlink_metadata(destination) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
         Ok(_) => Err(Error::Invalid(format!(
-            "预设插件路径必须是普通文件: {}",
+            "预设插件路径必须是普通文件: {0} / preset plugin path must be a regular file: {0}",
             destination.display()
         ))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),

@@ -34,8 +34,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Usage text shared by help output and invalid-command errors.
 /// 帮助输出与无效命令错误共用的用法说明。
-const USAGE: &str = "\
-用法：
+const USAGE: &str = "用法：
   RStarSleep init [<Btrfs 顶层绝对路径>] [--update-presets]
   RStarSleep init-system [<工作目录绝对路径>] <系统标识>
   RStarSleep packages <工作目录绝对路径> <系统标识>
@@ -46,7 +45,19 @@ const USAGE: &str = "\
   RStarSleep guest --help
 
 init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @RStarSleep 子卷；
-工作目录可使用该子卷路径或其挂载点 /rstarsleep。";
+工作目录可使用该子卷路径或其挂载点 /rstarsleep。 / Usage:
+  RStarSleep init [<absolute-Btrfs-top-level-path>] [--update-presets]
+  RStarSleep init-system [<absolute-work-directory>] <system-id>
+  RStarSleep packages <absolute-work-directory> <system-id>
+  RStarSleep build [<system-id> | --all] [--root <absolute-management-root>]
+  RStarSleep clean <system-id> <version> [--root <absolute-management-root>]
+  RStarSleep daemon install|run [--root <absolute-management-root>]
+  RStarSleep subsystem --help
+  RStarSleep guest --help
+
+By default, init automatically identifies the top level of the Btrfs filesystem containing
+the current system and creates the @RStarSleep subvolume.
+The work directory may use the subvolume path or its mount point /rstarsleep.";
 
 /// Read process arguments and delegate command handling to the dispatcher.
 /// 读取进程参数，并将命令处理委托给分派函数。
@@ -96,9 +107,12 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "finalize-inheritance" => {
             finalize_inheritance::run(rest)?
         }
-        [command, rest @ ..] => {
-            plugin_command::run(command.to_str().ok_or("子命令必须是 UTF-8")?, rest)?
-        }
+        [command, rest @ ..] => plugin_command::run(
+            command
+                .to_str()
+                .ok_or("子命令必须是 UTF-8 / subcommand must be UTF-8")?,
+            rest,
+        )?,
     }
     Ok(())
 }

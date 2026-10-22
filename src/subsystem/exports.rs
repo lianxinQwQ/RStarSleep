@@ -87,13 +87,17 @@ fn account(uid: u32) -> Result<(PathBuf, u32)> {
         )
     };
     if error != 0 || result.is_null() {
-        return Err(Error::Invalid("host user has no NSS account".into()));
+        return Err(Error::Invalid(
+            "宿主用户没有 NSS 账户 / host user has no NSS account".into(),
+        ));
     }
     let home = PathBuf::from(OsString::from_vec(
         unsafe { CStr::from_ptr(pwd.pw_dir) }.to_bytes().to_vec(),
     ));
     if !home.is_absolute() {
-        return Err(Error::Invalid("user home must be absolute".into()));
+        return Err(Error::Invalid(
+            "用户主目录必须为绝对路径 / user home must be absolute".into(),
+        ));
     }
     Ok((home, pwd.pw_gid))
 }
@@ -129,13 +133,15 @@ fn resource(root: &fs::File, path: &str, limit: u64) -> Result<Vec<u8>> {
         super::filesystem::open_at_guest(root, Path::new(path), libc::O_RDONLY | libc::O_NONBLOCK)?;
     if !file.metadata()?.is_file() || file.metadata()?.len() > limit {
         return Err(Error::Invalid(
-            "export resource is not a bounded regular file".into(),
+            "导出资源不是大小受限的普通文件 / export resource is not a bounded regular file".into(),
         ));
     }
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
-        return Err(Error::Invalid("export resource grew beyond limit".into()));
+        return Err(Error::Invalid(
+            "导出资源增长后超出限制 / export resource grew beyond limit".into(),
+        ));
     }
     Ok(bytes)
 }
@@ -159,9 +165,9 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
     );
     let binary = fs::canonicalize(std::env::current_exe()?)?;
     let text = |path: &Path| {
-        path.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| Error::Invalid("export paths must be UTF-8".into()))
+        path.to_str().map(str::to_owned).ok_or_else(|| {
+            Error::Invalid("导出路径必须为 UTF-8 / export paths must be UTF-8".into())
+        })
     };
     let binary = text(&binary)?;
     let root = text(store.root())?;
@@ -177,7 +183,7 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
         checked(&path)?;
         let file = fs::File::open(&path).map_err(|e| {
             Error::Invalid(format!(
-                "package exports require a query_package_files index: {e}"
+                "包导出需要 query_package_files 索引 / package exports require a query_package_files index: {e}"
             ))
         })?;
         let mut bytes = Vec::new();
@@ -200,7 +206,7 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
         for package in &config.exports.packages {
             if !index.iter().any(|(owner, _)| owner == package) {
                 return Err(Error::Invalid(format!(
-                    "no indexed files for exported package {package}"
+                    "导出包 {package} 没有已索引文件 / no indexed files for exported package {package}"
                 )));
             }
         }
@@ -211,7 +217,7 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
         let basename = Path::new(&target)
             .file_name()
             .and_then(|v| v.to_str())
-            .ok_or_else(|| Error::Invalid("invalid command basename".into()))?;
+            .ok_or_else(|| Error::Invalid("命令文件名无效 / invalid command basename".into()))?;
         crate::config::validate_identifier(basename)?;
         let wrapper = format!(
             "#!/bin/sh\nexec {} subsystem exec --root {} {} -- {} \"$@\"\n",
@@ -231,7 +237,9 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
             )
             .is_some()
         {
-            return Err(Error::Invalid("command export name collision".into()));
+            return Err(Error::Invalid(
+                "命令导出名称冲突 / command export name collision".into(),
+            ));
         }
     }
     for target in desktops {
@@ -243,7 +251,9 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
         let basename = Path::new(&target)
             .file_name()
             .and_then(|v| v.to_str())
-            .ok_or_else(|| Error::Invalid("invalid desktop basename".into()))?;
+            .ok_or_else(|| {
+                Error::Invalid("desktop 文件名无效 / invalid desktop basename".into())
+            })?;
         crate::config::validate_identifier(basename)?;
         let mut contents =
             String::from("[Desktop Entry]\nType=Application\nDBusActivatable=false\n");
@@ -267,7 +277,7 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
             {
                 if key.contains(['\n', '\r', '=']) || value.contains(['\n', '\r']) {
                     return Err(Error::Invalid(
-                        "desktop metadata must occupy one line".into(),
+                        "desktop 元数据必须位于单行 / desktop metadata must occupy one line".into(),
                     ));
                 }
                 contents.push_str(&format!("{key}={value}\n"));
@@ -352,7 +362,9 @@ fn desired(store: &ConfigStore, runtime: &PreparedRuntime, uid: u32) -> Result<M
             )
             .is_some()
         {
-            return Err(Error::Invalid("desktop export name collision".into()));
+            return Err(Error::Invalid(
+                "desktop 导出名称冲突 / desktop export name collision".into(),
+            ));
         }
     }
     Ok(Manifest {
@@ -394,7 +406,7 @@ fn user_helper(manifest: &Manifest, uid: u32) -> Result<()> {
     let output = helper_output(command, &bytes, Duration::from_secs(30))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
-            "user export reconciliation failed: {}",
+            "用户导出状态协调失败: {0} / user export reconciliation failed: {0}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
@@ -408,7 +420,9 @@ fn user_helper(manifest: &Manifest, uid: u32) -> Result<()> {
 /// - `bytes`, `timeout`: Manifest and execution budget. 清单及执行时限。
 fn helper_output(mut command: Command, bytes: &[u8], timeout: Duration) -> Result<Output> {
     if bytes.len() > MAX_MANIFEST_BYTES {
-        return Err(Error::Invalid("export manifest too large".into()));
+        return Err(Error::Invalid(
+            "导出清单过大 / export manifest too large".into(),
+        ));
     }
     // A file avoids blocking the manager on pipe writes before its timeout loop.
     // 文件避免管理器在进入超时循环前因管道写入而阻塞。
@@ -433,7 +447,7 @@ fn helper_output(mut command: Command, bytes: &[u8], timeout: Duration) -> Resul
     let status = loop {
         if stderr.metadata()?.len() > MAX_HELPER_STDERR_BYTES {
             return Err(Error::Invalid(
-                "user export helper exceeded output limit".into(),
+                "用户导出辅助程序超出输出限制 / user export helper exceeded output limit".into(),
             ));
         }
         if let Some(status) = child.0.try_wait()? {
@@ -441,7 +455,7 @@ fn helper_output(mut command: Command, bytes: &[u8], timeout: Duration) -> Resul
         }
         if Instant::now() >= deadline {
             return Err(Error::Invalid(
-                "user export helper exceeded time limit".into(),
+                "用户导出辅助程序超出时间限制 / user export helper exceeded time limit".into(),
             ));
         }
         thread::sleep(Duration::from_millis(20));
@@ -453,7 +467,7 @@ fn helper_output(mut command: Command, bytes: &[u8], timeout: Duration) -> Resul
         .read_to_end(&mut errors)?;
     if errors.len() as u64 > MAX_HELPER_STDERR_BYTES {
         return Err(Error::Invalid(
-            "user export helper exceeded output limit".into(),
+            "用户导出辅助程序超出输出限制 / user export helper exceeded output limit".into(),
         ));
     }
     Ok(Output {
@@ -473,7 +487,9 @@ fn helper_output(mut command: Command, bytes: &[u8], timeout: Duration) -> Resul
 pub fn sync(store: &ConfigStore, id: &str, uid: u32) -> Result<()> {
     let config = SubsystemConfig::read(store, id)?;
     if !config.allows(uid) {
-        return Err(Error::Invalid("export access denied".into()));
+        return Err(Error::Invalid(
+            "导出访问被拒绝 / export access denied".into(),
+        ));
     }
     let layout = store.system_layout(id)?;
     let _lock = controller::lock_system_directory(&layout.root)?;
@@ -640,7 +656,9 @@ fn entry_path(path: &str, id: &str) -> Result<()> {
         .iter()
         .any(|prefix| path.starts_with(prefix)))
     {
-        return Err(Error::Invalid("invalid export namespace".into()));
+        return Err(Error::Invalid(
+            "导出命名空间无效 / invalid export namespace".into(),
+        ));
     }
     Ok(())
 }
@@ -675,7 +693,9 @@ fn apply(manifest: Manifest) -> Result<()> {
         || manifest.manager.len() != 64
         || !manifest.manager.bytes().all(|c| c.is_ascii_hexdigit())
     {
-        return Err(Error::Invalid("invalid export manifest".into()));
+        return Err(Error::Invalid(
+            "导出清单无效 / invalid export manifest".into(),
+        ));
     }
     protocol_id(&manifest.id)?;
     let state = manifest
@@ -701,14 +721,19 @@ fn apply(manifest: Manifest) -> Result<()> {
     for (path, item) in manifest.entries {
         entry_path(&path, &manifest.id)?;
         if !matches!(item.mode, 0o644 | 0o755) || item.bytes.len() > 16 * 1024 * 1024 {
-            return Err(Error::Invalid("invalid export payload".into()));
+            return Err(Error::Invalid(
+                "导出载荷无效 / invalid export payload".into(),
+            ));
         }
         let destination = manifest.home.join(&path);
         let digest = format!("{:x}", Sha256::digest(&item.bytes));
         let current = hash(&destination);
         let exists = fs::symlink_metadata(&destination).is_ok();
         if exists && !(current.is_some() && previous.files.get(&path) == current.as_ref()) {
-            eprintln!("preserving user-owned export {}", destination.display());
+            eprintln!(
+                "保留用户所有的导出 {0} / preserving user-owned export {0}",
+                destination.display()
+            );
             continue;
         }
         if current.as_ref() != Some(&digest) {
@@ -754,13 +779,17 @@ pub fn user_entry() -> Result<()> {
         .take(MAX_MANIFEST_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_MANIFEST_BYTES {
-        return Err(Error::Invalid("export manifest too large".into()));
+        return Err(Error::Invalid(
+            "导出清单过大 / export manifest too large".into(),
+        ));
     }
     let manifest: Manifest =
         serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
     let (home, _) = account(unsafe { libc::geteuid() })?;
     if manifest.home != home {
-        return Err(Error::Invalid("export home does not match caller".into()));
+        return Err(Error::Invalid(
+            "导出主目录与调用者不匹配 / export home does not match caller".into(),
+        ));
     }
     apply(manifest)
 }

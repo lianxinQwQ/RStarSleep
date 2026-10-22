@@ -45,7 +45,7 @@ pub(super) fn read_initial(
         })?;
     let first = protocol::read_frame::<ClientMessage>(reader);
     initial.store(true, Ordering::Release);
-    first?.ok_or_else(|| Error::Protocol("missing request".into()))
+    first?.ok_or_else(|| Error::Protocol("缺少请求 / missing request".into()))
 }
 
 /// Run the privileged manager for a fixed trusted root.
@@ -76,11 +76,15 @@ pub fn run(store: ConfigStore) -> Result<()> {
         .open(directory.join("daemon.lock"))?;
     trust::path(&directory.join("daemon.lock"))?;
     if unsafe { libc::flock(guard.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(Error::Invalid("daemon already running".into()));
+        return Err(Error::Invalid(
+            "守护进程已在运行 / daemon already running".into(),
+        ));
     }
     if let Ok(m) = fs::symlink_metadata(&socket) {
         if !m.file_type().is_socket() || m.uid() != 0 {
-            return Err(Error::Invalid("unexpected daemon socket path".into()));
+            return Err(Error::Invalid(
+                "守护进程套接字路径不符合预期 / unexpected daemon socket path".into(),
+            ));
         }
         fs::remove_file(&socket)?;
     }
@@ -99,7 +103,7 @@ pub fn run(store: ConfigStore) -> Result<()> {
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
-                eprintln!("subsystem accept: {error}");
+                eprintln!("子系统接受连接 / subsystem accept: {error}");
                 thread::sleep(Duration::from_millis(50));
                 continue;
             }
@@ -107,7 +111,7 @@ pub fn run(store: ConfigStore) -> Result<()> {
         let peer = match identity::credentials(stream.as_raw_fd()) {
             Ok(peer) => peer,
             Err(error) => {
-                eprintln!("subsystem peer: {error}");
+                eprintln!("子系统对端 / subsystem peer: {error}");
                 continue;
             }
         };
@@ -149,11 +153,14 @@ pub fn run(store: ConfigStore) -> Result<()> {
                     result
                 })();
                 if let Err(e) = result {
-                    eprintln!("subsystem uid={} pid={}: {e}", peer.uid, peer.pid);
+                    eprintln!(
+                        "子系统 uid={0} pid={1} / subsystem uid={0} pid={1}: {e}",
+                        peer.uid, peer.pid
+                    );
                 }
             })
         {
-            eprintln!("subsystem client worker: {error}");
+            eprintln!("子系统客户端工作线程 / subsystem client worker: {error}");
         }
     }
     Ok(())

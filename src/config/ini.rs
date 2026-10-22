@@ -78,7 +78,12 @@ impl Document {
                     .strip_prefix('[')
                     .and_then(|s| s.strip_suffix(']'))
                     .filter(|s| !s.trim().is_empty() && !s.contains(['[', ']']))
-                    .ok_or_else(|| document.error(line, "分节标题必须为 [Section]"))?
+                    .ok_or_else(|| {
+                        document.error(
+                            line,
+                            "分节标题必须为 [Section] / section header must use [Section]",
+                        )
+                    })?
                     .trim()
                     .into();
                 document.sections.insert(section.clone());
@@ -86,10 +91,10 @@ impl Document {
             }
             let (key, value) = value
                 .split_once('=')
-                .ok_or_else(|| document.error(line, "设置必须包含 ="))?;
+                .ok_or_else(|| document.error(line, "设置必须包含 = / setting must contain ="))?;
             let key = key.trim();
             if key.is_empty() || key.chars().any(char::is_whitespace) {
-                return Err(document.error(line, "设置名称不能为空或包含空白"));
+                return Err(document.error(line, "设置名称不能为空或包含空白 / setting name must not be empty or contain whitespace"));
             }
             document.assignments.push(Assignment {
                 section: section.clone(),
@@ -162,9 +167,12 @@ impl Document {
     /// - `key`: Required setting.
     ///   必需设置。
     fn required(&self, section: &str, key: &str) -> Result<&Assignment> {
-        let entry = self
-            .scalar(section, key)
-            .ok_or_else(|| self.error(0, &format!("缺少 [{section}] {key}")))?;
+        let entry = self.scalar(section, key).ok_or_else(|| {
+            self.error(
+                0,
+                &format!("缺少 [{section}] {key} / missing [{section}] {key}"),
+            )
+        })?;
         if self
             .assignments
             .iter()
@@ -172,10 +180,13 @@ impl Document {
             .count()
             != 1
         {
-            return Err(self.error(entry.line, &format!("[{section}] {key} 必须恰好配置一次")));
+            return Err(self.error(entry.line, &format!("[{section}] {key} 必须恰好配置一次 / [{section}] {key} must be configured exactly once")));
         }
         if entry.value.is_empty() {
-            return Err(self.error(entry.line, &format!("[{section}] {key} 不能为空")));
+            return Err(self.error(
+                entry.line,
+                &format!("[{section}] {key} 不能为空 / [{section}] {key} must not be empty"),
+            ));
         }
         Ok(entry)
     }
@@ -187,10 +198,12 @@ impl Document {
     ///   已解析构建设置。
     pub(super) fn schema_version(&self) -> Result<u32> {
         let entry = self.required("Config", "SchemaVersion")?;
-        entry
-            .value
-            .parse()
-            .map_err(|_| self.error(entry.line, "[Config] SchemaVersion 必须是整数"))
+        entry.value.parse().map_err(|_| {
+            self.error(
+                entry.line,
+                "[Config] SchemaVersion 必须是整数 / [Config] SchemaVersion must be an integer",
+            )
+        })
     }
 
     /// Read plugin selection independently of packages and the schema marker.
@@ -249,7 +262,7 @@ impl Document {
                 .sections
                 .insert(super::parameters::component(section)?)
             {
-                return Err(self.error(0, "节名大小写冲突"));
+                return Err(self.error(0, "节名大小写冲突 / section names conflict in case"));
             }
         }
         let mut values: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
@@ -322,7 +335,7 @@ impl Document {
             }
         }
         if !found {
-            return Err(self.error(0, "缺少 [Content] Packages；空列表请显式写 Packages="));
+            return Err(self.error(0, "缺少 [Content] Packages；空列表请显式写 Packages= / missing [Content] Packages; explicitly use Packages= for an empty list"));
         }
         Ok(PackageConfig { packages })
     }

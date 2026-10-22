@@ -114,7 +114,7 @@ fn decode_acl(data: &[u8]) -> std::io::Result<Vec<(bool, u32)>> {
     if data.len() < 4 || data[..4] != 2u32.to_le_bytes() || !(data.len() - 4).is_multiple_of(8) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "invalid POSIX ACL",
+            "无效的 POSIX ACL / invalid POSIX ACL",
         ));
     }
     Ok(data[4..]
@@ -189,7 +189,9 @@ pub(super) fn assess(
         logging::diagnostic("仅展示前 100 个路径。");
     }
     for error in scanner.errors.iter().take(100) {
-        logging::diagnostic(format!("评估未完成的项目：{error}"));
+        logging::diagnostic(format!(
+            "评估未完成的项目 / Items whose evaluation is incomplete: {error}"
+        ));
     }
     logging::diagnostic(
         "评估仅检查当前继承来源的属主、属组和 POSIX ACL；不扫描新系统，也不解析文件内容中的数字 ID。首次启动来源之后的变化不包含在本次评估中。",

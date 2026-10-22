@@ -22,7 +22,7 @@ validate_packages() {
     local package
     for package in "$@"; do
         if [[ ! $package =~ ^[a-zA-Z0-9@_+][a-zA-Z0-9@_.+-]*$ ]]; then
-            log "Invalid package name: $package"
+            log "软件包名称无效：$package / Invalid package name: $package"
             return 64
         fi
     done
@@ -87,11 +87,11 @@ clean_orphan_dependencies() {
 identity_root() {
     local relative
     [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
-        log 'Identity operations require an existing absolute RSTAR_ROOT'; return 64;
+        log '身份操作要求 RSTAR_ROOT 为现有根目录的绝对路径 / Identity operations require an existing absolute RSTAR_ROOT'; return 64;
     }
     for relative in etc etc/ssh etc/pacman.d var var/lib var/lib/dbus var/lib/systemd var/log tmp var/tmp; do
         [[ ! -L ${RSTAR_ROOT%/}/$relative ]] || {
-            log "Identity directory must not be a link: $relative"; return 64;
+            log "身份目录不能是链接：$relative / Identity directory must not be a link: $relative"; return 64;
         }
     done
 }
@@ -134,7 +134,7 @@ copy_prepared_database() {
 # 将默认文件补入挂载的 data 目录，保留已有配置。
 prepare_plugin_data() {
     local resources=${1:-${RSTAR_PLUGIN_ROOT:-${plugin_root:-}}}
-    [[ -d $resources/data ]] || { log 'Missing persistent data mount'; return 1; }
+    [[ -d $resources/data ]] || { log '缺少持久化数据挂载 / Missing persistent data mount'; return 1; }
     if [[ -d $resources/default-data ]]; then
         local entry missing=0
         while IFS= read -r -d '' entry; do
@@ -153,7 +153,7 @@ prepare_plugin_data() {
 # 参数：可写输出目录；Include 中的路径必须为绝对路径。
 write_pacman_configuration() {
     local directory=$1 resources=${RSTAR_PLUGIN_ROOT:-${plugin_root:-}} mirror line template mirror_file
-    [[ -n $resources ]] || { log 'Missing plugin resource directory'; return 64; }
+    [[ -n $resources ]] || { log '缺少插件资源目录 / Missing plugin resource directory'; return 64; }
     resources=$(cd -- "$resources" && pwd -P) || return
     if [[ ${rstar_local_query:-0} != 1 ]]; then
         prepare_plugin_data "$resources" || return
@@ -165,16 +165,16 @@ write_pacman_configuration() {
         [[ -f $mirror_file ]] || mirror_file=$resources/default-data/mirrorlist
     fi
     [[ -f $template && -f $mirror_file ]] || {
-        log 'Missing plugin pacman template or mirrorlist'; return 1;
+        log '缺少插件 pacman 模板或镜像列表 / Missing plugin pacman template or mirrorlist'; return 1;
     }
     mirror=${RSTAR_DISTRIBUTION_MIRROR:-${RSTAR_MIRROR:-}}
     if [[ $mirror == *$'\n'* || $mirror == *$'\r'* ]]; then
-        log 'Mirror must not contain line breaks'; return 64
+        log '镜像地址不能包含换行符 / Mirror must not contain line breaks'; return 64
     fi
     mkdir -p -- "$directory" || return
     directory=$(cd -- "$directory" && pwd -P) || return
     if [[ $resources == *$'\n'* || $resources == *$'\r'* || $directory == *$'\n'* || $directory == *$'\r'* ]]; then
-        log 'Pacman configuration paths must not contain line breaks'; return 64
+        log 'Pacman 配置路径不能包含换行符 / Pacman configuration paths must not contain line breaks'; return 64
     fi
     if [[ -n $mirror ]]; then
         printf 'Server = %s\n' "$mirror" >"$directory/mirrorlist" || return
@@ -238,7 +238,7 @@ run_configured_pacman() {
             copy_prepared_database "$database" "/var/lib/pacman/sync/${database##*/}" || return
             [[ $database != *.db ]] || (( database_count += 1 ))
         done
-        (( database_count )) || { log 'Prepared official repository databases are missing'; return 1; }
+        (( database_count )) || { log '缺少已准备的官方仓库数据库 / Prepared official repository databases are missing'; return 1; }
         if [[ ${args[0]:-} == -Syu ]]; then args[0]=-Su; fi
     fi
     if [[ -f $repository/rstarsleep.db.tar.gz ]]; then

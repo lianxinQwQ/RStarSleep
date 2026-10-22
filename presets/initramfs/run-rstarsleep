@@ -9,7 +9,7 @@ loader=
 IFS= read -r loader < "$runtime/loader-name" || :
 case "$loader" in
     ''|*/*|*[[:space:]]*)
-        printf '%s\n' 'RStarSleep: invalid early-runtime loader name' >&2
+        printf '%s\n' 'RStarSleep：早期运行时加载器名称无效 / RStarSleep: invalid early-runtime loader name' >&2
         exit 1
         ;;
 esac

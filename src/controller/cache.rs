@@ -29,7 +29,11 @@ pub(super) fn clear_from(
     let start = STAGES
         .iter()
         .position(|candidate| *candidate == stage)
-        .ok_or_else(|| Error::Invalid(format!("未知缓存阶段: {stage}")))?;
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "未知缓存阶段: {stage} / Unknown cache stage: {stage}"
+            ))
+        })?;
     if !disk::exists(cache_root)? {
         return Ok(());
     }
@@ -38,7 +42,9 @@ pub(super) fn clear_from(
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("系统缓存缺少管理根".into()))?;
+        .ok_or_else(|| {
+            Error::Invalid("系统缓存缺少管理根 / System cache has no management root".into())
+        })?;
     let _pins_lock = super::records::lock_inheritance(manager)?;
     let mut pins = super::inheritance_migration::pinned_sources(manager)?;
     let systems = manager.join("systems");
@@ -67,7 +73,7 @@ pub(super) fn clear_from(
             .is_dir()
         {
             return Err(Error::Invalid(format!(
-                "系统缓存条目必须是目录: {}",
+                "系统缓存条目必须是目录: {0} / System cache entry must be a directory: {0}",
                 directory.display()
             )));
         }
@@ -80,7 +86,7 @@ pub(super) fn clear_from(
                     .any(|pin| pin.starts_with(&location) || location.starts_with(pin))
                 {
                     return Err(Error::Invalid(format!(
-                        "缓存被尚未完成的继承或来源迁移引用，拒绝清理: {}",
+                        "缓存被尚未完成的继承或来源迁移引用，拒绝清理: {0} / Cache is referenced by unfinished inheritance or source migration; refusing cleanup: {0}",
                         root.display()
                     )));
                 }
@@ -217,7 +223,7 @@ fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
         || record.plugin_version.is_empty()
     {
         return Err(Error::Invalid(format!(
-            "缓存完成记录不符: {version}/{stage}"
+            "缓存完成记录不符: {version}/{stage} / Cache completion record mismatch: {version}/{stage}"
         )));
     }
     for hash in [
@@ -226,7 +232,7 @@ fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
         &record.identity.options_sha256,
     ] {
         if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return Err(Error::Invalid("缓存摘要无效".into()));
+            return Err(Error::Invalid("缓存摘要无效 / Invalid cache digest".into()));
         }
     }
     if let Some(receipt) = &record.reuse {
@@ -291,19 +297,25 @@ pub(super) fn load(
         .is_file()
     {
         return Err(Error::Invalid(format!(
-            "缓存完成记录必须是普通文件: {}",
+            "缓存完成记录必须是普通文件: {0} / Cache completion record must be a regular file: {0}",
             sidecar.display()
         )));
     }
     let text = fs::read_to_string(&sidecar).map_err(|e| disk::io(&sidecar, e))?;
-    let record: Record = toml::from_str(&text)
-        .map_err(|e| Error::Invalid(format!("缓存记录 {}: {e}", sidecar.display())))?;
+    let record: Record = toml::from_str(&text).map_err(|e| {
+        Error::Invalid(format!(
+            "缓存记录 {0} / Cache record {0}: {e}",
+            sidecar.display()
+        ))
+    })?;
     validate(&record, version, stage)?;
     if !root_exists {
         return Ok(None);
     }
     if config_hash(config)? != record.config_sha256 {
-        return Err(Error::Invalid(format!("缓存来源配置已改变: {version}")));
+        return Err(Error::Invalid(format!(
+            "缓存来源配置已改变: {version} / Cache source configuration has changed: {version}"
+        )));
     }
     if &record.identity != identity {
         return Ok(None);
@@ -337,7 +349,9 @@ pub(super) fn commit(
     let root = cache_directory.join(&record.stage);
     let sidecar = cache_directory.join(format!("{}.toml", record.stage));
     if disk::exists(&root)? || disk::exists(&sidecar)? {
-        return Err(Error::Invalid("不覆盖现有阶段缓存".into()));
+        return Err(Error::Invalid(
+            "不覆盖现有阶段缓存 / Refusing to overwrite an existing stage cache".into(),
+        ));
     }
     // Keep the snapshot beside its destination; moving a read-only Btrfs subvolume across parents fails.
     // 快照与目标同级；跨父目录移动只读 Btrfs 子卷会失败。
@@ -368,7 +382,7 @@ pub(super) fn commit(
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(cleanup)) => Err(Error::Invalid(format!(
-            "{error}; 暂存缓存清理失败: {cleanup}"
+            "{error}; 暂存缓存清理失败: {cleanup} / {error}; staged cache cleanup failed: {cleanup}"
         ))),
     }
 }

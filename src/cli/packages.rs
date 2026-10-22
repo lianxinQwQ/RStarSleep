@@ -22,7 +22,9 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
     let [root, id] = arguments else {
         return Err(super::USAGE.into());
     };
-    let id = id.to_str().ok_or("系统标识必须是 UTF-8 文本")?;
+    let id = id
+        .to_str()
+        .ok_or("系统标识必须是 UTF-8 文本 / system identifier must be UTF-8 text")?;
     let store = ConfigStore::new(PathBuf::from(root))?;
     for package in store.read_packages(id)?.packages {
         println!("{package}");

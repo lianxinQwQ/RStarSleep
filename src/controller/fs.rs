@@ -32,7 +32,7 @@ pub(super) fn io(path: &Path, source: std::io::Error) -> Error {
 pub(super) fn checked(path: &Path) -> Result<()> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(Error::Invalid(format!(
-            "路径必须绝对且不含父级跳转: {}",
+            "路径必须绝对且不含父级跳转: {0} / Path must be absolute and must not contain parent-directory traversal: {0}",
             path.display()
         )));
     }
@@ -42,13 +42,13 @@ pub(super) fn checked(path: &Path) -> Result<()> {
         match fs::symlink_metadata(&current) {
             Ok(info) if info.file_type().is_symlink() => {
                 return Err(Error::Invalid(format!(
-                    "路径不能经过链接: {}",
+                    "路径不能经过链接: {0} / Path must not traverse symbolic links: {0}",
                     current.display()
                 )));
             }
             Ok(info) if current != path && !info.is_dir() => {
                 return Err(Error::Invalid(format!(
-                    "祖先必须是目录: {}",
+                    "祖先必须是目录: {0} / Ancestor must be a directory: {0}",
                     current.display()
                 )));
             }
@@ -122,7 +122,7 @@ pub(super) fn write_text(path: &Path, text: &str) -> Result<()> {
     checked(path)?;
     let parent = path
         .parent()
-        .ok_or_else(|| Error::Invalid("记录缺少父目录".into()))?;
+        .ok_or_else(|| Error::Invalid("记录缺少父目录 / Record has no parent directory".into()))?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| io(parent, e))?;
     file.write_all(text.as_bytes())
         .and_then(|_| file.as_file().sync_all())
@@ -137,7 +137,9 @@ pub(super) fn guest_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf
     use std::{collections::VecDeque, ffi::OsString, path::PathBuf};
     checked(root)?;
     if !guest.is_absolute() {
-        return Err(Error::Invalid("目标系统路径必须绝对".into()));
+        return Err(Error::Invalid(
+            "目标系统路径必须绝对 / Target system path must be absolute".into(),
+        ));
     }
     let mut pending: VecDeque<OsString> = guest
         .components()
@@ -161,7 +163,9 @@ pub(super) fn guest_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf
             Ok(info) if info.file_type().is_symlink() && !pending.is_empty() => {
                 links += 1;
                 if links > 40 {
-                    return Err(Error::Invalid("目标路径符号链接循环".into()));
+                    return Err(Error::Invalid(
+                        "目标路径符号链接循环 / Symbolic-link loop in target path".into(),
+                    ));
                 }
                 let link = fs::read_link(&path).map_err(|e| io(&path, e))?;
                 if link.is_absolute() {

@@ -20,12 +20,14 @@ pub(super) fn key(target: &Path) -> String {
 pub(super) fn target_path(target: &Path) -> Result<()> {
     crate::subsystem::config::absolute(target, false)?;
     if target.as_os_str().len() > 4096 {
-        return Err(Error::Invalid("guest path exceeds limit".into()));
+        return Err(Error::Invalid(
+            "客体路径超出限制 / guest path exceeds limit".into(),
+        ));
     }
     for reserved in ["/run", "/proc", "/sys", "/dev", "/rstarsleep"] {
         if target.starts_with(reserved) || Path::new(reserved).starts_with(target) {
             return Err(Error::Invalid(format!(
-                "reserved guest path: {}",
+                "保留的客体路径: {0} / reserved guest path: {0}",
                 target.display()
             )));
         }
@@ -41,7 +43,7 @@ pub(super) fn target_path(target: &Path) -> Result<()> {
 pub(super) fn open_target(root: &File, target: &Path) -> Result<File> {
     target_path(target)?;
     let path = CString::new(target.as_os_str().as_encoded_bytes())
-        .map_err(|_| Error::Invalid("invalid guest target".into()))?;
+        .map_err(|_| Error::Invalid("客体目标无效 / invalid guest target".into()))?;
     #[repr(C)]
     struct How {
         flags: u64,
@@ -83,7 +85,7 @@ pub(super) fn authenticate(runtime: &PreparedRuntime, peer: identity::Peer) -> R
     let caller = File::open(format!("/proc/{}/ns/mnt", peer.pid))?;
     if !same_inode(&namespace.metadata()?, &caller.metadata()?) {
         return Err(Error::Invalid(
-            "guest socket is restricted to its machine mount namespace".into(),
+            "客体套接字仅限其机器的挂载命名空间访问 / guest socket is restricted to its machine mount namespace".into(),
         ));
     }
     let root = OpenOptions::new()
@@ -94,7 +96,8 @@ pub(super) fn authenticate(runtime: &PreparedRuntime, peer: identity::Peer) -> R
         || commands::leader(runtime)? != leader
     {
         return Err(Error::Invalid(
-            "guest machine root changed during authentication".into(),
+            "身份验证期间客体机器根目录已改变 / guest machine root changed during authentication"
+                .into(),
         ));
     }
     Ok(GuestRoot {
@@ -116,7 +119,7 @@ pub(super) fn still_running(runtime: &PreparedRuntime, root: &GuestRoot) -> Resu
         )
     {
         return Err(Error::Invalid(
-            "guest restarted during operation; retry".into(),
+            "操作期间客体已重启，请重试 / guest restarted during operation; retry".into(),
         ));
     }
     Ok(())
@@ -141,17 +144,21 @@ pub(super) fn mount_path(value: &str) -> Result<PathBuf> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            let octal = bytes
-                .get(i + 1..i + 4)
-                .ok_or_else(|| Error::Invalid("invalid mountinfo escape".into()))?;
+            let octal = bytes.get(i + 1..i + 4).ok_or_else(|| {
+                Error::Invalid("mountinfo 转义无效 / invalid mountinfo escape".into())
+            })?;
             if !octal.iter().all(|v| (b'0'..=b'7').contains(v)) {
-                return Err(Error::Invalid("invalid mountinfo escape".into()));
+                return Err(Error::Invalid(
+                    "mountinfo 转义无效 / invalid mountinfo escape".into(),
+                ));
             }
             let n = ((octal[0] - b'0') as u16) * 64
                 + ((octal[1] - b'0') as u16) * 8
                 + (octal[2] - b'0') as u16;
             if n == 0 || n > 255 {
-                return Err(Error::Invalid("invalid mountinfo byte".into()));
+                return Err(Error::Invalid(
+                    "mountinfo 字节无效 / invalid mountinfo byte".into(),
+                ));
             }
             output.push(n as u8);
             i += 4;
@@ -171,14 +178,16 @@ pub(super) fn mount_path(value: &str) -> Result<PathBuf> {
 pub(super) fn mounts_at(root: &GuestRoot, target: &Path) -> Result<Vec<PathBuf>> {
     let data = fs::read_to_string(format!("/proc/{}/mountinfo", root.leader))?;
     if data.len() > 4 * 1024 * 1024 {
-        return Err(Error::Invalid("guest mount table exceeds limit".into()));
+        return Err(Error::Invalid(
+            "客体挂载表超出限制 / guest mount table exceeds limit".into(),
+        ));
     }
     let mut mounts = Vec::new();
     for line in data.lines() {
         let field = line
             .split_ascii_whitespace()
             .nth(4)
-            .ok_or_else(|| Error::Invalid("invalid guest mount table".into()))?;
+            .ok_or_else(|| Error::Invalid("客体挂载表无效 / invalid guest mount table".into()))?;
         let mount = mount_path(field)?;
         if mount.starts_with(target) {
             mounts.push(mount);

@@ -14,8 +14,9 @@ use tar::{Builder, Header};
 /// No parameters; Cargo supplies the manifest and output directories.
 /// 无参数；Cargo 提供项目和输出目录。
 fn main() -> io::Result<()> {
-    let manifest = env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
-    let output = env::var_os("OUT_DIR").expect("Cargo output directory");
+    let manifest =
+        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo 清单目录 / Cargo manifest directory");
+    let output = env::var_os("OUT_DIR").expect("Cargo 输出目录 / Cargo output directory");
     let root = Path::new(&manifest).join("presets/plugins/arch");
     println!("cargo:rerun-if-changed={}", root.display());
     let destination = fs::File::create(Path::new(&output).join("arch.tar.gz"))?;
@@ -51,7 +52,7 @@ fn append_directory<W: io::Write>(
         let metadata = fs::symlink_metadata(&path)?;
         let relative = path
             .strip_prefix(root)
-            .expect("preset resource within root");
+            .expect("根目录中的预设资源 / preset resource within root");
         let mut header = Header::new_gnu();
         header.set_uid(0);
         header.set_gid(0);
@@ -78,7 +79,7 @@ fn append_directory<W: io::Write>(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "preset resource must be a regular file or directory: {}",
+                    "预设资源必须是普通文件或目录：{0} / preset resource must be a regular file or directory: {0}",
                     path.display()
                 ),
             ));

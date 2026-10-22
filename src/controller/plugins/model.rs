@@ -19,7 +19,7 @@ pub enum Error {
     Configuration(#[from] crate::config::Error),
     /// An archive or temporary file operation failed.
     /// 压缩包或临时文件操作失败。
-    #[error("无法访问插件路径 {path}: {source}")]
+    #[error("无法访问插件路径 {path} / cannot access plugin path {path}: {source}")]
     Io {
         /// Path involved in the operation.
         /// 操作涉及的路径。
@@ -31,11 +31,18 @@ pub enum Error {
     },
     /// Metadata, archive layout, or plugin selection is invalid.
     /// 元数据、压缩包布局或插件选择无效。
-    #[error("插件无效: {0}")]
+    #[error("插件无效 / invalid plugin: {0}")]
     Invalid(String),
     /// Required executables are unavailable before a plugin operation starts.
     /// 插件操作开始前，所需可执行工具不可用。
-    #[error("插件 {plugin} 的任务 {operation} 在{environment}缺少工具: {}", .tools.join(", "))]
+    #[error("插件 {plugin} 的任务 {operation} 在{environment}缺少工具 / plugin {plugin} task {operation} is missing tools in {environment_en}: {tools}",
+        environment_en = match .environment.as_str() {
+            "宿主" => "host",
+            "目标系统" => "target system",
+            value => value,
+        },
+        tools = .tools.join(", ")
+    )]
     MissingTools {
         /// Plugin identity from its metadata.
         /// 元数据中的插件标识。
@@ -53,7 +60,7 @@ pub enum Error {
     /// The target preflight probe or plugin operation failed to execute successfully.
     /// 目标环境预检查或插件操作执行失败。
     #[error(
-        "插件 {plugin} 的任务 {operation} 执行失败（{status}）\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "插件 {plugin} 的任务 {operation} 执行失败（{status}） / plugin {plugin} task {operation} failed ({status})\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )]
     Execution {
         /// Plugin identity.

@@ -67,7 +67,9 @@ fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Res
         || record.config_sha256.len() != 64
         || !record.config_sha256.bytes().all(|v| v.is_ascii_hexdigit())
     {
-        return Err(Error::Invalid("运行记录身份或格式不匹配".into()));
+        return Err(Error::Invalid(
+            "运行记录身份或格式不匹配 / runtime record identity or format mismatch".into(),
+        ));
     }
     Ok(())
 }
@@ -89,7 +91,9 @@ fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result
     crate::config::validate_identifier(&tx.generation)?;
     crate::config::validate_identifier(&tx.version)?;
     if tx.schema_version != 1 || tx.system_id != id || !tx.generation.starts_with("g-") {
-        return Err(Error::Invalid("启动事务身份不匹配".into()));
+        return Err(Error::Invalid(
+            "启动事务身份不匹配 / startup transaction identity mismatch".into(),
+        ));
     }
     let current_path = runtime.join("current.toml");
     let committed = if current_path.exists() {
@@ -160,7 +164,9 @@ fn load_with_config(
         .join("root");
     checked(&root)?;
     if !root.is_dir() {
-        return Err(Error::Invalid("运行根缺失".into()));
+        return Err(Error::Invalid(
+            "运行根缺失 / runtime root is missing".into(),
+        ));
     }
     Ok(PreparedRuntime {
         system_id: id.into(),
@@ -185,7 +191,9 @@ impl TopLevel {
     /// - `uuid`: Verified Btrfs filesystem UUID. 经校验的 Btrfs 文件系统 UUID。
     fn mount(uuid: &str) -> Result<Self> {
         if uuid.is_empty() || !uuid.bytes().all(|v| v.is_ascii_hexdigit() || v == b'-') {
-            return Err(Error::Invalid("Btrfs UUID 无效".into()));
+            return Err(Error::Invalid(
+                "Btrfs UUID 无效 / invalid Btrfs UUID".into(),
+            ));
         }
         let parent = Path::new("/run/rstarsleep/storage");
         checked(parent)?;
@@ -198,7 +206,7 @@ impl TopLevel {
             .output()?;
         if !output.status.success() {
             return Err(Error::Invalid(format!(
-                "挂载 Btrfs 顶层失败: {}",
+                "挂载 Btrfs 顶层失败: {0} / failed to mount Btrfs top level: {0}",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
@@ -409,7 +417,7 @@ fn mount_arguments(
         checked(&source)?;
         if !source.exists() {
             return Err(Error::Invalid(format!(
-                "持久对象不存在: {}",
+                "持久对象不存在: {0} / persistent object does not exist: {0}",
                 source.display()
             )));
         }
@@ -432,7 +440,7 @@ fn mount_arguments(
     for (i, mount) in mounts.iter().enumerate() {
         for other in &mounts[..i] {
             if mount.target.starts_with(&other.target) || other.target.starts_with(&mount.target) {
-                return Err(Error::Invalid("持久挂载与运行挂载目标冲突".into()));
+                return Err(Error::Invalid("持久挂载与运行挂载目标冲突 / persistent mount conflicts with a runtime mount target".into()));
             }
         }
         checked(&mount.source)?;
@@ -446,7 +454,7 @@ fn mount_arguments(
         for reserved in ["/run", "/dev", "/proc", "/sys", "/rstarsleep"] {
             if resolved.starts_with(reserved) || Path::new(reserved).starts_with(&resolved) {
                 return Err(Error::Invalid(format!(
-                    "mount target resolves into a reserved guest path: {}",
+                    "挂载目标解析后位于保留的客体路径内: {0} / mount target resolves into a reserved guest path: {0}",
                     mount.target.display()
                 )));
             }
@@ -454,16 +462,16 @@ fn mount_arguments(
         if meta.is_dir() {
             fs::create_dir_all(&target)?;
         } else if meta.is_file() {
-            fs::create_dir_all(
-                target
-                    .parent()
-                    .ok_or_else(|| Error::Invalid("挂载目标缺少父目录".into()))?,
-            )?;
+            fs::create_dir_all(target.parent().ok_or_else(|| {
+                Error::Invalid("挂载目标缺少父目录 / mount target has no parent directory".into())
+            })?)?;
             if !target.exists() {
                 fs::File::create(&target)?;
             }
         } else {
-            return Err(Error::Invalid("挂载来源必须是文件或目录".into()));
+            return Err(Error::Invalid(
+                "挂载来源必须是文件或目录 / mount source must be a file or directory".into(),
+            ));
         }
         args.push(bind_argument(mount)?);
     }
@@ -503,7 +511,9 @@ fn mount_arguments(
     };
     if let Some(file) = source {
         if !file.metadata()?.is_file() {
-            return Err(Error::Invalid("fstab must be a regular file".into()));
+            return Err(Error::Invalid(
+                "fstab 必须为普通文件 / fstab must be a regular file".into(),
+            ));
         }
         file.take(1024 * 1024 + 1).read_to_string(&mut text)?;
     }
@@ -551,11 +561,15 @@ pub fn prune_with_backend(
         let name = entry
             .file_name()
             .to_str()
-            .ok_or_else(|| Error::Invalid("generation name must be UTF-8".into()))?
+            .ok_or_else(|| {
+                Error::Invalid("代次名称必须为 UTF-8 / generation name must be UTF-8".into())
+            })?
             .to_owned();
         crate::config::validate_identifier(&name)?;
         if !name.starts_with("g-") {
-            return Err(Error::Invalid("unexpected generation directory".into()));
+            return Err(Error::Invalid(
+                "代次目录不符合预期 / unexpected generation directory".into(),
+            ));
         }
         if name == current.generation {
             continue;
@@ -578,7 +592,7 @@ pub fn prune_with_backend(
 /// - `text`: Existing fstab, possibly from shared persistent /etc. 已有 fstab，可能来自共享持久 /etc。
 fn adapt_fstab(text: &str) -> Result<String> {
     if text.len() > 1024 * 1024 {
-        return Err(Error::Invalid("fstab too large".into()));
+        return Err(Error::Invalid("fstab 过大 / fstab too large".into()));
     }
     let mut output = String::new();
     let mut inside = false;
@@ -587,7 +601,9 @@ fn adapt_fstab(text: &str) -> Result<String> {
         let value = line.trim();
         if value == "# BEGIN RStarSleep inherited mounts" {
             if inside || seen {
-                return Err(Error::Invalid("malformed managed fstab block".into()));
+                return Err(Error::Invalid(
+                    "受管 fstab 区块格式错误 / malformed managed fstab block".into(),
+                ));
             }
             inside = true;
             seen = true;
@@ -595,7 +611,9 @@ fn adapt_fstab(text: &str) -> Result<String> {
         }
         if value == "# END RStarSleep inherited mounts" {
             if !inside {
-                return Err(Error::Invalid("malformed managed fstab block".into()));
+                return Err(Error::Invalid(
+                    "受管 fstab 区块格式错误 / malformed managed fstab block".into(),
+                ));
             }
             inside = false;
             continue;
@@ -610,7 +628,9 @@ fn adapt_fstab(text: &str) -> Result<String> {
         }
         let fields: Vec<_> = value.split_whitespace().collect();
         if fields.len() < 4 {
-            return Err(Error::Invalid("malformed guest fstab row".into()));
+            return Err(Error::Invalid(
+                "客体 fstab 行格式错误 / malformed guest fstab row".into(),
+            ));
         }
         if fields[1] == "/" || fields[2] == "swap" {
             continue;
@@ -619,14 +639,16 @@ fn adapt_fstab(text: &str) -> Result<String> {
             && !fields[3].split(',').any(|o| matches!(o, "bind" | "rbind"))
         {
             return Err(Error::Invalid(format!(
-                "guest fstab row requires a host mount: {line}; declare a subsystem runtime mount"
+                "客体 fstab 行需要宿主挂载: {line}；请声明子系统运行时挂载 / guest fstab row requires a host mount: {line}; declare a subsystem runtime mount"
             )));
         }
         output.push_str(line);
         output.push('\n');
     }
     if inside {
-        return Err(Error::Invalid("unterminated managed fstab block".into()));
+        return Err(Error::Invalid(
+            "受管 fstab 区块未终止 / unterminated managed fstab block".into(),
+        ));
     }
     Ok(output)
 }

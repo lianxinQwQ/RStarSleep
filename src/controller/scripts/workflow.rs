@@ -53,7 +53,7 @@ pub(in crate::controller) fn apply(
                     payload
                         .path()
                         .file_name()
-                        .expect("temporary directory name"),
+                        .expect("临时目录名 / temporary directory name"),
                 );
                 backend.run_script(root, &directory, &script.entrypoint, context)?;
                 payload.close().map_err(|e| disk::io(root, e))?;

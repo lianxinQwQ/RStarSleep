@@ -50,13 +50,16 @@ pub(super) fn machine_id(system: &Path, previous_root: Option<&Path>) -> Result<
             .map_err(|e| disk::io(&path, e))?
             .is_file()
         {
-            return Err(Error::Invalid("系统身份记录必须是普通文件".into()));
+            return Err(Error::Invalid(
+                "系统身份记录必须是普通文件 / System identity record must be a regular file".into(),
+            ));
         }
-        let record: Identity =
-            toml::from_str(&fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?)
-                .map_err(|e| Error::Invalid(format!("系统身份记录: {e}")))?;
+        let record: Identity = toml::from_str(
+            &fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?,
+        )
+        .map_err(|e| Error::Invalid(format!("系统身份记录 / System identity record: {e}")))?;
         if record.schema_version != 1 || !valid(&record.machine_id) {
-            return Err(Error::Invalid("系统身份记录包含无效 machine-id".into()));
+            return Err(Error::Invalid("系统身份记录包含无效 machine-id / System identity record contains an invalid machine-id".into()));
         }
         return Ok(record.machine_id);
     }
@@ -69,7 +72,7 @@ pub(super) fn machine_id(system: &Path, previous_root: Option<&Path>) -> Result<
                 .is_file()
             {
                 return Err(Error::Invalid(
-                    "之前系统的 machine-id 必须是普通文件".into(),
+                    "之前系统的 machine-id 必须是普通文件 / Previous system machine-id must be a regular file".into(),
                 ));
             }
             let content = fs::read_to_string(&candidate).map_err(|e| disk::io(&candidate, e))?;
@@ -77,7 +80,10 @@ pub(super) fn machine_id(system: &Path, previous_root: Option<&Path>) -> Result<
             if valid(id) {
                 existing = Some(id.to_owned());
             } else if !matches!(id, "" | "uninitialized") {
-                return Err(Error::Invalid("之前系统含无效 machine-id".into()));
+                return Err(Error::Invalid(
+                    "之前系统含无效 machine-id / Previous system contains an invalid machine-id"
+                        .into(),
+                ));
             }
         }
     }

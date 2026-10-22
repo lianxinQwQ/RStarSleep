@@ -43,7 +43,7 @@ impl Manager {
         let runtime = state
             .runtime
             .as_ref()
-            .ok_or_else(|| Error::Invalid("missing runtime".into()))?;
+            .ok_or_else(|| Error::Invalid("缺少运行环境 / missing runtime".into()))?;
         write_record(
             &self.origin_path(id),
             &Origin {
@@ -54,7 +54,7 @@ impl Manager {
                 origin: state
                     .origin
                     .clone()
-                    .ok_or_else(|| Error::Invalid("missing origin".into()))?,
+                    .ok_or_else(|| Error::Invalid("缺少来源 / missing origin".into()))?,
             },
         )
     }
@@ -80,7 +80,7 @@ impl Manager {
             let expected = fs::metadata(&runtime.root)?;
             if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
                 return Err(Error::Invalid(
-                    "registered machine root does not match the owned runtime".into(),
+                    "已登记机器的根目录与所属运行环境不匹配 / registered machine root does not match the owned runtime".into(),
                 ));
             }
         }
@@ -93,7 +93,9 @@ impl Manager {
                     || saved.machine != runtime.machine
                     || saved.version != runtime.version
                 {
-                    return Err(Error::Invalid("recovered machine identity mismatch".into()));
+                    return Err(Error::Invalid(
+                        "恢复的机器身份不匹配 / recovered machine identity mismatch".into(),
+                    ));
                 }
                 saved.origin
             } else {
@@ -174,7 +176,9 @@ impl Manager {
             let deadline = Instant::now() + Duration::from_secs(45);
             loop {
                 if let Some(status) = child.try_wait()? {
-                    return Err(Error::Invalid(format!("subsystem boot exited: {status}")));
+                    return Err(Error::Invalid(format!(
+                        "子系统启动已退出: {status} / subsystem boot exited: {status}"
+                    )));
                 }
                 if commands::alive(&runtime.machine)?
                     && commands::guest(&runtime, &["/bin/true".into()]).is_ok()
@@ -182,7 +186,9 @@ impl Manager {
                     return Ok(());
                 }
                 if Instant::now() >= deadline {
-                    return Err(Error::Invalid("subsystem boot timeout".into()));
+                    return Err(Error::Invalid(
+                        "子系统启动超时 / subsystem boot timeout".into(),
+                    ));
                 }
                 thread::sleep(Duration::from_millis(150));
             }
@@ -209,12 +215,12 @@ impl Manager {
         if let Err(e) = refresh_exports(state, &version, true, || {
             super::exports::sync_registered(&self.store, id)
         }) {
-            eprintln!("subsystem export refresh {id}: {e}");
+            eprintln!("刷新子系统导出 {id} / subsystem export refresh {id}: {e}");
         }
         if let Err(e) =
             super::prune_with_backend(&self.store, id, &crate::controller::SystemBackend)
         {
-            eprintln!("subsystem runtime retirement {id}: {e}");
+            eprintln!("清理子系统运行环境 {id} / subsystem runtime retirement {id}: {e}");
         }
         Ok(())
     }
@@ -244,7 +250,8 @@ impl Manager {
                 }
                 if commands::alive(&runtime.machine)? {
                     return Err(Error::Invalid(
-                        "machine still registered after terminate".into(),
+                        "终止后机器仍处于登记状态 / machine still registered after terminate"
+                            .into(),
                     ));
                 }
             }
@@ -289,7 +296,9 @@ impl Manager {
     pub(super) fn lease(&self, id: &str, peer: Peer) -> Result<(PreparedRuntime, Lease)> {
         let config = self.config(id)?;
         if !config.allows(peer.uid) {
-            return Err(Error::Invalid("subsystem access denied".into()));
+            return Err(Error::Invalid(
+                "子系统访问被拒绝 / subsystem access denied".into(),
+            ));
         }
         let activity = super::filesystem::activity(&self.store, id, false)?;
         let slot = self.slot(id)?;

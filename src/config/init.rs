@@ -112,7 +112,7 @@ pub fn current_system_workspace() -> Result<ConfigStore> {
         let store = ConfigStore::new(workspace_path(top_level))?;
         if !store.global_config_path().is_file() {
             return Err(Error::Invalid(
-                "请先运行 RStarSleep init 初始化工作目录".into(),
+                "请先运行 RStarSleep init 初始化工作目录 / run RStarSleep init first to initialize the work directory".into(),
             ));
         }
         Ok(store)
@@ -188,10 +188,10 @@ impl BtrfsCommand {
             .args(arguments)
             .arg(path)
             .output()
-            .map_err(|e| Error::Btrfs(format!("无法运行 btrfs: {e}")))?;
+            .map_err(|e| Error::Btrfs(format!("无法运行 btrfs / cannot run btrfs: {e}")))?;
         if !output.status.success() {
             return Err(Error::Btrfs(format!(
-                "btrfs {} {}: {}",
+                "btrfs 命令失败 / btrfs command failed: {} {}: {}",
                 arguments.join(" "),
                 path.display(),
                 String::from_utf8_lossy(&output.stderr).trim()
@@ -215,7 +215,7 @@ impl Subvolumes for BtrfsCommand {
         let id = Self::run(&["inspect-internal", "rootid", "--"], path)?;
         if id != "5" {
             return Err(Error::Btrfs(format!(
-                "{} 属于子卷 {id}，请提供 subvolid=5 的 Btrfs 顶层路径",
+                "{0} 属于子卷 {id}，请提供 subvolid=5 的 Btrfs 顶层路径 / {0} belongs to subvolume {id}; provide the Btrfs top-level path with subvolid=5",
                 path.display()
             )));
         }
@@ -260,7 +260,7 @@ impl Subvolumes for BtrfsCommand {
 ///   用于校验和创建子卷的实现；测试时传入模拟实现。
 fn initialize_with(parent: &Path, btrfs: &impl Subvolumes) -> Result<ConfigStore> {
     if !parent.is_absolute() || !parent.is_dir() {
-        return Err(Error::Invalid("请提供已挂载的 Btrfs 顶层绝对目录".into()));
+        return Err(Error::Invalid("请提供已挂载的 Btrfs 顶层绝对目录 / provide an absolute directory path to a mounted Btrfs top level".into()));
     }
     btrfs.check_top_level(parent)?;
     let root = workspace_path(parent);
@@ -270,7 +270,7 @@ fn initialize_with(parent: &Path, btrfs: &impl Subvolumes) -> Result<ConfigStore
         Ok(metadata) => {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(Error::Invalid(format!(
-                    "{} 必须是独立子卷目录",
+                    "{0} 必须是独立子卷目录 / {0} must be a separate subvolume directory",
                     root.display()
                 )));
             }

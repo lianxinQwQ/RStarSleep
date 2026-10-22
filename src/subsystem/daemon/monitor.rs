@@ -21,7 +21,7 @@ impl Manager {
         }
         let config = self.config(id)?;
         if let Err(error) = super::exports::withdraw_disallowed(&self.store, id) {
-            eprintln!("subsystem export authorization {id}: {error}");
+            eprintln!("子系统导出授权 {id} / subsystem export authorization {id}: {error}");
         }
         if config.autostart {
             self.start(id, state, StartOrigin::Autostart)?;
@@ -40,7 +40,7 @@ impl Manager {
                 super::exports::sync_registered(&self.store, id)
             })
         {
-            eprintln!("subsystem export refresh {id}: {error}");
+            eprintln!("刷新子系统导出 {id} / subsystem export refresh {id}: {error}");
         }
         if state.origin == Some(StartOrigin::Demand)
             && state.leases == 0
@@ -68,7 +68,7 @@ impl Manager {
             }) {
                 Ok(ids) => ids,
                 Err(e) => {
-                    eprintln!("subsystem policy: {e}");
+                    eprintln!("子系统策略 / subsystem policy: {e}");
                     thread::sleep(Duration::from_secs(1));
                     continue;
                 }
@@ -112,11 +112,11 @@ impl Manager {
                             return;
                         };
                         if let Err(e) = manager.reconcile(&id, &mut state) {
-                            eprintln!("subsystem reconciliation {id}: {e}");
+                            eprintln!("子系统状态协调 {id} / subsystem reconciliation {id}: {e}");
                         }
                     })
                 {
-                    eprintln!("subsystem monitor worker: {error}");
+                    eprintln!("子系统监控工作线程 / subsystem monitor worker: {error}");
                 }
             }
             thread::sleep(Duration::from_secs(1));

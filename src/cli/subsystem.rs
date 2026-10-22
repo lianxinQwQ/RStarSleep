@@ -9,7 +9,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-const USAGE: &str = "用法：RStarSleep subsystem list|status [ID]|start ID|stop ID|restart ID|shell ID|exec [--pty] ID -- COMMAND [ARG...]|open [--wait] ID TARGET [-- ARG...]|run-desktop ID PATH [-- ARG...]|sync-exports [ID] [--root PATH]";
+const USAGE: &str = "用法：RStarSleep subsystem list|status [ID]|start ID|stop ID|restart ID|shell ID|exec [--pty] ID -- COMMAND [ARG...]|open [--wait] ID TARGET [-- ARG...]|run-desktop ID PATH [-- ARG...]|sync-exports [ID] [--root PATH] / Usage: RStarSleep subsystem list|status [ID]|start ID|stop ID|restart ID|shell ID|exec [--pty] ID -- COMMAND [ARG...]|open [--wait] ID TARGET [-- ARG...]|run-desktop ID PATH [-- ARG...]|sync-exports [ID] [--root PATH]";
 
 /// Extract fixed manager options before the application's delimiter.
 /// 在应用参数分隔符前提取固定管理器选项。
@@ -23,11 +23,16 @@ pub(super) fn parse(arguments: &[OsString]) -> super::Result<(ConfigStore, Vec<S
     while let Some(value) = iter.next() {
         if !application && value == "--root" {
             if root.is_some() {
-                return Err("--root 只能指定一次".into());
+                return Err("--root 只能指定一次 / --root may only be specified once".into());
             }
-            root = Some(PathBuf::from(iter.next().ok_or("--root 缺少路径")?));
+            root = Some(PathBuf::from(
+                iter.next()
+                    .ok_or("--root 缺少路径 / --root is missing a path")?,
+            ));
         } else {
-            let text = value.to_str().ok_or("子系统命令参数必须为 UTF-8")?;
+            let text = value
+                .to_str()
+                .ok_or("子系统命令参数必须为 UTF-8 / subsystem command arguments must be UTF-8")?;
             if text == "--" {
                 application = true;
             }
@@ -202,9 +207,9 @@ pub(super) fn daemon(arguments: &[OsString]) -> super::Result<()> {
         [command] if command == "run" => subsystem::daemon::run(store)?,
         [command] if command == "install" => subsystem::daemon::install(&store)?,
         [command] if command == "--help" || command == "-h" => {
-            println!("用法：RStarSleep daemon install|run [--root PATH]")
+            println!("用法：RStarSleep daemon install|run [--root PATH] / Usage: RStarSleep daemon install|run [--root PATH]")
         }
-        _ => return Err("用法：RStarSleep daemon install|run [--root PATH]".into()),
+        _ => return Err("用法：RStarSleep daemon install|run [--root PATH] / Usage: RStarSleep daemon install|run [--root PATH]".into()),
     }
     Ok(())
 }
@@ -218,12 +223,12 @@ pub(super) fn guest(arguments: &[OsString]) -> super::Result<()> {
         .map(|v| {
             v.to_str()
                 .map(str::to_owned)
-                .ok_or("guest 参数必须为 UTF-8")
+                .ok_or("guest 参数必须为 UTF-8 / guest arguments must be UTF-8")
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let (action, args) = values
         .split_first()
-        .ok_or("用法：guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart")?;
+        .ok_or("用法：guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart / Usage: guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart")?;
     let (path, packages) = match action.as_str() {
         "add-copy" | "add-mount" | "migrate" if args.len() == 1 => {
             (Some(args[0].clone()), Vec::new())
@@ -232,11 +237,11 @@ pub(super) fn guest(arguments: &[OsString]) -> super::Result<()> {
         "rebuild" | "restart" if args.is_empty() => (None, Vec::new()),
         "--help" | "-h" => {
             println!(
-                "用法：sudo /run/rstarsleep/RStarSleep guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart"
+                "用法：sudo /run/rstarsleep/RStarSleep guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart / Usage: sudo /run/rstarsleep/RStarSleep guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart"
             );
             return Ok(());
         }
-        _ => return Err("guest 操作参数无效".into()),
+        _ => return Err("guest 操作参数无效 / invalid guest operation arguments".into()),
     };
     client::request(
         PathBuf::from("/run/rstarsleep/guest.sock").as_path(),

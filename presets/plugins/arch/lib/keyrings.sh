@@ -11,7 +11,7 @@ load_repository_keyrings() {
     keyring_servers=()
     local -A fields=()
     [[ -e $configuration ]] || return 0
-    [[ -f $configuration && -r $configuration ]] || { log "Unreadable repository keyring configuration: $configuration"; return 64; }
+    [[ -f $configuration && -r $configuration ]] || { log "无法读取仓库密钥环配置：$configuration / Unreadable repository keyring configuration: $configuration"; return 64; }
     while IFS= read -r line || [[ -n $line ]]; do
         (( number += 1 ))
         line=${line%%#*}
@@ -21,28 +21,28 @@ load_repository_keyrings() {
         if [[ $line =~ $section_pattern ]]; then
             section=${BASH_REMATCH[1]}
             [[ $section != options && $section != rstarsleep && -z ${fields[$section/section]:-} ]] || {
-                log "Invalid or duplicate repository section at $configuration:$number"; return 64;
+                log "仓库区段无效或重复，位置 $configuration:$number / Invalid or duplicate repository section at $configuration:$number"; return 64;
             }
             fields[$section/section]=1
             keyring_repositories+=("$section")
             continue
         fi
-        [[ -n $section && $line == *=* ]] || { log "Invalid repository keyring setting at $configuration:$number"; return 64; }
+        [[ -n $section && $line == *=* ]] || { log "仓库密钥环设置无效，位置 $configuration:$number / Invalid repository keyring setting at $configuration:$number"; return 64; }
         field=${line%%=*}
         field=${field%"${field##*[![:space:]]}"}
         value=${line#*=}
         value=${value#"${value%%[![:space:]]*}"}
         case $field in
             keyring_package|bootstrap_keys|keyserver) ;;
-            *) log "Unknown repository keyring setting at $configuration:$number: $field"; return 64 ;;
+            *) log "未知的仓库密钥环设置，位置 $configuration:$number：$field / Unknown repository keyring setting at $configuration:$number: $field"; return 64 ;;
         esac
         seen_key=$section/$field
-        [[ -n $value && -z ${fields[$seen_key]:-} ]] || { log "Empty or duplicate $field at $configuration:$number"; return 64; }
+        [[ -n $value && -z ${fields[$seen_key]:-} ]] || { log "$field 为空或重复，位置 $configuration:$number / Empty or duplicate $field at $configuration:$number"; return 64; }
         fields[$seen_key]=1
         case $field in
             keyring_package)
                 validate_packages "$value" || return
-                [[ $value != base ]] || { log 'The protected base package cannot be used as a repository keyring'; return 64; }
+                [[ $value != base ]] || { log '受保护的 base 软件包不能用作仓库密钥环 / The protected base package cannot be used as a repository keyring'; return 64; }
                 keyring_packages[$section]=$value
                 ;;
             bootstrap_keys)
@@ -50,21 +50,21 @@ load_repository_keyrings() {
                 value=
                 for fingerprint in "${fingerprints[@]}"; do
                     [[ $fingerprint =~ ^([[:xdigit:]]{40}|[[:xdigit:]]{64})$ ]] || {
-                        log "Repository $section requires full primary key fingerprints (40 or 64 hex digits): $fingerprint"; return 64;
+                        log "仓库 $section 要求完整的主密钥指纹（40 或 64 位十六进制数字）：$fingerprint / Repository $section requires full primary key fingerprints (40 or 64 hex digits): $fingerprint"; return 64;
                     }
                     value+="${fingerprint^^} "
                 done
                 keyring_bootstrap_keys[$section]=${value% }
                 ;;
             keyserver)
-                [[ $value =~ ^hkps://[^[:space:]]+$ ]] || { log "Invalid HKPS keyserver for repository $section"; return 64; }
+                [[ $value =~ ^hkps://[^[:space:]]+$ ]] || { log "仓库 $section 的 HKPS 密钥服务器无效 / Invalid HKPS keyserver for repository $section"; return 64; }
                 keyring_servers[$section]=$value
                 ;;
         esac
     done <"$configuration"
     for section in "${keyring_repositories[@]}"; do
         [[ -n ${keyring_packages[$section]:-} && -n ${keyring_bootstrap_keys[$section]:-} ]] || {
-            log "Repository $section requires keyring_package and bootstrap_keys in $configuration"; return 64;
+            log "仓库 $section 要求在 $configuration 中设置 keyring_package 和 bootstrap_keys / Repository $section requires keyring_package and bootstrap_keys in $configuration"; return 64;
         }
     done
 }
@@ -135,7 +135,7 @@ prepare_repository_keyrings() {
     local -a key_options=()
     local repository package repositories gpgdir fingerprint status key_cache temporary owned path name package_keyring_count signature_policy
     repository_keyrings_refreshed=0
-    [[ $mode == refresh || $mode == reuse ]] || { log "Invalid keyring preparation mode: $mode"; return 64; }
+    [[ $mode == refresh || $mode == reuse ]] || { log "密钥环准备模式无效：$mode / Invalid keyring preparation mode: $mode"; return 64; }
     load_repository_keyrings "$resources/data/repository-keyrings.conf" || return
     (( ${#keyring_repositories[@]} )) || return 0
     repositories=$(pacman-conf --config "$configuration" --repo-list) || return
@@ -149,7 +149,7 @@ prepare_repository_keyrings() {
             signature_policy=$(pacman-conf --config "$configuration" SigLevel) || return
         fi
         if [[ $'\n'$signature_policy$'\n' != *$'\nPackageRequired\n'* || $'\n'$signature_policy$'\n' != *$'\nPackageTrustedOnly\n'* ]]; then
-            log "Repository $repository keyring bootstrap requires PackageRequired and PackageTrustedOnly signature policy"; return 64
+            log "仓库 $repository 的密钥环引导要求使用 PackageRequired 和 PackageTrustedOnly 签名策略 / Repository $repository keyring bootstrap requires PackageRequired and PackageTrustedOnly signature policy"; return 64
         fi
         active_repositories+=("$repository")
         targets+=("$repository/${keyring_packages[$repository]}")
@@ -157,7 +157,7 @@ prepare_repository_keyrings() {
     done
     (( ${#targets[@]} )) || return 0
     gpgdir=$(pacman-conf --config "$configuration" GPGDir) || return
-    [[ $gpgdir == /* && $gpgdir != *$'\n'* ]] || { log 'Repository keyring preparation requires one absolute GPGDir'; return 64; }
+    [[ $gpgdir == /* && $gpgdir != *$'\n'* ]] || { log '仓库密钥环准备要求提供一个绝对路径形式的 GPGDir / Repository keyring preparation requires one absolute GPGDir'; return 64; }
     key_options=(--config "$configuration" --gpgdir "$gpgdir")
     local receipt=$gpgdir/.rstarsleep-repository-keyrings-v1 state
     if [[ -f $receipt ]] && state=$(repository_keyring_state "$configuration" "$gpgdir" "$resources" 2>/dev/null) &&
@@ -182,7 +182,7 @@ prepare_repository_keyrings() {
             status=0
             repository_key_status "$gpgdir" "$fingerprint" || status=$?
             if (( status == 2 )); then
-                log "Repository $repository bootstrap key is revoked, expired or disabled: $fingerprint"; return 1
+                log "仓库 $repository 的引导密钥已撤销、过期或禁用：$fingerprint / Repository $repository bootstrap key is revoked, expired or disabled: $fingerprint"; return 1
             fi
             if (( status )); then
                 if [[ -s $key_cache/$fingerprint.gpg ]]; then
@@ -190,11 +190,11 @@ prepare_repository_keyrings() {
                 else
                     log "Fetching repository $repository bootstrap key: $fingerprint"
                     timeout --kill-after=5s 60s pacman-key "${key_options[@]}" --keyserver "${keyring_servers[$repository]:-hkps://keyserver.ubuntu.com}" --recv-keys "$fingerprint" >&2 || {
-                        log "Cannot fetch repository $repository bootstrap key: $fingerprint"; return 1;
+                        log "无法获取仓库 $repository 的引导密钥：$fingerprint / Cannot fetch repository $repository bootstrap key: $fingerprint"; return 1;
                     }
                 fi
                 repository_key_status "$gpgdir" "$fingerprint" || {
-                    log "Repository $repository bootstrap key fingerprint is missing, mismatched or unusable: $fingerprint"; return 1;
+                    log "仓库 $repository 的引导密钥指纹缺失、不匹配或不可用：$fingerprint / Repository $repository bootstrap key fingerprint is missing, mismatched or unusable: $fingerprint"; return 1;
                 }
             fi
             pacman-key "${key_options[@]}" --lsign-key "$fingerprint" >&2 || return
@@ -206,7 +206,7 @@ prepare_repository_keyrings() {
                 if gpg --no-options --homedir "$gpgdir" --batch --export "$fingerprint" >"$temporary" && [[ -s $temporary ]]; then
                     chmod 0644 -- "$temporary" && mv -f -- "$temporary" "$key_cache/$fingerprint.gpg" || { rm -f -- "$temporary"; return 1; }
                 else
-                    rm -f -- "$temporary"; log "Cannot cache repository bootstrap public key: $fingerprint"; return 1
+                    rm -f -- "$temporary"; log "无法缓存仓库引导公钥：$fingerprint / Cannot cache repository bootstrap public key: $fingerprint"; return 1
                 fi
             fi
         done
@@ -227,9 +227,9 @@ prepare_repository_keyrings() {
             (( package_keyring_count += 1 ))
             if [[ -z ${names[$name]:-} ]]; then names[$name]=1; keyrings+=("$name"); fi
         done <<<"$owned"
-        (( package_keyring_count )) || { log "Keyring package $package owns no /usr/share/pacman/keyrings/*.gpg files"; return 1; }
+        (( package_keyring_count )) || { log "密钥环软件包 $package 不包含任何 /usr/share/pacman/keyrings/*.gpg 文件 / Keyring package $package owns no /usr/share/pacman/keyrings/*.gpg files"; return 1; }
     done
-    (( ${#keyrings[@]} )) || { log 'Configured keyring packages own no /usr/share/pacman/keyrings/*.gpg files'; return 1; }
+    (( ${#keyrings[@]} )) || { log '已配置的密钥环软件包不包含任何 /usr/share/pacman/keyrings/*.gpg 文件 / Configured keyring packages own no /usr/share/pacman/keyrings/*.gpg files'; return 1; }
     pacman-key "${key_options[@]}" --populate "${keyrings[@]}" >&2 || return
     [[ $mode != refresh ]] || repository_keyrings_refreshed=1
     if state=$(repository_keyring_state "$configuration" "$gpgdir" "$resources" 2>/dev/null); then

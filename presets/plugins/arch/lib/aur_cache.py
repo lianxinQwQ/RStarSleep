@@ -15,10 +15,10 @@ def source_specs(sources, unchecked=()):
             url, alias = source, ""
         protocol = url.split(":", 1)[0]
         if protocol.startswith(("svn", "hg", "bzr", "fossil")):
-            return [], "unsupported VCS source"
+            return [], '不支持的 VCS 来源 / unsupported VCS source'
         if protocol != "git" and not protocol.startswith("git+"):
             if "://" in url and source in unchecked:
-                return [], "remote source without a fixed checksum"
+                return [], '远程来源没有固定校验和 / remote source without a fixed checksum'
             continue
         url = url.removeprefix("git+")
         # makepkg accepts ?signed following the reference, not a general URL query.
@@ -27,20 +27,20 @@ def source_specs(sources, unchecked=()):
         remote, separator, fragment = url.partition("#")
         parsed = urlsplit(remote)
         if parsed.query or parsed.scheme not in ("git", "https", "http", "ssh", "file"):
-            return [], "unsupported Git URL"
+            return [], '不支持的 Git URL / unsupported Git URL'
         kind, ref = "head", "HEAD"
         if separator:
             kind, equals, ref = fragment.partition("=")
             if not equals or kind not in ("branch", "tag", "commit") or not ref:
-                return [], "unsupported Git reference"
+                return [], '不支持的 Git 引用 / unsupported Git reference'
         if kind == "commit" and not REVISION.fullmatch(ref):
-            return [], "Git commit must be a full object ID"
+            return [], 'Git 提交必须是完整的对象 ID / Git commit must be a full object ID'
         if any(c.isspace() for c in ref) or ref.startswith("-"):
-            return [], "invalid Git reference"
+            return [], 'Git 引用无效 / invalid Git reference'
         if not alias:
             alias = Path(parsed.path.rstrip("/")).name.split(".git", 1)[0]
         if not alias or alias in (".", "..") or "/" in alias or "\\" in alias or alias in aliases:
-            return [], "ambiguous Git source directory"
+            return [], 'Git 源码目录不唯一 / ambiguous Git source directory'
         aliases.add(alias)
         result.append(dict(source=source, url=remote, alias=alias, kind=kind, ref=ref))
     return result, None
@@ -66,7 +66,7 @@ def remote_revisions(user, specs):
                 found[fields[1]] = fields[0]
         revision = found.get(reference + "^{}", found.get(reference))
         if not revision:
-            raise ValueError(f"Git reference unavailable: {source['url']}#{source['kind']}={source['ref']}")
+            raise ValueError(f"Git 引用不可用：{source['url']}#{source['kind']}={source['ref']} / Git reference unavailable: {source['url']}#{source['kind']}={source['ref']}")
         revisions[source["source"]] = revision
     return revisions
 
@@ -79,7 +79,7 @@ def actual_revisions(user, specs, source_directory, recipe_directory=None):
         if recipe_directory is not None and (Path(recipe_directory) / source["alias"]).is_dir():
             checkout = Path(recipe_directory) / source["alias"]
         if not checkout.is_dir():
-            raise ValueError(f"downloaded Git source unavailable: {checkout}")
+            raise ValueError(f'已下载的 Git 源码不可用：{checkout} / downloaded Git source unavailable: {checkout}')
         command = ["git", "-c", "safe.bareRepository=all", "-C", str(checkout)]
         if source.get("head_ref"):
             # git fetch does not update a mirror's HEAD on default branch changes.
@@ -89,6 +89,6 @@ def actual_revisions(user, specs, source_directory, recipe_directory=None):
         revision = user([*command, "rev-parse", "--verify", ref + "^{commit}"],
                         capture=True).stdout.strip()
         if not REVISION.fullmatch(revision):
-            raise ValueError(f"invalid Git source revision: {checkout}")
+            raise ValueError(f'Git 源码修订版本无效：{checkout} / invalid Git source revision: {checkout}')
         revisions[source["source"]] = revision
     return revisions

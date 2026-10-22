@@ -14,10 +14,14 @@ fn number(version: &str) -> Result<u64> {
     let suffix = version
         .strip_prefix('v')
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-        .ok_or_else(|| Error::Invalid(format!("无效版本: {version}")))?;
-    suffix
-        .parse()
-        .map_err(|e| Error::Invalid(format!("无效版本 {version}: {e}")))
+        .ok_or_else(|| {
+            Error::Invalid(format!("无效版本: {version} / Invalid version: {version}"))
+        })?;
+    suffix.parse().map_err(|e| {
+        Error::Invalid(format!(
+            "无效版本 {version} / Invalid version {version}: {e}"
+        ))
+    })
 }
 
 /// Clean one system through an inclusive version cutoff using native Btrfs operations.
@@ -56,7 +60,9 @@ pub fn clean_with_backend(
     let selected = layout.versions.join(version);
     disk::checked(&selected)?;
     if !selected.is_dir() {
-        return Err(Error::Invalid(format!("截止版本不存在: {version}")));
+        return Err(Error::Invalid(format!(
+            "截止版本不存在: {version} / Cutoff version does not exist: {version}"
+        )));
     }
     let mut targets = Vec::new();
     let mut highest = 0;
@@ -65,7 +71,7 @@ pub fn clean_with_backend(
         let name = entry
             .file_name()
             .into_string()
-            .map_err(|_| Error::Invalid("版本名不是 UTF-8".into()))?;
+            .map_err(|_| Error::Invalid("版本名不是 UTF-8 / Version name is not UTF-8".into()))?;
         let value = number(&name)?;
         highest = highest.max(value);
         if value <= cutoff {
@@ -75,7 +81,9 @@ pub fn clean_with_backend(
                 .map_err(|e| disk::io(&entry.path(), e))?
                 .is_dir()
             {
-                return Err(Error::Invalid("版本记录必须为普通目录".into()));
+                return Err(Error::Invalid(
+                    "版本记录必须为普通目录 / Version record must be a regular directory".into(),
+                ));
             }
             targets.push((value, name, entry.path()));
         }
@@ -108,7 +116,7 @@ pub fn clean_with_backend(
         let (_, location) = backend.filesystem_location(directory)?;
         if pins.iter().any(|source| source.starts_with(&location)) {
             return Err(Error::Invalid(
-                "版本被尚未完成的 initramfs 继承引用，不能清理".into(),
+                "版本被尚未完成的 initramfs 继承引用，不能清理 / Version is referenced by unfinished initramfs inheritance and cannot be cleaned".into(),
             ));
         }
         for name in ["prepared-root", "inheritance-staging"] {
@@ -116,7 +124,9 @@ pub fn clean_with_backend(
             if disk::exists(&root)? {
                 super::mounts::check_unmounted_tree(&root)?;
                 if backend.is_running_root(&root)? {
-                    return Err(Error::Invalid("不能清理运行中的准备根".into()));
+                    return Err(Error::Invalid(
+                        "不能清理运行中的准备根 / Cannot clean a running preparation root".into(),
+                    ));
                 }
             }
         }
@@ -131,7 +141,7 @@ pub fn clean_with_backend(
                 .or_else(|_| backend.check_subvolume(&root, false))?;
             if backend.is_running_root(&root)? {
                 return Err(Error::Invalid(format!(
-                    "不能清理正在运行的版本: {system}/{name}"
+                    "不能清理正在运行的版本: {system}/{name} / Cannot clean the currently running version: {system}/{name}"
                 )));
             }
         }
@@ -224,7 +234,9 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
         .directory
         .parent()
         .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("无效启动所有权目录".into()))?;
+        .ok_or_else(|| {
+            Error::Invalid("无效启动所有权目录 / Invalid boot ownership directory".into())
+        })?;
     let expected_directory = boot_root.join("RStarSleep").join(version);
     let expected_entry = boot_root
         .join("loader/entries")
@@ -234,18 +246,26 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
         || record.directory != expected_directory
         || record.entry != expected_entry
     {
-        return Err(Error::Invalid("启动所有权记录不匹配版本".into()));
+        return Err(Error::Invalid(
+            "启动所有权记录不匹配版本 / Boot ownership record does not match the version".into(),
+        ));
     }
     let owned: BTreeSet<_> = match &record.files {
         Some(files) => {
             let mut names = BTreeSet::new();
             for name in files {
                 if !super::boot::artifact_name(name) || !names.insert(name.to_ascii_lowercase()) {
-                    return Err(Error::Invalid("启动所有权文件名无效或重复".into()));
+                    return Err(Error::Invalid(
+                        "启动所有权文件名无效或重复 / Invalid or duplicate boot ownership filename"
+                            .into(),
+                    ));
                 }
             }
             if names.is_empty() {
-                return Err(Error::Invalid("启动所有权文件列表不能为空".into()));
+                return Err(Error::Invalid(
+                    "启动所有权文件列表不能为空 / Boot ownership file list must not be empty"
+                        .into(),
+                ));
             }
             // Preserve exact case when comparing actual directory entries.
             files.iter().map(String::as_str).collect()
@@ -269,7 +289,7 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
                     .map_err(|e| disk::io(&entry.path(), e))?
                     .is_file()
             {
-                return Err(Error::Invalid("启动目录含未知文件或非普通文件".into()));
+                return Err(Error::Invalid("启动目录含未知文件或非普通文件 / Boot directory contains unknown files or non-regular files".into()));
             }
         }
     }
@@ -278,7 +298,9 @@ fn validate_boot(record: &BootRecord, system: &str, version: &str) -> Result<()>
             .map_err(|e| disk::io(&record.entry, e))?
             .is_file()
     {
-        return Err(Error::Invalid("启动项必须为普通文件".into()));
+        return Err(Error::Invalid(
+            "启动项必须为普通文件 / Boot entry must be a regular file".into(),
+        ));
     }
     Ok(())
 }

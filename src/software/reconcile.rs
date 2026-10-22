@@ -23,13 +23,16 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         arguments.push("--targets".into());
         arguments.extend(targets.iter().cloned());
         let output = self.call("maintain_packages", &arguments)?;
-        let state: SoftwareState = serde_json::from_str(&output)
-            .map_err(|e| Error::Invalid(format!("软件维护返回的清单无效: {e}")))?;
+        let state: SoftwareState = serde_json::from_str(&output).map_err(|e| {
+            Error::Invalid(format!(
+                "软件维护返回的清单无效 / Software maintenance returned an invalid manifest: {e}"
+            ))
+        })?;
         state.validate()?;
         let actual: BTreeSet<_> = state.installed.iter().map(|p| p.name.as_str()).collect();
         let expected: BTreeSet<_> = plan.packages.iter().map(String::as_str).collect();
         if actual != expected {
-            return Err(Error::Invalid("软件维护后的包清单与目标计划不符".into()));
+            return Err(Error::Invalid("软件维护后的包清单与目标计划不符 / Package manifest after software maintenance does not match the target plan".into()));
         }
         let protected = self.resolve(&self.plugin.metadata.protected_packages)?;
         let mut requested = if targets.is_empty() {
@@ -37,17 +40,17 @@ impl<B: BuildBackend> PackageSession<'_, B> {
         } else {
             let resolved = super::model::names(&self.call("resolve_packages", targets)?)?;
             if resolved.is_empty() {
-                return Err(Error::Invalid("软件维护后配置目标解析为空".into()));
+                return Err(Error::Invalid("软件维护后配置目标解析为空 / Configured targets resolve to an empty set after software maintenance".into()));
             }
             resolved
         };
         requested.retain(|name| !protected.contains(name));
         if requested != state.requested.iter().cloned().collect() {
-            return Err(Error::Invalid("软件维护返回的目标与当前配置不符".into()));
+            return Err(Error::Invalid("软件维护返回的目标与当前配置不符 / Targets returned by software maintenance do not match the current configuration".into()));
         }
         for name in protected {
             if !state.installed.iter().any(|p| p.name == name && p.explicit) {
-                return Err(Error::Invalid("软件维护后缺少显式基础目标".into()));
+                return Err(Error::Invalid("软件维护后缺少显式基础目标 / Explicit base target missing after software maintenance".into()));
             }
         }
         Ok(state)
@@ -188,7 +191,7 @@ impl<B: BuildBackend> PackageSession<'_, B> {
             .any(|name| retained.contains(name) || actual.get(name) != Some(&false))
         {
             return Err(Error::Invalid(
-                "孤儿查询包含保留目标、显式包或未安装包".into(),
+                "孤儿查询包含保留目标、显式包或未安装包 / Orphan query contains retained targets, explicitly installed packages, or packages that are not installed".into(),
             ));
         }
         if !orphans.is_empty() {
@@ -206,7 +209,9 @@ impl<B: BuildBackend> PackageSession<'_, B> {
                 .iter()
                 .any(|p| &p.name == name && p.explicit)
         }) {
-            return Err(Error::Invalid("最终根缺少显式保留目标".into()));
+            return Err(Error::Invalid(
+                "最终根缺少显式保留目标 / Final root lacks an explicit retained target".into(),
+            ));
         }
         Ok(result)
     }

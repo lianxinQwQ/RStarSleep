@@ -40,7 +40,9 @@ impl ConfigStore {
         let config: RuntimeConfig =
             toml::from_str(&text).map_err(|source| Error::Parse { path, source })?;
         if config.schema_version != 1 {
-            return Err(Error::Invalid("仅支持全局 schema_version=1".into()));
+            return Err(Error::Invalid(
+                "仅支持全局 schema_version=1 / only global schema_version=1 is supported".into(),
+            ));
         }
         if let Some(id) = &config.main_system {
             validate_identifier(id)?;
@@ -50,7 +52,7 @@ impl ConfigStore {
             validate_identifier(id)?;
             if !seen.insert(id) || config.main_system.as_deref() == Some(id.as_str()) {
                 return Err(Error::Invalid(format!(
-                    "子系统名单重复或与主系统重叠: {id}"
+                    "子系统名单重复或与主系统重叠: {id} / subsystem list contains a duplicate or overlaps with the main system: {id}"
                 )));
             }
         }
@@ -61,7 +63,7 @@ impl ConfigStore {
                 .any(|part| matches!(part, std::path::Component::ParentDir))
         {
             return Err(Error::Invalid(
-                "boot_dir 必须为不含父级跳转的绝对路径".into(),
+                "boot_dir 必须为不含父级跳转的绝对路径 / boot_dir must be an absolute path without parent traversal".into(),
             ));
         }
         for option in &config.kernel_options {
@@ -74,7 +76,9 @@ impl ConfigStore {
                 || option.starts_with("rstarsleep.storage=")
                 || matches!(option.as_str(), "rw" | "ro")
             {
-                return Err(Error::Invalid(format!("无效额外内核参数: {option:?}")));
+                return Err(Error::Invalid(format!(
+                    "无效额外内核参数: {option:?} / invalid extra kernel argument: {option:?}"
+                )));
             }
         }
         Ok(config)

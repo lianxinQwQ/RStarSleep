@@ -24,7 +24,9 @@ pub struct DesktopEntry {
 /// - `text`: Complete UTF-8 desktop contents. 完整 UTF-8 desktop 内容。
 pub fn parse(text: &str) -> Result<DesktopEntry> {
     if text.len() > 1024 * 1024 || text.contains('\0') {
-        return Err(Error::Invalid("desktop 内容无效".into()));
+        return Err(Error::Invalid(
+            "desktop 内容无效 / invalid desktop contents".into(),
+        ));
     }
     let mut values = BTreeMap::new();
     let mut main = false;
@@ -41,27 +43,33 @@ pub fn parse(text: &str) -> Result<DesktopEntry> {
             && let Some((k, v)) = line.split_once('=')
             && values.insert(k.trim().to_owned(), v.to_owned()).is_some()
         {
-            return Err(Error::Invalid("desktop 主组重复字段".into()));
+            return Err(Error::Invalid(
+                "desktop 主组重复字段 / duplicate field in the main desktop group".into(),
+            ));
         }
     }
     if values.get("Type").map(String::as_str) != Some("Application") {
-        return Err(Error::Invalid("desktop Type 必须为 Application".into()));
+        return Err(Error::Invalid(
+            "desktop Type 必须为 Application / desktop Type must be Application".into(),
+        ));
     }
     let name = values
         .get("Name")
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| Error::Invalid("desktop 缺少 Name".into()))?
+        .ok_or_else(|| Error::Invalid("desktop 缺少 Name / desktop is missing Name".into()))?
         .clone();
     let exec = values
         .get("Exec")
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| Error::Invalid("desktop 缺少 Exec".into()))?
+        .ok_or_else(|| Error::Invalid("desktop 缺少 Exec / desktop is missing Exec".into()))?
         .clone();
     let boolean = |k: &str| -> Result<bool> {
         match values.get(k).map(String::as_str) {
             None | Some("false") => Ok(false),
             Some("true") => Ok(true),
-            _ => Err(Error::Invalid(format!("desktop 布尔字段无效: {k}"))),
+            _ => Err(Error::Invalid(format!(
+                "desktop 布尔字段无效: {k} / invalid desktop boolean field: {k}"
+            ))),
         }
     };
     let terminal = boolean("Terminal")?;
@@ -92,12 +100,16 @@ pub fn read(root: &Path, target: &str) -> Result<DesktopEntry> {
 /// - `root`, `target`: Pinned root and absolute guest path. 固定根及绝对容器路径。
 pub(crate) fn read_at(root: &std::fs::File, target: &str) -> Result<DesktopEntry> {
     if !target.ends_with(".desktop") {
-        return Err(Error::Invalid("入口必须为 desktop 文件".into()));
+        return Err(Error::Invalid(
+            "入口必须为 desktop 文件 / entry must be a desktop file".into(),
+        ));
     }
     let file = open_at_guest(root, Path::new(target), libc::O_RDONLY | libc::O_NONBLOCK)?;
     let meta = file.metadata()?;
     if !meta.is_file() || meta.len() > 1024 * 1024 {
-        return Err(Error::Invalid("desktop 必须为有界普通文件".into()));
+        return Err(Error::Invalid(
+            "desktop 必须为有界普通文件 / desktop must be a bounded regular file".into(),
+        ));
     }
     let mut text = String::new();
     file.take(1024 * 1024 + 1).read_to_string(&mut text)?;
@@ -118,9 +130,9 @@ fn words(value: &str) -> Result<Vec<String>> {
             decoded.push(c);
             continue;
         }
-        let escaped = chars
-            .next()
-            .ok_or_else(|| Error::Invalid("desktop 字符串转义不完整".into()))?;
+        let escaped = chars.next().ok_or_else(|| {
+            Error::Invalid("desktop 字符串转义不完整 / incomplete desktop string escape".into())
+        })?;
         decoded.push(match escaped {
             's' => ' ',
             'n' => '\n',
@@ -129,7 +141,7 @@ fn words(value: &str) -> Result<Vec<String>> {
             '\\' => '\\',
             _ => {
                 return Err(Error::Invalid(format!(
-                    "不支持的 desktop 字符串转义: \\{escaped}"
+                    "不支持的 desktop 字符串转义: \\{escaped} / unsupported desktop string escape: \\{escaped}"
                 )));
             }
         });
@@ -146,11 +158,11 @@ fn words(value: &str) -> Result<Vec<String>> {
                 started = true;
             }
             '\\' => {
-                let escaped = chars
-                    .next()
-                    .ok_or_else(|| Error::Invalid("Exec 转义不完整".into()))?;
+                let escaped = chars.next().ok_or_else(|| {
+                    Error::Invalid("Exec 转义不完整 / incomplete Exec escape".into())
+                })?;
                 if !quote || !matches!(escaped, '"' | '\\' | '$' | '`') {
-                    return Err(Error::Invalid("Exec 转义必须引用受支持的特殊字符".into()));
+                    return Err(Error::Invalid("Exec 转义必须引用受支持的特殊字符 / Exec escapes must quote supported special characters".into()));
                 }
                 word.push(escaped);
                 started = true;
@@ -168,7 +180,9 @@ fn words(value: &str) -> Result<Vec<String>> {
         }
     }
     if quote {
-        return Err(Error::Invalid("Exec 引号不完整".into()));
+        return Err(Error::Invalid(
+            "Exec 引号不完整 / incomplete Exec quotation".into(),
+        ));
     }
     if started {
         result.push(word);
@@ -186,9 +200,9 @@ pub fn file_field(entry: &DesktopEntry) -> Result<Option<&'static str>> {
         let mut chars = word.chars();
         while let Some(c) = chars.next() {
             if c == '%' {
-                let code = chars
-                    .next()
-                    .ok_or_else(|| Error::Invalid("Exec 字段码不完整".into()))?;
+                let code = chars.next().ok_or_else(|| {
+                    Error::Invalid("Exec 字段码不完整 / incomplete Exec field code".into())
+                })?;
                 let field = match code {
                     'f' => Some("%f"),
                     'F' => Some("%F"),
@@ -198,7 +212,9 @@ pub fn file_field(entry: &DesktopEntry) -> Result<Option<&'static str>> {
                 };
                 if let Some(field) = field {
                     if found.is_some() {
-                        return Err(Error::Invalid("Exec 文件字段码重复".into()));
+                        return Err(Error::Invalid(
+                            "Exec 文件字段码重复 / duplicate Exec file field code".into(),
+                        ));
                     }
                     found = Some(field);
                 }
@@ -239,16 +255,17 @@ pub fn expand(entry: &DesktopEntry, target: &str, args: &[String]) -> Result<Vec
                         expanded.push(c);
                         continue;
                     }
-                    match chars
-                        .next()
-                        .ok_or_else(|| Error::Invalid("Exec 字段码不完整".into()))?
-                    {
+                    match chars.next().ok_or_else(|| {
+                        Error::Invalid("Exec 字段码不完整 / incomplete Exec field code".into())
+                    })? {
                         '%' => expanded.push('%'),
                         'c' => expanded.push_str(&entry.name),
                         'k' => expanded.push_str(target),
                         'd' | 'D' | 'n' | 'N' | 'v' | 'm' => {}
                         c => {
-                            return Err(Error::Invalid(format!("不支持或非独立 Exec 字段码 %{c}")));
+                            return Err(Error::Invalid(format!(
+                                "不支持或非独立 Exec 字段码 %{c} / unsupported or non-standalone Exec field code %{c}"
+                            )));
                         }
                     }
                 }
@@ -262,7 +279,9 @@ pub fn expand(entry: &DesktopEntry, target: &str, args: &[String]) -> Result<Vec
         result.extend(args.iter().cloned());
     }
     if result.first().is_none_or(String::is_empty) || result.iter().any(|v| v.contains('\0')) {
-        return Err(Error::Invalid("desktop 程序无效".into()));
+        return Err(Error::Invalid(
+            "desktop 程序无效 / invalid desktop application".into(),
+        ));
     }
     Ok(result)
 }
@@ -297,7 +316,7 @@ pub(crate) fn resolve_at(
     if let Some(target) = desktop {
         let entry = read_at(root, &target)?;
         if entry.hidden {
-            return Err(Error::Invalid("desktop 已隐藏".into()));
+            return Err(Error::Invalid("desktop 已隐藏 / desktop is hidden".into()));
         }
         if let Some(try_exec) = entry.values.get("TryExec") {
             executable_at(root, try_exec)?;
@@ -308,7 +327,9 @@ pub(crate) fn resolve_at(
                 .metadata()?
                 .is_dir()
             {
-                return Err(Error::Invalid("desktop 工作目录不存在".into()));
+                return Err(Error::Invalid(
+                    "desktop 工作目录不存在 / desktop working directory does not exist".into(),
+                ));
             }
             argv.splice(
                 0..0,
@@ -342,7 +363,9 @@ pub(crate) fn executable_at(root: &std::fs::File, target: &str) -> Result<String
         vec![target.to_owned()]
     } else {
         if target.contains('/') || target.is_empty() {
-            return Err(Error::Invalid("程序名无效".into()));
+            return Err(Error::Invalid(
+                "程序名无效 / invalid application name".into(),
+            ));
         }
         ["/usr/local/bin", "/usr/bin", "/bin"]
             .map(|dir| format!("{dir}/{target}"))
@@ -361,7 +384,9 @@ pub(crate) fn executable_at(root: &std::fs::File, target: &str) -> Result<String
             Err(e) => return Err(e),
         }
     }
-    Err(Error::Invalid(format!("容器程序不存在: {target}")))
+    Err(Error::Invalid(format!(
+        "容器程序不存在: {target} / container application does not exist: {target}"
+    )))
 }
 
 #[cfg(test)]

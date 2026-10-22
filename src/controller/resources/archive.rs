@@ -24,7 +24,7 @@ pub(super) fn reader(file: std::fs::File, path: &Path) -> Result<Box<dyn Read>> 
         Some("tar") => Box::new(file),
         _ => {
             return Err(Error::Invalid(format!(
-                "不支持的资源压缩格式: {}",
+                "不支持的资源压缩格式: {0} / Unsupported resource compression format: {0}",
                 path.display()
             )));
         }
@@ -55,7 +55,7 @@ pub(super) fn unpack(reader: Box<dyn Read>, destination: &Path, source: &Path) -
         let kind = entry.header().entry_type();
         if !(kind.is_file() || kind.is_dir() || kind.is_symlink() || kind.is_hard_link()) {
             return Err(Error::Invalid(format!(
-                "不支持的插件归档条目: {}",
+                "不支持的插件归档条目: {0} / Unsupported plugin archive entry: {0}",
                 path.display()
             )));
         }
@@ -66,7 +66,10 @@ pub(super) fn unpack(reader: Box<dyn Read>, destination: &Path, source: &Path) -
             .unpack_in(destination)
             .map_err(|error| disk::io(source, error))?
         {
-            return Err(Error::Invalid(format!("插件路径越界: {}", path.display())));
+            return Err(Error::Invalid(format!(
+                "插件路径越界: {0} / Plugin path escapes its allowed bounds: {0}",
+                path.display()
+            )));
         }
     }
     // Drain the decoder so compression checksums are verified even after tar's end marker.

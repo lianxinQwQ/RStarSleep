@@ -112,7 +112,7 @@ fn line_breaks_are_rejected_before_updating_any_account() {
         assert!(output.stdout.is_empty());
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            "RootPassword must not contain line breaks\n"
+            "RootPassword 不能包含换行符 / RootPassword must not contain line breaks\n"
         );
     }
 }
@@ -126,7 +126,7 @@ fn password_update_failure_preserves_exit_status_without_echoing_the_secret() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "Failed to set the root password\n"
+        "设置 root 密码失败 / Failed to set the root password\n"
     );
 }
 

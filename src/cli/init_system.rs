@@ -5,14 +5,22 @@ use std::{ffi::OsString, path::PathBuf};
 
 use crate::config::{ConfigStore, current_system_workspace};
 
-const INIT_SYSTEM_USAGE: &str = "\
-用法：RStarSleep init-system [<工作目录绝对路径>] <系统标识>
+const INIT_SYSTEM_USAGE: &str = "用法：RStarSleep init-system [<工作目录绝对路径>] <系统标识>
 
 省略工作目录时，自动定位当前系统所在 Btrfs 文件系统顶层的 @RStarSleep 工作目录，
 兼容已有 @rstarsleep；即使当前系统运行于快照中也能识别。
 请先运行 RStarSleep init 初始化管理器工作目录。
 
 示例：
+  RStarSleep init-system desktop
+  RStarSleep init-system /rstarsleep desktop / Usage: RStarSleep init-system [<absolute-work-directory>] <system-id>
+
+When the work directory is omitted, automatically locate the @RStarSleep work directory
+at the top level of the Btrfs filesystem containing the current system.
+Existing @rstarsleep directories are also supported, even when running from a snapshot.
+Run RStarSleep init first to initialize the manager work directory.
+
+Examples:
   RStarSleep init-system desktop
   RStarSleep init-system /rstarsleep desktop";
 
@@ -38,7 +46,9 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
         [root, id] => (Some(root), id),
         _ => return Err(INIT_SYSTEM_USAGE.into()),
     };
-    let id = id.to_str().ok_or("系统标识必须是 UTF-8 文本")?;
+    let id = id
+        .to_str()
+        .ok_or("系统标识必须是 UTF-8 文本 / system identifier must be UTF-8 text")?;
     crate::config::validate_identifier(id)?;
     let store = match root {
         Some(root) => ConfigStore::new(PathBuf::from(root))?,

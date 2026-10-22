@@ -5,7 +5,7 @@ set -euo pipefail
 plugin_root=${RSTAR_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 source "$plugin_root/lib/common.sh"
 (( $# == 1 )) && [[ $1 =~ ^[0-9a-f]{32}$ && $1 != 00000000000000000000000000000000 ]] || {
-    log 'system_init requires one nonzero 32-character machine-id'; exit 64;
+    log 'system_init 需要一个非零的 32 字符 machine-id / system_init requires one nonzero 32-character machine-id'; exit 64;
 }
 identity_root
 root=${RSTAR_ROOT%/}

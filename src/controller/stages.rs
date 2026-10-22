@@ -156,7 +156,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             );
             if self.plugin.metadata.api_version != 3 {
                 return Err(super::Error::Invalid(
-                    "无基础缓存的系统创建需要 API 3 的 system_init 操作".into(),
+                    "无基础缓存的系统创建需要 API 3 的 system_init 操作 / Creating a system without a base cache requires the API 3 system_init operation".into(),
                 ));
             }
             self.backend.create_subvolume(&root)?;
@@ -190,8 +190,11 @@ impl<B: BuildBackend> Stages<'_, B> {
             if cached.is_some() && self.config.packages.is_empty() {
                 session.apply_plan(
                     &[],
-                    self.package_plan
-                        .ok_or_else(|| super::Error::Invalid("软件维护缺少目标计划".into()))?,
+                    self.package_plan.ok_or_else(|| {
+                        super::Error::Invalid(
+                            "软件维护缺少目标计划 / Software maintenance has no target plan".into(),
+                        )
+                    })?,
                 )?
             } else {
                 session.capture(Vec::new())?
@@ -328,8 +331,11 @@ impl<B: BuildBackend> Stages<'_, B> {
             } else {
                 session.apply_plan(
                     &self.config.packages,
-                    self.package_plan
-                        .ok_or_else(|| super::Error::Invalid("软件维护缺少目标计划".into()))?,
+                    self.package_plan.ok_or_else(|| {
+                        super::Error::Invalid(
+                            "软件维护缺少目标计划 / Software maintenance has no target plan".into(),
+                        )
+                    })?,
                 )?
             }
         } else if let Some(cached) = cached {
@@ -450,7 +456,7 @@ impl<B: BuildBackend> Stages<'_, B> {
                     .is_file()
                 {
                     return Err(super::Error::Invalid(
-                        "缓存软件包文件清单必须为普通文件".into(),
+                        "缓存软件包文件清单必须为普通文件 / Cached package file manifest must be a regular file".into(),
                     ));
                 }
                 let bytes = std::fs::read(&source).map_err(|e| super::fs::io(&source, e))?;
@@ -674,7 +680,9 @@ impl<B: BuildBackend> Stages<'_, B> {
         let directory = self.attempt.layout.cache.join(&self.attempt.version);
         let cache = directory.join("inherit");
         if super::fs::exists(&cache)? {
-            return Err(super::Error::Invalid("不覆盖已有继承缓存".into()));
+            return Err(super::Error::Invalid(
+                "不覆盖已有继承缓存 / Refusing to overwrite an existing inheritance cache".into(),
+            ));
         }
         progress::run(
             &self.context.system_id,

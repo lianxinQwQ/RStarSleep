@@ -17,7 +17,7 @@ fn main() -> std::process::ExitCode {
             {
                 return std::process::ExitCode::from((*code).clamp(0, 255) as u8);
             }
-            eprintln!("{error}");
+            eprintln!("操作失败 / Operation failed: {error}");
             std::process::ExitCode::FAILURE
         }
     }

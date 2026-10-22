@@ -26,7 +26,7 @@ pub enum Error {
     Plugin(#[from] super::plugins::Error),
     /// A filesystem operation failed.
     /// 文件系统操作失败。
-    #[error("无法访问 {path}: {source}")]
+    #[error("无法访问 {path} / cannot access {path}: {source}")]
     Io {
         /// Filesystem path involved in the failure.
         /// 失败涉及的文件系统路径。
@@ -38,7 +38,7 @@ pub enum Error {
     },
     /// A native command exited unsuccessfully.
     /// 原生命令执行失败。
-    #[error("{command} 失败（{status}）: {stderr}")]
+    #[error("{command} 失败（{status}） / {command} failed ({status}): {stderr}")]
     Command {
         /// Command and arguments for diagnostics.
         /// 用于诊断的命令和参数。
@@ -52,11 +52,11 @@ pub enum Error {
     },
     /// Storage, state, or package output is invalid.
     /// 存储、状态或包输出无效。
-    #[error("构建无效: {0}")]
+    #[error("构建无效 / Invalid build: {0}")]
     Invalid(String),
     /// Independent systems were attempted, but at least one failed.
     /// 已尝试独立系统，但至少一个失败。
-    #[error("部分系统构建失败:\n{}", .0.join("\n"))]
+    #[error("部分系统构建失败 / Some system builds failed:\n{}", .0.join("\n"))]
     Batch(Vec<String>),
 }
 
@@ -222,7 +222,7 @@ pub trait BuildBackend {
     /// 拒绝不能由普通快照覆盖的后代子卷。
     fn check_no_nested_subvolumes(&self, path: &Path) -> Result<()> {
         Err(Error::Invalid(format!(
-            "此后端不能检查嵌套子卷: {}",
+            "此后端不能检查嵌套子卷: {0} / This backend cannot inspect nested subvolumes: {0}",
             path.display()
         )))
     }
@@ -247,7 +247,9 @@ pub trait BuildBackend {
                     .components()
                     .any(|c| !matches!(c, std::path::Component::Normal(_)))
             {
-                return Err(Error::Invalid("子卷相对路径无效".into()));
+                return Err(Error::Invalid(
+                    "子卷相对路径无效 / Invalid relative subvolume path".into(),
+                ));
             }
         }
         children.sort_by_key(|p| (p.components().count(), p.clone()));
@@ -280,14 +282,19 @@ pub trait BuildBackend {
     /// Pin the containing source subvolume across an offline inheritance operation.
     fn source_subvolume_id(&self, path: &Path) -> Result<String> {
         let _ = path;
-        Err(Error::Invalid("此后端不能识别来源子卷".into()))
+        Err(Error::Invalid(
+            "此后端不能识别来源子卷 / This backend cannot identify the source subvolume".into(),
+        ))
     }
 
     /// Bundle the generic early executor before the distribution plugin builds its initramfs.
     /// 发行版插件生成 initramfs 前，打包通用早期执行器。
     fn prepare_inheritance_initramfs(&self, root: &Path) -> Result<()> {
         let _ = root;
-        Err(Error::Invalid("此后端不支持 initramfs 继承".into()))
+        Err(Error::Invalid(
+            "此后端不支持 initramfs 继承 / This backend does not support initramfs inheritance"
+                .into(),
+        ))
     }
 
     /// Delete an owned work root including subvolumes created during plugin execution.
@@ -308,7 +315,9 @@ pub trait BuildBackend {
             .uuid
             .clone()
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| Error::Invalid("Btrfs 挂载没有 UUID".into()))?;
+            .ok_or_else(|| {
+                Error::Invalid("Btrfs 挂载没有 UUID / Btrfs mount has no UUID".into())
+            })?;
         Ok((uuid, mount.subvolume_path(path)?))
     }
 
@@ -320,7 +329,7 @@ pub trait BuildBackend {
     /// - `readonly`: New property. 新属性。
     fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
         let _ = (path, readonly);
-        Err(Error::Invalid("此后端不能修改子卷只读属性".into()))
+        Err(Error::Invalid("此后端不能修改子卷只读属性 / This backend cannot modify subvolume read-only attributes".into()))
     }
 
     /// Copy a file or directory while optionally requiring reflink for all regular files.
@@ -332,7 +341,9 @@ pub trait BuildBackend {
     /// - `force_cow`: Reject any full-copy fallback. 拒绝全量复制回退。
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
         let _ = (source, target, force_cow);
-        Err(Error::Invalid("此后端不支持继承复制".into()))
+        Err(Error::Invalid(
+            "此后端不支持继承复制 / This backend does not support inheritance copying".into(),
+        ))
     }
 
     /// Execute exactly the selected policy; backends must opt into NOCOW adaptation.
@@ -345,13 +356,13 @@ pub trait BuildBackend {
         if policy == crate::config::NocowHandling::Error || !super::nocow::contains_nocow(source)? {
             self.copy_inherited(source, target, true)
         } else {
-            Err(Error::Invalid("此后端不支持所选 NOCOW 处理策略".into()))
+            Err(Error::Invalid("此后端不支持所选 NOCOW 处理策略 / This backend does not support the selected NOCOW handling policy".into()))
         }
     }
 
     /// Establish that mutating the actual source is safe, before conversion begins.
     fn check_migration_source(&self, _source: &Path) -> Result<()> {
-        Err(Error::Invalid("此后端不能验证来源目录处于离线状态".into()))
+        Err(Error::Invalid("此后端不能验证来源目录处于离线状态 / This backend cannot verify that the source directory is offline".into()))
     }
 
     /// Reject cross-filesystem CoW sources and unresolved mounted descendants.
@@ -367,7 +378,7 @@ pub trait BuildBackend {
         let (target_uuid, _) = self.filesystem_location(destination_parent)?;
         if source_uuid != target_uuid {
             return Err(Error::Invalid(format!(
-                "CoW 继承必须位于同一 Btrfs 分区: {}",
+                "CoW 继承必须位于同一 Btrfs 分区: {0} / CoW inheritance must remain on the same Btrfs partition: {0}",
                 source.display()
             )));
         }
@@ -383,7 +394,7 @@ pub trait BuildBackend {
     /// - `path`: Candidate version root. 候选版本根。
     fn is_running_root(&self, path: &Path) -> Result<bool> {
         let _ = path;
-        Err(Error::Invalid("此后端不能检查当前运行版本".into()))
+        Err(Error::Invalid("此后端不能检查当前运行版本 / This backend cannot inspect the currently running version".into()))
     }
 
     /// Publish a completed main system to its configured boot filesystem.
@@ -398,7 +409,9 @@ pub trait BuildBackend {
         config: &crate::config::RuntimeConfig,
     ) -> Result<()> {
         let _ = (outcome, config);
-        Err(Error::Invalid("此后端不支持启动发布".into()))
+        Err(Error::Invalid(
+            "此后端不支持启动发布 / This backend does not support boot publication".into(),
+        ))
     }
 
     /// Run a checked plugin operation and return query output.
@@ -468,6 +481,9 @@ pub trait BuildBackend {
         context: &BuildContext,
     ) -> Result<()> {
         let _ = (root, directory, entrypoint, context);
-        Err(Error::Invalid("此构建后端不支持 script 执行".into()))
+        Err(Error::Invalid(
+            "此构建后端不支持 script 执行 / This build backend does not support script execution"
+                .into(),
+        ))
     }
 }

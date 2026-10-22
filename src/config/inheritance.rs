@@ -65,7 +65,9 @@ impl Default for InheritanceConfig {
 fn scalar<'a>(key: &str, values: &'a [String]) -> Result<&'a str> {
     match values {
         [value] => Ok(value),
-        _ => Err(Error::Invalid(format!("{key} 必须只赋值一次"))),
+        _ => Err(Error::Invalid(format!(
+            "{key} 必须只赋值一次 / {key} must be assigned exactly once"
+        ))),
     }
 }
 
@@ -77,9 +79,9 @@ fn scalar<'a>(key: &str, values: &'a [String]) -> Result<&'a str> {
 /// Rejects non-UTF-8, non-normalized, relative or root paths.
 /// 拒绝非 UTF-8、非规范、相对或根路径。
 pub fn inheritance_name(path: &Path) -> Result<String> {
-    let text = path
-        .to_str()
-        .ok_or_else(|| Error::Invalid("继承路径必须为 UTF-8".into()))?;
+    let text = path.to_str().ok_or_else(|| {
+        Error::Invalid("继承路径必须为 UTF-8 / inheritance path must be UTF-8".into())
+    })?;
     if !text.starts_with('/')
         || path == Path::new("/")
         || text.chars().any(char::is_control)
@@ -91,7 +93,7 @@ pub fn inheritance_name(path: &Path) -> Result<String> {
         || text.ends_with("/.")
     {
         return Err(Error::Invalid(format!(
-            "继承项目必须为规范绝对路径且不能为 /: {text:?}"
+            "继承项目必须为规范绝对路径且不能为 /: {text:?} / inheritance entry must be a canonical absolute path other than /: {text:?}"
         )));
     }
     Ok(text.trim_end_matches('/').replace('/', "-"))
@@ -100,16 +102,16 @@ pub fn inheritance_name(path: &Path) -> Result<String> {
 /// Check the configured directory marker against the object used for inheritance.
 /// 按继承时实际使用的对象类型核验配置中的目录标记，不访问文件系统。
 pub(crate) fn validate_inheritance_type(path: &Path, directory: bool) -> Result<()> {
-    let text = path
-        .to_str()
-        .ok_or_else(|| Error::Invalid("继承路径必须为 UTF-8".into()))?;
+    let text = path.to_str().ok_or_else(|| {
+        Error::Invalid("继承路径必须为 UTF-8 / inheritance path must be UTF-8".into())
+    })?;
     if directory != text.ends_with('/') {
         return Err(Error::Invalid(format!(
             "{}: {text:?}",
             if directory {
-                "继承目录路径必须以 / 结尾"
+                "继承目录路径必须以 / 结尾 / inherited directory path must end with /"
             } else {
-                "继承文件路径不能以 / 结尾"
+                "继承文件路径不能以 / 结尾 / inherited file path must not end with /"
             }
         )));
     }
@@ -134,7 +136,7 @@ impl InheritanceConfig {
             match key.as_str() {
                 "RSTAR_INHERITANCE_TIMING" | "RSTAR_INHERITANCE_COPYONWRITE" => {
                     return Err(Error::Invalid(
-                        "继承配置不再支持 Timing 或 CopyOnWrite；请将构建时路径迁移到 CopyOnWriteBuild，首次启动时路径迁移到 CopyOnWriteBoot".into(),
+                        "继承配置不再支持 Timing 或 CopyOnWrite；请将构建时路径迁移到 CopyOnWriteBuild，首次启动时路径迁移到 CopyOnWriteBoot / inheritance configuration no longer supports Timing or CopyOnWrite; move build-time paths to CopyOnWriteBuild and first-boot paths to CopyOnWriteBoot".into(),
                     ));
                 }
                 "RSTAR_INHERITANCE_DIRECTORYSUBVOLUME" => {
@@ -143,7 +145,7 @@ impl InheritanceConfig {
                         "no" => false,
                         _ => {
                             return Err(Error::Invalid(
-                                "DirectorySubvolume 必须为 yes 或 no".into(),
+                                "DirectorySubvolume 必须为 yes 或 no / DirectorySubvolume must be yes or no".into(),
                             ));
                         }
                     };
@@ -157,7 +159,7 @@ impl InheritanceConfig {
                         "move-snapshot" => NocowHandling::MoveSnapshot,
                         _ => {
                             return Err(Error::Invalid(
-                                "NocowHandling 必须为 error、reflink、copy 或 move-snapshot".into(),
+                                "NocowHandling 必须为 error、reflink、copy 或 move-snapshot / NocowHandling must be error, reflink, copy, or move-snapshot".into(),
                             ));
                         }
                     };
@@ -169,7 +171,11 @@ impl InheritanceConfig {
                 "RSTAR_INHERITANCE_COPYONWRITEBUILD" => &mut config.copy_on_write_build,
                 "RSTAR_INHERITANCE_COPYONWRITEBOOT" => &mut config.copy_on_write_boot,
                 "RSTAR_INHERITANCE_MOUNT" => &mut config.mounts,
-                _ => return Err(Error::Invalid(format!("未知继承配置: {key}"))),
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "未知继承配置: {key} / unknown inheritance setting: {key}"
+                    )));
+                }
             };
             for value in values {
                 for line in value.lines().filter(|line| !line.is_empty()) {
@@ -183,12 +189,12 @@ impl InheritanceConfig {
                             || Path::new(DEFAULT_MANAGER).starts_with(&path))
                     {
                         return Err(Error::Invalid(format!(
-                            "Mount 路径与管理器运行环境冲突或含不支持的绑定分隔符: {line}"
+                            "Mount 路径与管理器运行环境冲突或含不支持的绑定分隔符: {line} / Mount path conflicts with the manager runtime or contains an unsupported bind separator: {line}"
                         )));
                     }
                     if let Some(previous) = names.insert(name, path.clone()) {
                         return Err(Error::Invalid(format!(
-                            "继承路径重复或编码冲突: {} 与 {}",
+                            "继承路径重复或编码冲突: {0} 与 {1} / duplicate inheritance paths or encoding collision: {0} and {1}",
                             previous.display(),
                             path.display()
                         )));
@@ -199,7 +205,7 @@ impl InheritanceConfig {
         }
         if config.nocow_handling == NocowHandling::MoveSnapshot && !config.directory_subvolume {
             return Err(Error::Invalid(
-                "NocowHandling=move-snapshot 要求 DirectorySubvolume=yes".into(),
+                "NocowHandling=move-snapshot 要求 DirectorySubvolume=yes / NocowHandling=move-snapshot requires DirectorySubvolume=yes".into(),
             ));
         }
         let paths: Vec<_> = config
@@ -212,7 +218,7 @@ impl InheritanceConfig {
             for other in &paths[index + 1..] {
                 if path.starts_with(other) || other.starts_with(path) {
                     return Err(Error::Invalid(format!(
-                        "继承路径不能重叠: {} 与 {}",
+                        "继承路径不能重叠: {0} 与 {1} / inheritance paths must not overlap: {0} and {1}",
                         path.display(),
                         other.display()
                     )));

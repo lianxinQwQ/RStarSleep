@@ -6,18 +6,18 @@ plugin_root=${RSTAR_PLUGIN_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && 
 source "$plugin_root/lib/common.sh"
 
 (( $# % 4 == 0 )) || {
-    log 'mount_inheritance requires source, absolute target, filesystem type and options groups'; exit 64;
+    log 'mount_inheritance 需要来源、绝对目标路径、文件系统类型和选项组 / mount_inheritance requires source, absolute target, filesystem type and options groups'; exit 64;
 }
 [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
-    log 'mount_inheritance requires an existing absolute RSTAR_ROOT'; exit 64;
+    log 'mount_inheritance 要求 RSTAR_ROOT 为现有根目录的绝对路径 / mount_inheritance requires an existing absolute RSTAR_ROOT'; exit 64;
 }
 root=${RSTAR_ROOT%/}
 [[ -d $root/etc && ! -L $root/etc ]] || {
-    log 'mount_inheritance requires a real etc directory'; exit 64;
+    log 'mount_inheritance 需要真实的 etc 目录 / mount_inheritance requires a real etc directory'; exit 64;
 }
 fstab=$root/etc/fstab
 [[ ! -L $fstab && ( ! -e $fstab || -f $fstab ) ]] || {
-    log 'mount_inheritance requires a regular fstab without symbolic links'; exit 64;
+    log 'mount_inheritance 需要不经过符号链接的普通 fstab 文件 / mount_inheritance requires a regular fstab without symbolic links'; exit 64;
 }
 
 # Encode every field before joining it into an fstab row; do not interpret shell text.
@@ -37,7 +37,7 @@ fstab_field() {
 rows=()
 while (( $# > 0 )); do
     [[ -n $1 && $2 == /* && $3 =~ ^[a-zA-Z0-9_.+-]+$ && -n $4 ]] || {
-        log 'Invalid inherited mount source, target, filesystem type or options'; exit 64;
+        log '继承挂载的来源、目标、文件系统类型或选项无效 / Invalid inherited mount source, target, filesystem type or options'; exit 64;
     }
     rows+=("$(fstab_field "$1") $(fstab_field "$2") $(fstab_field "$3") $(fstab_field "$4") 0 0")
     shift 4
@@ -47,7 +47,7 @@ begin='# BEGIN RStarSleep inherited mounts'
 end='# END RStarSleep inherited mounts'
 while IFS= read -r line; do
     [[ $line != "$begin" && $line != "$end" ]] || {
-        log 'FstabLines must not contain inherited-mount ownership markers'; exit 64;
+        log 'FstabLines 不能包含继承挂载的归属标记 / FstabLines must not contain inherited-mount ownership markers'; exit 64;
     }
 done <<<"$extra"
 (( ${#rows[@]} > 0 )) || [[ -n $extra || -f $fstab ]] || exit 0
@@ -68,7 +68,7 @@ if [[ -f $fstab ]]; then
         !inside { print }
         END { if (inside || invalid) exit 64 }
     ' "$fstab" >"$output"; then
-        log 'Malformed inherited-mount ownership block in fstab'; exit 64;
+        log 'fstab 中的继承挂载归属区块格式错误 / Malformed inherited-mount ownership block in fstab'; exit 64;
     fi
 else
     : >"$output"

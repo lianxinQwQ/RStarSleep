@@ -39,7 +39,7 @@ fn target(value: &Path) -> Result<PathBuf> {
             .any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err(Error::Invalid(format!(
-            "持久目录挂载点必须为相对子目录: {}",
+            "持久目录挂载点必须为相对子目录: {0} / persistent directory mount point must be a relative subdirectory: {0}",
             value.display()
         )));
     }
@@ -52,7 +52,7 @@ fn validate_target(root: &Path, target: &Path) -> Result<()> {
         match fs::symlink_metadata(&current) {
             Ok(info) if !info.is_dir() || info.file_type().is_symlink() => {
                 return Err(Error::Invalid(format!(
-                    "挂载点不能覆盖资源或经过链接: {}",
+                    "挂载点不能覆盖资源或经过链接: {0} / mount point must not overwrite resources or traverse symlinks: {0}",
                     current.display()
                 )));
             }
@@ -69,7 +69,7 @@ fn validate_target(root: &Path, target: &Path) -> Result<()> {
         .is_some()
     {
         return Err(Error::Invalid(format!(
-            "挂载点会遮盖非空插件目录: {}",
+            "挂载点会遮盖非空插件目录: {0} / mount point would hide a nonempty plugin directory: {0}",
             current.display()
         )));
     }
@@ -88,7 +88,7 @@ pub fn parse(mappings: &[String], root: &Path) -> Result<Vec<PersistentDirectory
                 .any(|p| p.target.starts_with(&destination) || destination.starts_with(&p.target))
         {
             return Err(Error::Invalid(format!(
-                "持久目录重复或挂载点重叠: {mapping}"
+                "持久目录重复或挂载点重叠: {mapping} / duplicate persistent directory or overlapping mount points: {mapping}"
             )));
         }
         validate_target(root, &destination)?;
@@ -115,7 +115,9 @@ fn copy(source: &Path, dest: &Path) -> Result<()> {
             fs::copy(&s, &d).map_err(|e| io_error(&d, e))?;
             fs::set_permissions(&d, info.permissions()).map_err(|e| io_error(&d, e))?;
         } else {
-            return Err(Error::Invalid("插件资源不能包含特殊文件".into()));
+            return Err(Error::Invalid(
+                "插件资源不能包含特殊文件 / plugin resources must not contain special files".into(),
+            ));
         }
     }
     Ok(())
@@ -134,7 +136,7 @@ pub fn host_workspace(root: &Path, mounts: &[PersistentMount]) -> Result<Workspa
             .iter()
             .any(|p: &PathBuf| p.starts_with(&t) || t.starts_with(p))
         {
-            return Err(Error::Invalid("挂载点重叠".into()));
+            return Err(Error::Invalid("挂载点重叠 / mount points overlap".into()));
         }
         seen.push(t.clone());
         validate_target(work.path(), &t)?;

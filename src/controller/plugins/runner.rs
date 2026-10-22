@@ -82,7 +82,9 @@ impl LoadedPlugin {
     ) -> Result<Output> {
         identifier(&context.system_id)?;
         if !context.config.is_absolute() || !context.config.is_dir() {
-            return Err(Error::Invalid("冻结配置目录无效".into()));
+            return Err(Error::Invalid(
+                "冻结配置目录无效 / invalid frozen configuration directory".into(),
+            ));
         }
         let path = std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
         self.invoke_environment(
@@ -105,7 +107,9 @@ impl LoadedPlugin {
     ) -> Result<Output> {
         identifier(&context.system_id)?;
         if !context.config.is_absolute() || !context.config.is_dir() {
-            return Err(Error::Invalid("冻结配置目录无效".into()));
+            return Err(Error::Invalid(
+                "冻结配置目录无效 / invalid frozen configuration directory".into(),
+            ));
         }
         let path = std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
         self.invoke_environment_with_save(
@@ -204,36 +208,37 @@ impl LoadedPlugin {
         }
         if operation == "post_maintenance" && !self.metadata.post_maintenance {
             return Err(Error::Invalid(
-                "plugin does not advertise post_maintenance".into(),
+                "插件未声明支持 post_maintenance / plugin does not advertise post_maintenance"
+                    .into(),
             ));
         }
         if operation == "maintain_packages" && !self.metadata.package_maintenance {
             return Err(Error::Invalid(
-                "plugin does not advertise package_maintenance".into(),
+                "插件未声明支持 package_maintenance / plugin does not advertise package_maintenance".into(),
             ));
         }
         if operation == "query_package_files" && !self.metadata.query_package_files {
             return Err(Error::Invalid(
-                "plugin does not advertise query_package_files".into(),
+                "插件未声明支持 query_package_files / plugin does not advertise query_package_files".into(),
             ));
         }
         if operation == "query_package_database_paths"
             && !self.metadata.query_package_database_paths
         {
             return Err(Error::Invalid(
-                "plugin does not advertise query_package_database_paths".into(),
+                "插件未声明支持 query_package_database_paths / plugin does not advertise query_package_database_paths".into(),
             ));
         }
         if operation == "prepare_inheritance_initramfs"
             && self.metadata.initramfs_inheritance.is_none()
         {
             return Err(Error::Invalid(
-                "plugin does not advertise initramfs_inheritance".into(),
+                "插件未声明支持 initramfs_inheritance / plugin does not advertise initramfs_inheritance".into(),
             ));
         }
         if operation == "collect_packages" && self.metadata.package_plan.is_none() {
             return Err(Error::Invalid(
-                "plugin does not advertise package_plan".into(),
+                "插件未声明支持 package_plan / plugin does not advertise package_plan".into(),
             ));
         }
         let standalone = std::collections::BTreeMap::from([(
@@ -272,12 +277,12 @@ impl LoadedPlugin {
                     .any(|b| b.target == m.target && b.source.is_absolute() && b.source.is_dir())
             })
         {
-            return Err(Error::Invalid("插件持久目录未由控制器完整分配".into()));
+            return Err(Error::Invalid("插件持久目录未由控制器完整分配 / plugin persistent directories have not been fully allocated by the controller".into()));
         }
         identifier(operation)?;
         identifier(architecture)?;
         if !root.is_absolute() || !root.is_dir() {
-            return Err(Error::Invalid("插件任务需要已存在的系统根绝对目录".into()));
+            return Err(Error::Invalid("插件任务需要已存在的系统根绝对目录 / plugin task requires an existing absolute system root directory".into()));
         }
         if !self
             .metadata
@@ -286,7 +291,7 @@ impl LoadedPlugin {
             .any(|value| value == architecture)
         {
             return Err(Error::Invalid(format!(
-                "插件 {} 不支持架构 {architecture}",
+                "插件 {0} 不支持架构 {architecture} / plugin {0} does not support architecture {architecture}",
                 self.metadata.id
             )));
         }
@@ -313,7 +318,7 @@ impl LoadedPlugin {
             let entry = visible_root.join(
                 operation_path
                     .strip_prefix(self.root())
-                    .expect("operation in resources"),
+                    .expect("资源中的操作 / operation in resources"),
             );
             let mut command = if shell_script {
                 let bash = executable("bash", self.root(), host_path)
@@ -378,15 +383,18 @@ impl LoadedPlugin {
             if !output.status.success() {
                 return Err(execution_error(
                     self,
-                    &format!("{operation} 工具检查"),
+                    &format!("{operation}:tool-check"),
                     &output,
                 ));
             }
-            let report = String::from_utf8(output.stdout)
-                .map_err(|_| Error::Invalid("目标工具检查输出不是 UTF-8".into()))?;
+            let report = String::from_utf8(output.stdout).map_err(|_| {
+                Error::Invalid(
+                    "目标工具检查输出不是 UTF-8 / target tool check output is not UTF-8".into(),
+                )
+            })?;
             let missing: Vec<String> = report.lines().map(str::to_owned).collect();
             if missing.iter().any(|tool| !required.contains(tool)) {
-                return Err(Error::Invalid("目标工具检查返回了未知工具名称".into()));
+                return Err(Error::Invalid("目标工具检查返回了未知工具名称 / target tool check returned an unknown tool name".into()));
             }
             if !missing.is_empty() {
                 return Err(missing_tools(self, operation, "目标系统", missing));
@@ -415,7 +423,7 @@ impl LoadedPlugin {
                 Path::new(SYSTEM_PLUGIN).join(
                     operation_path
                         .strip_prefix(self.root())
-                        .expect("operation in resources"),
+                        .expect("资源中的操作 / operation in resources"),
                 ),
             );
             command

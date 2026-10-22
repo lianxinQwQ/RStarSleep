@@ -83,9 +83,9 @@ def _length(data, offset):
         return ((first - 192) << 8) + data[offset] + 192, offset + 1
     if first == 255:
         if offset + 4 > len(data):
-            raise ValueError('truncated length')
+            raise ValueError('长度数据被截断 / truncated length')
         return int.from_bytes(data[offset:offset + 4], 'big'), offset + 4
-    raise ValueError('partial OpenPGP packet')
+    raise ValueError('OpenPGP 数据包不完整 / partial OpenPGP packet')
 
 
 class OfficialPackageCache:
@@ -123,11 +123,11 @@ class OfficialPackageCache:
             if ('PackageRequired' not in policy or 'PackageTrustedOnly' not in policy
                     or any(p in policy for p in ('PackageOptional', 'PackageNever', 'PackageTrustAll',
                                                  'PackageTrustUnknown', 'PackageTrustMarginal'))):
-                raise VerificationError(f'Repository {repository} requires PackageRequired and PackageTrustedOnly')
+                raise VerificationError(f'仓库 {repository} 要求使用 PackageRequired 和 PackageTrustedOnly / Repository {repository} requires PackageRequired and PackageTrustedOnly')
             policies[repository] = policy
         gpgdirs = options.get('GPGDir', [])
         if len(gpgdirs) != 1 or not Path(gpgdirs[0]).is_absolute() or not policies:
-            raise VerificationError('Cannot determine official repository signing configuration')
+            raise VerificationError('无法确定官方仓库的签名配置 / Cannot determine official repository signing configuration')
         directory = Path(gpgdirs[0])
         keys = self.run(['gpg', '--no-options', '--homedir', directory, '--batch',
                          '--with-colons', '--fixed-list-mode', '--with-fingerprint', '--list-keys'],
@@ -177,7 +177,7 @@ class OfficialPackageCache:
                 raise ValueError()
             return dict(name=name, version=version, repository=repository, sha256=digest)
         except (KeyError, TypeError, ValueError):
-            raise VerificationError('Official package lacks repository identity or SHA-256') from None
+            raise VerificationError('官方软件包缺少仓库标识或 SHA-256 / Official package lacks repository identity or SHA-256') from None
 
     def reusable(self, filename, metadata, package):
         context = self.activate()
@@ -195,7 +195,7 @@ class OfficialPackageCache:
     def verified(self, filename, metadata, package):
         identity = self.identity(metadata)
         if not package.is_file() or package.is_symlink() or self.digest(package) != identity['sha256']:
-            raise VerificationError(f'Official package checksum mismatch after pacman verification: {filename}')
+            raise VerificationError(f'通过 pacman 验证后，官方软件包的校验和不匹配：{filename} / Official package checksum mismatch after pacman verification: {filename}')
         signatures = metadata.get('PGPSIG', [])
         try:
             signature = (base64.b64decode(signatures[0], validate=True) if len(signatures) == 1
@@ -210,7 +210,7 @@ class OfficialPackageCache:
         deadlines = [d for d in (deadline, context['expires']) if d]
         expires = min(deadlines) if deadlines else 0
         if expires and expires <= self.clock():
-            raise VerificationError(f'Package signing validity expired during verification: {filename}')
+            raise VerificationError(f'软件包签名在验证期间过期：{filename} / Package signing validity expired during verification: {filename}')
         self.records[filename] = dict(identity=identity, context=context['fingerprint'],
                                      expires=expires, checked_at=int(self.clock()))
 

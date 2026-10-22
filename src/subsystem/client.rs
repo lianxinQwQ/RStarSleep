@@ -46,12 +46,16 @@ pub(crate) fn connect(socket: &Path) -> Result<UnixStream> {
     super::checked(socket)?;
     let meta = fs::symlink_metadata(socket)?;
     if !meta.file_type().is_socket() || meta.uid() != 0 {
-        return Err(Error::Invalid("守护进程 socket 必须属于 root".into()));
+        return Err(Error::Invalid(
+            "守护进程 socket 必须属于 root / daemon socket must be owned by root".into(),
+        ));
     }
     for ancestor in socket.parent().unwrap().ancestors() {
         let m = fs::symlink_metadata(ancestor)?;
         if !m.is_dir() || m.uid() != 0 || m.mode() & 0o022 != 0 {
-            return Err(Error::Invalid("守护进程 socket 目录不可信".into()));
+            return Err(Error::Invalid(
+                "守护进程 socket 目录不可信 / untrusted daemon socket directory".into(),
+            ));
         }
     }
     let stream = UnixStream::connect(socket)?;
@@ -70,7 +74,9 @@ pub(crate) fn connect(socket: &Path) -> Result<UnixStream> {
         || cred.uid != 0
         || cred.pid <= 0
     {
-        return Err(Error::Invalid("守护进程身份验证失败".into()));
+        return Err(Error::Invalid(
+            "守护进程身份验证失败 / daemon authentication failed".into(),
+        ));
     }
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     Ok(stream)
@@ -95,7 +101,11 @@ pub fn request(socket: &Path, operation: Operation) -> Result<Vec<Status>> {
             Some(Event::Message { text }) => println!("{text}"),
             Some(Event::Result { statuses }) => return Ok(statuses),
             Some(Event::Error { message }) => return Err(Error::Invalid(message)),
-            _ => return Err(Error::Protocol("管理响应无效".into())),
+            _ => {
+                return Err(Error::Protocol(
+                    "管理响应无效 / invalid management response".into(),
+                ));
+            }
         }
     }
 }
@@ -127,7 +137,7 @@ fn receive_execution(stream: UnixStream, ready: &AtomicBool) -> io::Result<i32> 
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "缺少应用退出状态",
+                    "缺少应用退出状态 / missing application exit status",
                 ));
             }
         }
@@ -162,7 +172,9 @@ pub fn execute_operation(socket: &Path, operation: Operation, pty: bool) -> Resu
             match rx.try_recv() {
                 Ok(result) => return result,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(io::Error::other("应用接收线程结束"));
+                    return Err(io::Error::other(
+                        "应用接收线程结束 / application receiver thread ended",
+                    ));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }

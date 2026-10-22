@@ -46,7 +46,7 @@ class PreparationError(Exception):
 class CommandError(PreparationError):
     def __init__(self, argv, result, no_space=False):
         self.no_space = no_space and result.returncode > 0 and result.returncode not in (130, 143)
-        super().__init__(f"command failed ({result.returncode}): {shlex.join(list(map(str, argv)))}\n{result.stderr or ''}")
+        super().__init__(f"命令执行失败 / command failed ({result.returncode}): {shlex.join(list(map(str, argv)))}\n{result.stderr or ''}")
 
 
 def log(chinese, english):
@@ -153,7 +153,7 @@ def filesystem_type(path):
         if (path == mount or mount in path.parents) and len(mount.parts) >= selected:
             selected, kind = len(mount.parts), filesystem.split()[0]
     if kind is None:
-        raise PreparationError(f"cannot determine backing filesystem: {path}")
+        raise PreparationError(f'无法确定底层文件系统：{path} / cannot determine backing filesystem: {path}')
     return kind
 
 
@@ -171,7 +171,7 @@ def target_parts(value):
         return None, value
     source, name = value.split("/", 1)
     if not NAME.fullmatch(source) or not NAME.fullmatch(name):
-        raise PreparationError(f"invalid source-qualified target: {value!r}")
+        raise PreparationError(f'带来源限定的目标无效：{value!r} / invalid source-qualified target: {value!r}')
     return source, name
 
 
@@ -187,7 +187,7 @@ def spec(value):
     _, value = target_parts(value)
     match = SPEC.fullmatch(value)
     if not match:
-        raise PreparationError(f"invalid dependency: {value!r}")
+        raise PreparationError(f'依赖项无效：{value!r} / invalid dependency: {value!r}')
     return match.groups()
 
 
@@ -207,18 +207,18 @@ def srcinfo(text, architecture):
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            raise PreparationError("malformed .SRCINFO")
+            raise PreparationError('.SRCINFO 格式错误 / malformed .SRCINFO')
         key, value = [part.strip() for part in line.split("=", 1)]
         if key == "pkgname":
             if not NAME.fullmatch(value) or value in packages:
-                raise PreparationError(f"invalid split package: {value}")
+                raise PreparationError(f'拆分软件包无效：{value} / invalid split package: {value}')
             current = packages.setdefault(value, {})
         current.setdefault(key, []).append(value)
     if len(base.get("pkgbase", [])) != 1 or not packages:
-        raise PreparationError("incomplete .SRCINFO")
+        raise PreparationError('.SRCINFO 不完整 / incomplete .SRCINFO')
     name = base["pkgbase"][0]
     if not NAME.fullmatch(name):
-        raise PreparationError("invalid pkgbase")
+        raise PreparationError('pkgbase 无效 / invalid pkgbase')
 
     def values(fields, key):
         return [v for v in fields.get(key, []) + fields.get(f"{key}_{architecture}", []) if v]
@@ -233,7 +233,7 @@ def srcinfo(text, architecture):
     for package, fields in packages.items():
         arches = fields.get("arch", base.get("arch", []))
         if arches and "any" not in arches and architecture not in arches:
-            raise PreparationError(f"{package} does not support {architecture}")
+            raise PreparationError(f'{package} 不支持 {architecture} / {package} does not support {architecture}')
         runtime_by_package[package] = inherited(fields, "depends")
         runtime.extend(runtime_by_package[package])
         build.extend(v for v in values(fields, "makedepends") + values(fields, "checkdepends") if v)
@@ -314,15 +314,15 @@ def timed_operation(chinese, english):
 class Preparer:
     def __init__(self, workspace):
         if os.geteuid() != 0:
-            raise PreparationError("preparation requires root; AUR compilation uses an unprivileged user")
+            raise PreparationError('准备阶段需要 root 权限；AUR 编译使用非特权用户 / preparation requires root; AUR compilation uses an unprivileged user')
         self.builder = pwd.getpwnam("rstar-build")
         if self.builder.pw_uid == 0:
-            raise PreparationError("AUR builder must not be root")
+            raise PreparationError('AUR 构建用户不能是 root / AUR builder must not be root')
         self.root = Path(os.environ["RSTAR_PLUGIN_ROOT"])
         self.cache, self.repo, self.sources = [self.root / "state" / name for name in ("packages", "repository", "sources")]
         for path in (self.cache, self.repo, self.sources):
             if not path.is_dir():
-                raise PreparationError(f"missing persistent mount: {path}")
+                raise PreparationError(f'缺少持久化挂载：{path} / missing persistent mount: {path}')
         self.arch = os.environ.get("RSTAR_DISTRIBUTION_ARCHITECTURE", os.environ.get("RSTAR_ARCHITECTURE", os.uname().machine))
         self.work = Path(workspace)
         self.work.chmod(0o755)
@@ -400,7 +400,7 @@ class Preparer:
             sync = self.actual_db / "sync"
             sync.mkdir(parents=True, exist_ok=True)
             if database.is_symlink():
-                raise PreparationError("repository archive must not be a symlink")
+                raise PreparationError('仓库归档不能是符号链接 / repository archive must not be a symlink')
             atomic_copy(database, sync / f"{REPO}.db")
         # New repo-add outputs must remain readable even after the one-time permission migration.
         for pattern in ("rstarsleep.db*", "rstarsleep.files*"):
@@ -426,7 +426,7 @@ class Preparer:
             if database.is_file() and database.name not in (f"{REPO}.db", f"{REPO}.db.sig"):
                 atomic_copy(database, isolated_sync / database.name)
         if not list(isolated_sync.glob("*.db")):
-            raise PreparationError("resolver environment has no synchronized official repository databases")
+            raise PreparationError('解析环境中没有已同步的官方仓库数据库 / resolver environment has no synchronized official repository databases')
         for database in (self.db / "sync").glob("*.db"):
             with tarfile.open(database) as archive:
                 for member in archive:
@@ -460,14 +460,14 @@ class Preparer:
                              isolated=True, capture=True, allowed=(0, 1))
         if result.returncode:
             if "target not found:" not in (result.stderr or "") and "could not find" not in (result.stderr or ""):
-                raise PreparationError(f"official resolution failed: {requirement}\n{result.stderr}")
+                raise PreparationError(f'官方软件包解析失败：{requirement} / Official resolution failed: {requirement}\n{result.stderr}')
             if source is not None:
-                raise PreparationError(f"target unavailable in selected repository: {requirement}")
+                raise PreparationError(f'所选仓库中没有可用目标：{requirement} / target unavailable in selected repository: {requirement}')
             self.resolutions[requirement] = None
             return None
         filenames = result.stdout.splitlines()
         if not filenames or any(Path(name).name != name or name in (".", "..") for name in filenames):
-            raise PreparationError(f"invalid official transaction: {requirement}")
+            raise PreparationError(f'官方软件包事务无效：{requirement} / invalid official transaction: {requirement}')
         self.resolutions[requirement] = filenames
         return filenames
 
@@ -479,7 +479,7 @@ class Preparer:
         if hasattr(self, "metadata"):
             found = self.metadata.official_target(requirement, satisfies_version)
             if source is not None and not found:
-                raise PreparationError(f"target unavailable in selected repository: {requirement}")
+                raise PreparationError(f'所选仓库中没有可用目标：{requirement} / target unavailable in selected repository: {requirement}')
             return found
         if source is not None:
             return self.official(requirement) is not None
@@ -496,7 +496,7 @@ class Preparer:
             source, name = target_parts(value)
             if source is not None:
                 if name in sources and sources[name] != source:
-                    raise PreparationError(f"conflicting sources for package: {name}")
+                    raise PreparationError(f'软件包来源冲突：{name} / conflicting sources for package: {name}')
                 sources[name] = source
         selected, visited, pending = {}, set(), []
 
@@ -511,7 +511,7 @@ class Preparer:
             exact = [name for name in candidates if name == spec(requirement)[0]]
             candidates = exact or candidates
             if len(candidates) != 1:
-                raise PreparationError(f"AUR recipe does not uniquely satisfy {requirement}")
+                raise PreparationError(f'AUR 配方无法唯一满足依赖：{requirement} / AUR recipe does not uniquely satisfy {requirement}')
             name = candidates[0]
             selected[name] = dict(name=name, version=base["version"], provides=base["provides"][name],
                                   dependencies=base["runtime_by_package"][name], conflicts=base["conflicts"][name])
@@ -538,7 +538,7 @@ class Preparer:
         for filename in filenames:
             names = metadata.get(filename, {}).get("NAME", [])
             if len(names) != 1 or not NAME.fullmatch(names[0]):
-                raise PreparationError(f"missing planned package identity: {filename}")
+                raise PreparationError(f'缺少计划中的软件包标识：{filename} / missing planned package identity: {filename}')
             packages.add(names[0])
         return sorted(packages)
 
@@ -553,10 +553,10 @@ class Preparer:
             result = self.pacman(["-Sp", "--noconfirm", "--print-format", "%f", "--", *targets],
                                  isolated=True, capture=True, allowed=(0, 1))
             if result.returncode:
-                raise PreparationError(f"target package plan cannot be resolved:\n{result.stderr or ''}")
+                raise PreparationError(f"无法解析目标软件包计划 / Target package plan cannot be resolved:\n{result.stderr or ''}")
             filenames = result.stdout.splitlines()
             if not filenames or any(Path(name).name != name or name in (".", "..") for name in filenames):
-                raise PreparationError("invalid target package plan")
+                raise PreparationError('目标软件包计划无效 / invalid target package plan')
             return filenames, metadata
 
         if not selected:
@@ -594,7 +594,7 @@ class Preparer:
             return  # Older controllers retain their whole-call transaction behavior.
         directory = os.environ.get("RSTAR_SDK_DIR")
         if not directory:
-            raise PreparationError("save control channel has no SDK directory")
+            raise PreparationError('保存控制通道没有 SDK 目录 / save control channel has no SDK directory')
         # No intermediate save may publish completion markers from an older plan.
         for name in (".prepared.json", ".planned.json"):
             (self.repo / name).unlink(missing_ok=True)
@@ -605,7 +605,7 @@ class Preparer:
             loader.loader.exec_module(client)
             client.save()
         except (OSError, RuntimeError, ValueError) as error:
-            raise PreparationError(f"cannot save preparation progress: {error}") from error
+            raise PreparationError(f'无法保存准备进度 / Cannot save preparation progress: {error}') from error
 
     def fetch(self, filenames, force=False):
         filenames = set(filenames)
@@ -630,7 +630,7 @@ class Preparer:
                 name, = metadata["NAME"]
                 version, = metadata["VERSION"]
             except (KeyError, ValueError):
-                raise PreparationError(f"missing official package identity: {filename}") from None
+                raise PreparationError(f'缺少官方软件包标识：{filename} / missing official package identity: {filename}') from None
             spec(f"{name}={version}")
             # Pacman skips duplicate package names, even with different versions.
             for batch in batches:
@@ -656,7 +656,7 @@ class Preparer:
             try:
                 for name in completed:
                     if not (self.cache / name).is_file():
-                        raise PreparationError(f"missing downloaded package: {name}")
+                        raise PreparationError(f'缺少已下载的软件包：{name} / missing downloaded package: {name}')
                     self.verification.verified(name, self.official_metadata[name], self.cache / name)
             except official_cache.VerificationError as error:
                 raise PreparationError(str(error)) from error
@@ -664,7 +664,7 @@ class Preparer:
             self.save_progress()
         for name in filenames:
             if not (self.cache / name).is_file():
-                raise PreparationError(f"missing downloaded package: {name}")
+                raise PreparationError(f'缺少已下载的软件包：{name} / missing downloaded package: {name}')
         self.files.update(filenames)
         if batches:
             log(f"本阶段官方包准备完成：{len(pending)} 个新校验文件",
@@ -697,19 +697,19 @@ class Preparer:
         with urllib.request.urlopen(request, timeout=60) as response:
             data = json.load(response)
         if "error" in data or not isinstance(data.get("results"), list):
-            raise PreparationError(f"AUR RPC failed for {name}: {data}")
+            raise PreparationError(f'针对 {name} 的 AUR RPC 请求失败：{data} / AUR RPC failed for {name}: {data}')
         return data["results"]
 
     def load_base(self, name):
         if name in self.bases:
             return self.bases[name]
         if not NAME.fullmatch(name):
-            raise PreparationError(f"invalid AUR pkgbase: {name}")
+            raise PreparationError(f'AUR pkgbase 无效：{name} / invalid AUR pkgbase: {name}')
         log(f"获取并解析 AUR 构建配方：{name}", f"Fetch and inspect the AUR build recipe: {name}")
         checkout = self.checkouts / name
         if checkout.exists():
             if not (checkout / ".git").is_dir():
-                raise PreparationError(f"not an AUR checkout: {checkout}")
+                raise PreparationError(f'不是 AUR 检出目录：{checkout} / not an AUR checkout: {checkout}')
             self.user(["git", "-C", str(checkout), "fetch", "--force", "origin", "HEAD"])
             self.user(["git", "-C", str(checkout), "reset", "--hard", "FETCH_HEAD"])
             self.user(["git", "-C", str(checkout), "clean", "-fdx"])
@@ -718,7 +718,7 @@ class Preparer:
         commit = self.user(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture=True).stdout.strip()
         base = srcinfo(self.makepkg(checkout, ["--printsrcinfo"], capture=True).stdout, self.arch)
         if base["name"] != name:
-            raise PreparationError("AUR pkgbase disagrees with recipe")
+            raise PreparationError('AUR pkgbase 与配方不一致 / AUR pkgbase disagrees with recipe')
         base.update(checkout=checkout, commit=commit)
         self.bases[name] = base
         return base
@@ -736,7 +736,7 @@ class Preparer:
                            for package in base["packages"]):
                         matches.add(base["name"])
                 if len(matches) != 1:
-                    raise PreparationError(f"missing or ambiguous AUR provider for {requirement}: {sorted(matches)}")
+                    raise PreparationError(f'满足 {requirement} 的 AUR 提供者缺失或不唯一：{sorted(matches)} / missing or ambiguous AUR provider for {requirement}: {sorted(matches)}')
                 return self.load_base(matches.pop())
         info = self.rpc("info", name)
         if info:
@@ -748,7 +748,7 @@ class Preparer:
         providers = {candidate for candidate in providers
                      if any(spec(p)[0] == name for values in self.load_base(candidate)["provides"].values() for p in values)}
         if len(providers) != 1:
-            raise PreparationError(f"missing or ambiguous AUR provider for {requirement}: {sorted(providers)}")
+            raise PreparationError(f'满足 {requirement} 的 AUR 提供者缺失或不唯一：{sorted(providers)} / missing or ambiguous AUR provider for {requirement}: {sorted(providers)}')
         return self.load_base(providers.pop())
 
     def artifact_satisfies(self, artifact, requirement):
@@ -775,12 +775,12 @@ class Preparer:
             exact = [p for p in self.artifacts[base["name"]] if p["name"] == spec(requirement)[0] and self.artifact_satisfies(p, requirement)]
             providers = exact or [p for p in self.artifacts[base["name"]] if self.artifact_satisfies(p, requirement)]
             if len(providers) != 1:
-                raise PreparationError(f"AUR binaries do not uniquely satisfy {requirement}")
+                raise PreparationError(f'AUR 二进制软件包无法唯一满足依赖：{requirement} / AUR binaries do not uniquely satisfy {requirement}')
             if install:
                 log(f"安装 AUR 构建依赖：{requirement}", f"Install AUR build dependency: {requirement}")
                 self.pacman(["-U", "--needed", "--noconfirm", "--", self.repo / providers[0]["filename"]])
         if install and self.pacman(["-T", target_parts(requirement)[1]], capture=True, allowed=(0, 127)).returncode:
-            raise PreparationError(f"unsatisfied build dependency: {requirement}")
+            raise PreparationError(f'未满足的构建依赖：{requirement} / unsatisfied build dependency: {requirement}')
 
     @staticmethod
     def cache_options():
@@ -788,11 +788,11 @@ class Preparer:
             return os.environ.get("RSTAR_DISTRIBUTION_" + name, os.environ.get("RSTAR_" + name, default)).strip()
         devel = option("AURDEVEL", "true").lower()
         if devel not in ("true", "false"):
-            raise PreparationError("AurDevel must be true or false")
+            raise PreparationError('AurDevel 必须为 true 或 false / AurDevel must be true or false')
         rebuild = set(option("AURREBUILD", "none").split())
         if (any(not NAME.fullmatch(name) for name in rebuild)
                 or (rebuild & {"none", "all"} and len(rebuild) != 1)):
-            raise PreparationError("AurRebuild must be none, all, or pkgbase names")
+            raise PreparationError('AurRebuild 必须为 none、all 或 pkgbase 名称 / AurRebuild must be none, all, or pkgbase names')
         return devel == "true", rebuild - {"none"}
 
     @staticmethod
@@ -811,14 +811,14 @@ class Preparer:
         path = self.repo / ".aur-builds.json"
         self.cache_index = dict(format=CACHE_FORMAT, architectures={})
         if path.is_symlink():
-            raise PreparationError("AUR build index must not be a symlink")
+            raise PreparationError('AUR 构建索引不能是符号链接 / AUR build index must not be a symlink')
         if path.exists():
             try:
                 index = json.loads(path.read_text())
                 if (not isinstance(index, dict) or index.get("format") != CACHE_FORMAT
                         or not isinstance(index.get("architectures"), dict)
                         or any(not isinstance(entries, dict) for entries in index["architectures"].values())):
-                    raise ValueError("unsupported build index")
+                    raise ValueError('不支持的构建索引 / unsupported build index')
                 self.cache_index = index
             except (ValueError, OSError) as error:
                 log(f"AUR 构建记录无效，按需重建：{error}", f"Invalid AUR build index; rebuild on demand: {error}")
@@ -842,7 +842,7 @@ class Preparer:
         if (any(len(fields.get(key, [])) != 1 for key in ("pkgname", "pkgver", "arch"))
                 or not NAME.fullmatch(fields["pkgname"][0])
                 or fields["arch"][0] not in ("any", self.arch)):
-            raise PreparationError("invalid binary package metadata or architecture")
+            raise PreparationError('二进制软件包的元数据或架构无效 / invalid binary package metadata or architecture')
         artifact = dict(name=fields["pkgname"][0], version=fields["pkgver"][0],
                         architecture=fields["arch"][0], provides=fields.get("provides", []),
                         dependencies=fields.get("depend", []), conflicts=fields.get("conflict", []),
@@ -866,7 +866,7 @@ class Preparer:
         def identity():
             info = path.stat(follow_symlinks=False)
             if path.is_symlink() or not path.is_file():
-                raise PreparationError(f"not a regular cached file: {path}")
+                raise PreparationError(f'缓存路径不是普通文件：{path} / not a regular cached file: {path}')
             return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         before = identity()
         if not hasattr(self, "digest_cache"):
@@ -877,7 +877,7 @@ class Preparer:
             self.digest_seconds = getattr(self, "digest_seconds", 0.0) + time.perf_counter() - started
             self.digest_bytes = getattr(self, "digest_bytes", 0) + before[2]
             if identity() != before:
-                raise PreparationError(f"cached file changed during checksum calculation: {path}")
+                raise PreparationError(f'缓存文件在计算校验和期间发生更改：{path} / cached file changed during checksum calculation: {path}')
             self.digest_cache[before] = digest
         return self.digest_cache[before]
 
@@ -885,68 +885,68 @@ class Preparer:
     def cached_artifacts(self, base, revisions, visiting=()):
         name = base["name"]
         if name in visiting:
-            return None, "dependency cache cycle"
+            return None, '依赖缓存存在循环 / dependency cache cycle'
         entry = self.load_cache().get(name)
         if not isinstance(entry, dict):
-            return None, "no build record"
+            return None, '没有构建记录 / no build record'
         if entry.get("commit") != base["commit"]:
-            return None, "recipe changed"
+            return None, '配方已更改 / recipe changed'
         if entry.get("configuration") != self.config_sha256:
-            return None, "build configuration changed"
+            return None, '构建配置已更改 / build configuration changed'
         if (not isinstance(entry.get("sources"), dict)
                 or any(not isinstance(source, str) or not isinstance(revision, str)
                        or not aur_cache.REVISION.fullmatch(revision) for source, revision in entry["sources"].items())):
-            return None, "invalid source records"
+            return None, '源码记录无效 / invalid source records'
         if revisions is not None and entry.get("sources") != revisions:
-            return None, "Git source changed"
+            return None, 'Git 源码已更改 / Git source changed'
         artifacts = entry.get("artifacts")
         if (not isinstance(artifacts, list) or not artifacts
                 or any(not isinstance(p, dict) for p in artifacts)):
-            return None, "invalid artifact inventory"
+            return None, '产物清单无效 / invalid artifact inventory'
         # Never derive a path from unvalidated persistent metadata.
         for artifact in artifacts:
             filename = artifact.get("filename")
             if (not isinstance(filename, str) or Path(filename).name != filename or filename in (".", "..")
                     or not isinstance(artifact.get("sha256"), str)
                     or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])):
-                return None, "invalid artifact identity"
+                return None, '产物标识无效 / invalid artifact identity'
             copies = [directory / filename for directory in (self.repo, self.cache)]
             good = next((path for path in copies if path.is_file() and not path.is_symlink()
                          and self.cached_digest(path) == artifact["sha256"]), None)
             if good is None:
-                return None, "artifact missing or checksum changed"
+                return None, '产物缺失或校验和已更改 / artifact missing or checksum changed'
             try:
                 if self.inspect_artifact(good, base) != artifact:
-                    return None, "binary metadata changed"
+                    return None, '二进制元数据已更改 / binary metadata changed'
             except (PreparationError, OSError, ValueError):
-                return None, "invalid cached binary metadata"
+                return None, '缓存的二进制元数据无效 / invalid cached binary metadata'
             for path in copies:
                 if path != good and (path.is_symlink() or not path.is_file() or self.cached_digest(path) != artifact["sha256"]):
                     atomic_copy(good, path)
         names = [p["name"] for p in artifacts]
         if len(set(names)) != len(names) or set(base["packages"]) - set(names):
-            return None, "incomplete split-package outputs"
+            return None, '拆分软件包输出不完整 / incomplete split-package outputs'
         dependencies = entry.get("aur_dependencies")
         if not isinstance(dependencies, list):
-            return None, "invalid dependency records"
+            return None, '依赖记录无效 / invalid dependency records'
         dependency_artifacts = []
         for dependency in dependencies:
             if (not isinstance(dependency, dict) or not isinstance(dependency.get("requirement"), str)
                     or not isinstance(dependency.get("pkgbase"), str)):
-                return None, "invalid dependency identity"
+                return None, '依赖标识无效 / invalid dependency identity'
             requirement = dependency["requirement"]
             if not SPEC.fullmatch(requirement) or not NAME.fullmatch(dependency["pkgbase"]):
-                return None, "invalid dependency identity"
+                return None, '依赖标识无效 / invalid dependency identity'
             if self.official(requirement) is not None:
-                return None, "AUR build dependency provider changed"
+                return None, 'AUR 构建依赖的提供者已更改 / AUR build dependency provider changed'
             recipe = self.aur(requirement)
             if recipe["name"] != dependency["pkgbase"]:
-                return None, "AUR build dependency provider changed"
+                return None, 'AUR 构建依赖的提供者已更改 / AUR build dependency provider changed'
             _, source_revisions, reason = self.source_state(recipe)
             cached, _ = (None, reason) if reason else self.cached_artifacts(recipe, source_revisions, (*visiting, name))
             if (cached is None or [{key: p[key] for key in ("name", "sha256")} for p in cached] != dependency.get("artifacts")
                     or recipe["name"] in self.aur_rebuild or "all" in self.aur_rebuild):
-                return None, "AUR build dependency changed"
+                return None, 'AUR 构建依赖已更改 / AUR build dependency changed'
             dependency_artifacts.extend(cached)
         # Versioned SONAME requirements may stop resolving after an official ABI transition.
         for artifact in artifacts:
@@ -955,7 +955,7 @@ class Preparer:
                 if ".so" in depname and operator and self.official(requirement) is None:
                     candidates = artifacts + dependency_artifacts + [p for values in self.artifacts.values() for p in values]
                     if not any(self.artifact_satisfies(p, requirement) for p in candidates):
-                        return None, "shared-library dependency changed"
+                        return None, '共享库依赖已更改 / shared-library dependency changed'
         return artifacts, None
 
     def remember_build(self, base, artifacts, revisions, dependencies):
@@ -1033,7 +1033,7 @@ class Preparer:
                     output = self.disk_build_workspace(base["name"], output)
                     self.makepkg(base["checkout"], arguments)
                 except (PreparationError, OSError) as second:
-                    raise PreparationError(f"Initial tmpfs build failed:\n{first}\nDisk fallback failed:\n{second}") from second
+                    raise PreparationError(f'初次 tmpfs 构建失败 / Initial tmpfs build failed:\n{first}\n磁盘回退构建失败 / Disk fallback failed:\n{second}') from second
             return output
         finally:
             # Placement is per pkgbase. Other packages retain their normal workspace.
@@ -1051,20 +1051,20 @@ class Preparer:
         path = self.repo / ".aur-space-failures.json"
         try:
             if path.is_symlink():
-                raise ValueError("space-failure index must not be a symlink")
+                raise ValueError('空间不足失败索引不能是符号链接 / space-failure index must not be a symlink')
             if not path.exists():
                 return index
             value = json.loads(path.read_text())
             if (not isinstance(value, dict) or value.get("format") != 1
                     or not isinstance(value.get("architectures"), dict)):
-                raise ValueError("unsupported space-failure index")
+                raise ValueError('不支持的空间不足失败索引 / unsupported space-failure index')
             for architecture, entries in value["architectures"].items():
                 if not NAME.fullmatch(architecture) or not isinstance(entries, dict):
-                    raise ValueError("invalid architecture in space-failure index")
+                    raise ValueError('空间不足失败索引中的架构无效 / invalid architecture in space-failure index')
                 for name, entry in entries.items():
                     if (not NAME.fullmatch(name) or not isinstance(entry, dict)
                             or type(entry.get("failed_budget_bytes")) is not int or entry["failed_budget_bytes"] < 0):
-                        raise ValueError("invalid failed tmpfs budget")
+                        raise ValueError('失败的 tmpfs 预算无效 / invalid failed tmpfs budget')
             return value
         except (ValueError, OSError) as error:
             log(f"忽略无效 AUR 空间失败记录：{error}", f"Ignore invalid AUR space-failure index: {error}")
@@ -1085,7 +1085,7 @@ class Preparer:
         directory = Path(self.scratch.enter_context(
             tempfile.TemporaryDirectory(prefix="rstarsleep-aur-", dir="/var/tmp")))
         if filesystem_type(directory) in ("tmpfs", "ramfs"):
-            raise PreparationError(f"disk fallback is memory-backed: {directory}; use a disk-backed /var/tmp or TMPDIR")
+            raise PreparationError(f'磁盘回退目录实际位于内存文件系统：{directory}；请使用磁盘上的 /var/tmp 或 TMPDIR / disk fallback is memory-backed: {directory}; use a disk-backed /var/tmp or TMPDIR')
         failed = (self.builds / name, output)
         # Require room for at least the files already produced, with a small reserve.
         # This is a lower bound, not a prediction of a PKGBUILD's eventual peak usage.
@@ -1096,7 +1096,7 @@ class Preparer:
                                 if not item.is_symlink() and item.is_file())
         free = shutil.disk_usage(directory).free
         if free < required:
-            raise PreparationError(f"insufficient disk fallback space at {directory}: {free} bytes free, at least {required} required")
+            raise PreparationError(f'{directory} 的磁盘回退空间不足：可用 {free} 字节，至少需要 {required} 字节 / insufficient disk fallback space at {directory}: {free} bytes free, at least {required} required')
         directory.chmod(0o755)
         builds, outputs = directory / "build", directory / "packages"
         for path in (builds, outputs, outputs / name):
@@ -1122,10 +1122,10 @@ class Preparer:
         if self.states.get(name) in ("built", "complete"):
             return
         if self.states.get(name) == "building":
-            raise PreparationError("AUR dependency cycle: " + " -> ".join(self.stack + [name]))
+            raise PreparationError(f"AUR 依赖循环：{' -> '.join(self.stack + [name])} / AUR dependency cycle: {' -> '.join(self.stack + [name])}")
         specs, revisions, reason = self.source_state(base)
         if "all" in self.aur_rebuild or name in self.aur_rebuild:
-            artifacts, reason = None, "forced rebuild"
+            artifacts, reason = None, '强制重新构建 / forced rebuild'
         elif reason:
             artifacts = None
         else:
@@ -1148,7 +1148,7 @@ class Preparer:
             self.ensure(dependency, install=True)
         for fingerprint in base["keys"]:
             if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", fingerprint):
-                raise PreparationError("invalid source signing fingerprint")
+                raise PreparationError('源码签名指纹无效 / invalid source signing fingerprint')
             result = subprocess.run(["runuser", "-u", "rstar-build", "--", "env", f"GNUPGHOME={self.keys}", "gpg", "--batch", "--list-keys", fingerprint], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if result.returncode:
                 log(f"获取源码签名公钥：{fingerprint}", f"Fetch source signing public key: {fingerprint}")
@@ -1169,7 +1169,7 @@ class Preparer:
                     revisions = aur_cache.remote_revisions(self.user, specs)
                 actual = aur_cache.actual_revisions(self.user, specs, self.distfiles, base["checkout"])
                 if self.aur_devel and actual != revisions:
-                    raise PreparationError(f"downloaded Git source is stale or changed during fetch: {name}; retry preparation")
+                    raise PreparationError(f'已下载的 Git 源码已过期或在获取期间发生更改：{name}；请重新准备 / downloaded Git source is stale or changed during fetch: {name}; retry preparation')
             except ValueError as error:
                 raise PreparationError(str(error)) from error
         self.save_progress()
@@ -1183,13 +1183,13 @@ class Preparer:
             if package.name.endswith(".sig"):
                 continue
             if not package.is_file() or package.is_symlink():
-                raise PreparationError(f"missing or unexpected build artifact: {package}")
+                raise PreparationError(f'构建产物缺失或不符合预期：{package} / missing or unexpected build artifact: {package}')
             artifact = self.inspect_artifact(package, base)
             for destination in (self.cache, self.repo):
                 atomic_copy(package, destination / package.name)
             artifacts.append(artifact)
         if not artifacts or set(base["packages"]) - {p["name"] for p in artifacts}:
-            raise PreparationError(f"incomplete split-package outputs: {name}")
+            raise PreparationError(f'拆分软件包输出不完整：{name} / incomplete split-package outputs: {name}')
         def record():
             if cacheable:
                 self.remember_build(base, artifacts, actual, dependencies)
@@ -1209,12 +1209,12 @@ class Preparer:
         ownership_path = self.repo / ".packages.json"
         ownership = json.loads(ownership_path.read_text()) if ownership_path.exists() else {}
         if not isinstance(ownership, dict):
-            raise PreparationError("invalid local repository inventory")
+            raise PreparationError('本地仓库清单无效 / invalid local repository inventory')
         for package, metadata in ownership.items():
             if not NAME.fullmatch(package) or not isinstance(metadata, dict) or not NAME.fullmatch(metadata.get("pkgbase", "")):
-                raise PreparationError("invalid local repository inventory entry")
+                raise PreparationError('本地仓库清单条目无效 / invalid local repository inventory entry')
         if database.is_symlink():
-            raise PreparationError("repository archive must not be a symlink")
+            raise PreparationError('仓库归档不能是符号链接 / repository archive must not be a symlink')
         names = {p["name"] for p in artifacts}
         receipt_path = self.repo / ".aur-publication.json"
         expected = {p["name"]: p for p in artifacts}
@@ -1247,7 +1247,7 @@ class Preparer:
             log(f"清理临时 AUR 构建依赖：{len(added)} 个包", f"Remove temporary AUR build dependencies: {len(added)} packages")
             self.pacman(["-R", "--noconfirm", "--", *added])
         if set(self.pacman(["-Qq"], capture=True).stdout.splitlines()) != self.baseline:
-            raise PreparationError("AUR dependency cleanup changed environment baseline")
+            raise PreparationError('清理 AUR 依赖更改了环境基线 / AUR dependency cleanup changed environment baseline')
 
     @timed_operation("最终校验及清单发布", "Verify and publish prepared manifest")
     def finish(self, requested):
@@ -1276,13 +1276,13 @@ class Preparer:
                 if name in self.files:
                     metadata = self.official_metadata.get(name)
                     if not metadata or metadata.get("SHA256SUM") != [hashes[name]]:
-                        raise PreparationError(f"official package checksum mismatch: {name}")
+                        raise PreparationError(f'官方软件包的校验和不匹配：{name} / official package checksum mismatch: {name}')
                 if index % 25 == 0 or index == len(files):
                     progress.update(index, len(files))
         log("保存仓库元数据和软件准备清单", "Save repository metadata and the prepared package manifest")
         if self.files and (self.verification.read_context() != self.verification.context
                            or any(self.verification.expired(name) for name in self.files)):
-            raise PreparationError("Signing trust changed during package verification; retry preparation")
+            raise PreparationError('软件包验证期间签名信任状态发生更改；请重新准备 / Signing trust changed during package verification; retry preparation')
         log(f"本次实际摘要计算：{getattr(self, 'digest_bytes', 0)} 字节，{getattr(self, 'digest_seconds', 0.0):.3f} 秒",
             f"Actual checksum reads: {getattr(self, 'digest_bytes', 0)} bytes, {getattr(self, 'digest_seconds', 0.0):.3f} s")
         self.save_sync()
@@ -1306,7 +1306,7 @@ def collect_main(arguments):
     try:
         requested = list(dict.fromkeys(arguments))
         if any(not valid_target(name) for name in requested):
-            raise PreparationError("invalid requested package")
+            raise PreparationError('请求的软件包无效 / invalid requested package')
         with preparation_workspace("rstarsleep-package-plan-") as preparer:
             preparer.initialize(planning=True)
             requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
@@ -1332,7 +1332,7 @@ def prepare_systems(preparer, systems):
             official_files.update(name for name in filenames if name in preparer.official_metadata)
             aur_targets.update(selected)
         except PreparationError as error:
-            raise PreparationError(f"system {system_id}: {error}") from error
+            raise PreparationError(f'系统 {system_id} 操作失败 / Operation failed for system {system_id}: {error}') from error
     preparer.fetch(official_files)
     for target in sorted(aur_targets):
         forced = any(f"aur/{target}" in values for values in requests.values())
@@ -1348,7 +1348,7 @@ def prepare_systems(preparer, systems):
                 filenames, _ = preparer.planned_transactions[tuple(requested)]
                 preparer.fetch(name for name in filenames if name in preparer.official_metadata)
             except PreparationError as error:
-                raise PreparationError(f"system {system_id}: {error}") from error
+                raise PreparationError(f'系统 {system_id} 操作失败 / Operation failed for system {system_id}: {error}') from error
     preparer.finish(sorted({target for requested in requests.values() for target in requested}))
     return dict(schema_version=1, systems=plans)
 
@@ -1359,11 +1359,11 @@ def systems_main(argument):
     if (not isinstance(request, dict) or set(request) != {"schema_version", "systems"}
             or request["schema_version"] != 1 or not isinstance(request["systems"], dict)
             or not request["systems"]):
-        raise PreparationError("invalid per-system preparation request")
+        raise PreparationError('单系统准备请求无效 / invalid per-system preparation request')
     for system_id, targets in request["systems"].items():
         if (not NAME.fullmatch(system_id) or not isinstance(targets, list)
                 or any(not isinstance(name, str) or not valid_target(name) for name in targets)):
-            raise PreparationError("invalid system identity or configured package targets")
+            raise PreparationError('系统标识或已配置的软件包目标无效 / invalid system identity or configured package targets')
     previous_query_mode, QUERY_MODE = QUERY_MODE, True
     try:
         with preparation_workspace("rstarsleep-predownload-") as preparer:
@@ -1378,7 +1378,7 @@ def systems_main(argument):
 def main():
     requested = list(dict.fromkeys(["base", *sys.argv[1:]]))
     if any(not valid_target(name) for name in requested):
-        raise PreparationError("invalid requested package")
+        raise PreparationError('请求的软件包无效 / invalid requested package')
     log(f"开始共享软件准备：{len(requested)} 项需求（含 base）",
         f"Start shared package preparation: {len(requested)} requirements (including base)")
     with preparation_workspace("rstarsleep-predownload-") as preparer:
@@ -1403,7 +1403,7 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:2] == ["--systems-json"]:
             if len(sys.argv) != 3:
-                raise PreparationError("expected one per-system preparation JSON argument")
+                raise PreparationError('应提供一个单系统准备 JSON 参数 / expected one per-system preparation JSON argument')
             systems_main(sys.argv[2])
         elif sys.argv[1:2] == ["--collect"]:
             collect_main(sys.argv[2:])

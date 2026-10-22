@@ -38,15 +38,17 @@ pub(super) fn covering(path: &Path) -> Result<Mount> {
         .map_err(|e| fs::io(Path::new("findmnt"), e))?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
-            "无法查询挂载 {}: {}",
+            "无法查询挂载 {0}: {1} / Cannot query mount {0}: {1}",
             path.display(),
             String::from_utf8_lossy(&output.stderr)
         )));
     }
     let mut mounts: Mounts = serde_json::from_slice(&output.stdout)
-        .map_err(|e| Error::Invalid(format!("findmnt 响应无效: {e}")))?;
+        .map_err(|e| Error::Invalid(format!("findmnt 响应无效 / invalid findmnt response: {e}")))?;
     if mounts.filesystems.len() != 1 {
-        return Err(Error::Invalid("findmnt 必须返回唯一覆盖挂载".into()));
+        return Err(Error::Invalid(
+            "findmnt 必须返回唯一覆盖挂载 / findmnt must return exactly one covering mount".into(),
+        ));
     }
     Ok(mounts.filesystems.remove(0))
 }
@@ -59,7 +61,9 @@ impl Mount {
     /// - `path`: Path below this mount. 此挂载下的路径。
     pub fn subvolume_path(&self, path: &Path) -> Result<PathBuf> {
         if self.fstype != "btrfs" {
-            return Err(Error::Invalid("系统根必须位于 Btrfs".into()));
+            return Err(Error::Invalid(
+                "系统根必须位于 Btrfs / System root must reside on Btrfs".into(),
+            ));
         }
         let relative = path
             .strip_prefix(&self.target)
@@ -97,10 +101,9 @@ fn check_mount_tree(source: &Path, include_self: bool) -> Result<()> {
     let text = std::fs::read_to_string("/proc/self/mountinfo")
         .map_err(|e| fs::io(Path::new("/proc/self/mountinfo"), e))?;
     for line in text.lines() {
-        let target = line
-            .split_whitespace()
-            .nth(4)
-            .ok_or_else(|| Error::Invalid("mountinfo 响应无效".into()))?;
+        let target = line.split_whitespace().nth(4).ok_or_else(|| {
+            Error::Invalid("mountinfo 响应无效 / Invalid mountinfo response".into())
+        })?;
         let target = target
             .replace("\\040", " ")
             .replace("\\011", "\t")
@@ -109,7 +112,7 @@ fn check_mount_tree(source: &Path, include_self: bool) -> Result<()> {
         let target = Path::new(&target);
         if (include_self || target != source) && target.starts_with(source) {
             return Err(Error::Invalid(format!(
-                "继承来源包含挂载点: {}",
+                "继承来源包含挂载点: {0} / Inheritance source contains a mount point: {0}",
                 target.display()
             )));
         }

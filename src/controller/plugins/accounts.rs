@@ -17,7 +17,7 @@ impl LoadedPlugin {
         context: Option<&crate::controller::BuildContext>,
     ) -> Result<Output> {
         let requirements = self.metadata.account_inheritance.as_ref().ok_or_else(|| {
-            Error::Invalid("plugin does not advertise account_inheritance".into())
+            Error::Invalid("插件未声明支持 account_inheritance / plugin does not advertise account_inheritance".into())
         })?;
         if !root.is_absolute()
             || !root.is_dir()
@@ -27,7 +27,7 @@ impl LoadedPlugin {
                 .iter()
                 .any(|a| a == architecture)
         {
-            return Err(Error::Invalid("账户操作的系统根或架构无效".into()));
+            return Err(Error::Invalid("账户操作的系统根或架构无效 / invalid system root or architecture for account operation".into()));
         }
         let entry = self.operation_path(operation)?;
         let script = entry.extension() == Some(OsStr::new("sh"));

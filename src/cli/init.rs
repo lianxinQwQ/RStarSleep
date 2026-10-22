@@ -32,7 +32,7 @@ const INIT_USAGE: &str = "\
   RStarSleep init /mnt/btrfs
   RStarSleep init --update-presets
   RStarSleep init /mnt/btrfs --update-presets
-  RStarSleep init --help";
+  RStarSleep init --help / Usage: RStarSleep init [<absolute-Btrfs-top-level-path>] [--update-presets]\n\nArguments:\n  <absolute-Btrfs-top-level-path>  An existing absolute directory in a mounted Btrfs top level (subvolid=5).\n\nOptions:\n  --update-presets  Atomically replace bundled preset plugin archives, including user-modified archives with the same names.\n                    Currently updates plugins/arch.tar.gz and retains existing configuration and other plugins.\n\nWhen no path is given, identify the Btrfs filesystem containing / and locate its top level, even when the system runs from a snapshot.\nReuse an existing writable top-level mount when possible; otherwise mount subvolid=5 under /run/rstarsleep/.\nThe mount remains available after success and must be mounted again after reboot.\nCreate or reuse the @RStarSleep subvolume, initialize manager directories and default global configuration,\nand write the bundled Arch plugin archive under plugins/. Existing configuration and plugins are retained by default.\nRequires btrfs tools, permission to create subvolumes and write files; automatic detection also needs findmnt,\nand automatic mounting requires mount and mount privileges.\n\nExamples:\n  RStarSleep init\n  RStarSleep init /mnt/btrfs\n  RStarSleep init --update-presets\n  RStarSleep init /mnt/btrfs --update-presets\n  RStarSleep init --help";
 
 /// Handle init arguments and invoke the configuration module's workspace initializer.
 /// 处理 init 的参数，并调用配置模块的工作目录初始化接口。
@@ -58,17 +58,17 @@ pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
     for argument in arguments {
         if argument == "--update-presets" {
             if update_presets {
-                return Err(format!("不能重复指定 --update-presets。\n\n{INIT_USAGE}").into());
+                return Err(format!("不能重复指定 --update-presets。 / --update-presets must not be specified more than once.\n\n{INIT_USAGE}").into());
             }
             update_presets = true;
         } else if argument.as_encoded_bytes().starts_with(b"-") {
             return Err(format!(
-                "未知 init 选项：{}\n\n{INIT_USAGE}",
+                "未知 init 选项：{0} / unknown init option: {0}\n\n{INIT_USAGE}",
                 argument.to_string_lossy()
             )
             .into());
         } else if top_level.replace(Path::new(argument)).is_some() {
-            return Err(format!("init 只接受一个 Btrfs 顶层目录参数。\n\n{INIT_USAGE}").into());
+            return Err(format!("init 只接受一个 Btrfs 顶层目录参数。 / init accepts only one Btrfs top-level directory argument.\n\n{INIT_USAGE}").into());
         }
     }
     let store = match top_level {

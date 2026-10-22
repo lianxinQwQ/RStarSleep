@@ -76,7 +76,9 @@ impl PackageWatch {
     fn remember(&mut self, path: &Path) -> io::Result<()> {
         let info = fs::symlink_metadata(path)?;
         if !info.is_dir() || info.file_type().is_symlink() {
-            return Err(io::Error::other("database path is not a real directory"));
+            return Err(io::Error::other(
+                "数据库路径不是真实目录 / database path is not a real directory",
+            ));
         }
         self.identities
             .push((path.to_path_buf(), info.dev(), info.ino()));
@@ -112,14 +114,16 @@ impl PackageWatch {
             let entry = entry?;
             let kind = entry.file_type()?;
             if kind.is_symlink() {
-                return Err(io::Error::other("database contains a symbolic link"));
+                return Err(io::Error::other(
+                    "数据库包含符号链接 / database contains a symbolic link",
+                ));
             }
             if kind.is_dir() {
                 self.tree(&entry.path())?;
             } else if !kind.is_file() || entry.metadata()?.nlink() > 1 {
                 // A write through a hard link outside this tree bypasses directory watches.
                 return Err(io::Error::other(
-                    "database entry cannot be observed reliably",
+                    "无法可靠地检查数据库条目 / database entry cannot be observed reliably",
                 ));
             } else {
                 // An alias created later outside the tree does not notify its parent watch.

@@ -13,23 +13,23 @@ bootstrap() {
     local architecture url signature_url keyring keyring_header path cache_key cache
     prepare_plugin_data "$plugin_root" || return
     [[ -f $plugin_root/data/pacman.conf.in && -f $plugin_root/data/mirrorlist ]] || {
-        log 'Missing plugin pacman template or mirrorlist'; return 1;
+        log '缺少插件 pacman 模板或镜像列表 / Missing plugin pacman template or mirrorlist'; return 1;
     }
     architecture=${RSTAR_DISTRIBUTION_ARCHITECTURE:-x86_64}
-    [[ $architecture == x86_64 ]] || { log "Unsupported architecture: $architecture"; return 64; }
+    [[ $architecture == x86_64 ]] || { log "不支持的架构：$architecture / Unsupported architecture: $architecture"; return 64; }
     [[ ${RSTAR_ROOT:-} == /* && -d $RSTAR_ROOT && ! -L $RSTAR_ROOT ]] || {
-        log 'RSTAR_ROOT must be an existing absolute root directory'; return 64;
+        log 'RSTAR_ROOT 必须是现有根目录的绝对路径 / RSTAR_ROOT must be an existing absolute root directory'; return 64;
     }
     local -a entries
     shopt -s nullglob dotglob
     entries=("$RSTAR_ROOT"/*)
     shopt -u nullglob dotglob
-    (( ${#entries[@]} == 0 )) || { log 'Bootstrap destination must be empty'; return 64; }
+    (( ${#entries[@]} == 0 )) || { log '引导目标目录必须为空 / Bootstrap destination must be empty'; return 64; }
     keyring=${RSTAR_DISTRIBUTION_KEYRING:-/usr/share/pacman/keyrings/archlinux.gpg}
-    [[ -f $keyring ]] || { log "Missing trusted Arch signing keyring: $keyring"; return 1; }
+    [[ -f $keyring ]] || { log "缺少受信任的 Arch 签名密钥环：$keyring / Missing trusted Arch signing keyring: $keyring"; return 1; }
     url=${RSTAR_DISTRIBUTION_BOOTSTRAPURL:-https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst}
     signature_url=${RSTAR_DISTRIBUTION_BOOTSTRAPSIGNATUREURL:-$url.sig}
-    [[ -d $plugin_root/state/bootstrap ]] || { log 'Missing persistent bootstrap directory'; return 1; }
+    [[ -d $plugin_root/state/bootstrap ]] || { log '缺少持久化引导目录 / Missing persistent bootstrap directory'; return 1; }
     cache_key=$(printf '%s\0%s' "$url" "$signature_url" | sha256sum)
     cache="$plugin_root/state/bootstrap/${cache_key%% *}"
     bootstrap_tmp=$(mktemp -d "${RSTAR_PLUGIN_TMP:-${TMPDIR:-/tmp}}/arch-bootstrap.XXXXXXXX")
@@ -63,9 +63,9 @@ bootstrap() {
             # mkarchiso packages both metadata files beside the system tree.
             # mkarchiso 将这两个元数据文件与系统树一同打包。
             pkglist.x86_64.txt|version) ;;
-            *) log "Unexpected bootstrap archive path: $path"; return 1 ;;
+            *) log "非预期的引导归档路径：$path / Unexpected bootstrap archive path: $path"; return 1 ;;
         esac
-        case "/$path/" in */../*) log "Invalid bootstrap archive path: $path"; return 1 ;; esac
+        case "/$path/" in */../*) log "引导归档路径无效：$path / Invalid bootstrap archive path: $path"; return 1 ;; esac
     done <"$bootstrap_tmp/entries"
     tar -xpf "$cache/rootfs.tar.zst" --strip-components=1 -C "$RSTAR_ROOT"
     if [[ -n ${RSTAR_DISTRIBUTION_MIRROR:-} ]]; then

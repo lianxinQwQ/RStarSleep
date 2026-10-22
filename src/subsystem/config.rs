@@ -76,7 +76,7 @@ impl Default for SubsystemConfig {
 pub(crate) fn absolute(path: &Path, root_allowed: bool) -> Result<()> {
     let value = path
         .to_str()
-        .ok_or_else(|| Error::Invalid("路径必须为 UTF-8".into()))?;
+        .ok_or_else(|| Error::Invalid("路径必须为 UTF-8 / path must be UTF-8".into()))?;
     if !path.is_absolute()
         || (!root_allowed && path == Path::new("/"))
         || path
@@ -89,7 +89,7 @@ pub(crate) fn absolute(path: &Path, root_allowed: bool) -> Result<()> {
         || value.contains([':', '\\'])
     {
         return Err(Error::Invalid(format!(
-            "路径必须为规范绝对路径: {}",
+            "路径必须为规范绝对路径: {0} / path must be a canonical absolute path: {0}",
             path.display()
         )));
     }
@@ -107,7 +107,9 @@ impl SubsystemConfig {
     pub fn read(store: &ConfigStore, id: &str) -> Result<Self> {
         let roles = store.runtime_config()?;
         if !roles.subsystems.iter().any(|value| value == id) {
-            return Err(Error::Invalid(format!("系统 {id} 未登记为子系统")));
+            return Err(Error::Invalid(format!(
+                "系统 {id} 未登记为子系统 / system {id} is not registered as a subsystem"
+            )));
         }
         let path = store
             .system_layout(id)?
@@ -137,7 +139,7 @@ impl SubsystemConfig {
             || self.idle_timeout_seconds > 86400
         {
             return Err(Error::Invalid(
-                "运行 schema、用户、会话模式或闲置时长无效".into(),
+                "运行 schema、用户、会话模式或闲置时长无效 / invalid runtime schema, user, session mode, or idle duration".into(),
             ));
         }
         if self
@@ -148,7 +150,9 @@ impl SubsystemConfig {
             .len()
             != self.allowed_uids.len()
         {
-            return Err(Error::Invalid("allowed_uids 不能重复".into()));
+            return Err(Error::Invalid(
+                "allowed_uids 不能重复 / allowed_uids must not contain duplicates".into(),
+            ));
         }
         for (i, mount) in self.mounts.iter().enumerate() {
             absolute(&mount.source, false)?;
@@ -158,7 +162,7 @@ impl SubsystemConfig {
                     || Path::new(reserved).starts_with(&mount.target)
                 {
                     return Err(Error::Invalid(format!(
-                        "挂载目标为保留路径: {}",
+                        "挂载目标为保留路径: {0} / mount target is a reserved path: {0}",
                         mount.target.display()
                     )));
                 }
@@ -167,7 +171,7 @@ impl SubsystemConfig {
                 if mount.target.starts_with(&other.target)
                     || other.target.starts_with(&mount.target)
                 {
-                    return Err(Error::Invalid("挂载目标不能重复或包含彼此".into()));
+                    return Err(Error::Invalid("挂载目标不能重复或包含彼此 / mount targets must not be duplicated or contain one another".into()));
                 }
             }
         }
@@ -185,7 +189,9 @@ impl SubsystemConfig {
             .iter()
             .any(|p| p.is_empty() || p.starts_with('-') || p.chars().any(char::is_whitespace))
         {
-            return Err(Error::Invalid("导出包名无效".into()));
+            return Err(Error::Invalid(
+                "导出包名无效 / invalid exported package name".into(),
+            ));
         }
         Ok(())
     }
