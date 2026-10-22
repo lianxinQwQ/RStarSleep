@@ -225,41 +225,6 @@ fn check_tree(backend: &impl BuildBackend, source: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_other_pins(
-    backend: &impl BuildBackend,
-    manager: &Path,
-    source: &Path,
-    own_manifest: Option<&Path>,
-) -> Result<()> {
-    let (_, location) = backend.filesystem_location(source)?;
-    let systems = manager.join("systems");
-    for system in fs::read_dir(&systems).map_err(|e| disk::io(&systems, e))? {
-        let versions = system
-            .map_err(|e| disk::io(&systems, e))?
-            .path()
-            .join("versions");
-        if !disk::exists(&versions)? {
-            continue;
-        }
-        for version in fs::read_dir(&versions).map_err(|e| disk::io(&versions, e))? {
-            let directory = version.map_err(|e| disk::io(&versions, e))?.path();
-            let manifest = directory.join("inheritance-pending.toml");
-            if own_manifest == Some(manifest.as_path()) || !disk::exists(&manifest)? {
-                continue;
-            }
-            if super::deferred::pinned_sources_one(&directory)?
-                .iter()
-                .any(|pin| pin.starts_with(&location) || location.starts_with(pin))
-            {
-                return Err(Error::Invalid(
-                    "move-snapshot 来源还被其他待办继承引用，拒绝改变其身份 / move-snapshot source is referenced by other pending inheritance tasks; refusing to change its identity".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn exchange(left: &Path, right: &Path) -> Result<()> {
     let left_native = CString::new(left.as_os_str().as_bytes())
         .map_err(|_| Error::Invalid("迁移路径含 NUL / Migration path contains NUL".into()))?;
@@ -349,7 +314,6 @@ pub(super) fn prepare(
     source: &Path,
     manager: &Path,
     authorization: &str,
-    own_manifest: Option<&Path>,
 ) -> Result<()> {
     let (uuid, source_location, record, transaction) = location(backend, source, manager)?;
     let existing = disk::exists(&record)?;
@@ -366,7 +330,6 @@ pub(super) fn prepare(
         migration
     } else {
         check_tree(backend, source)?;
-        check_other_pins(backend, manager, source, own_manifest)?;
         if disk::exists(&transaction)? {
             return Err(Error::Invalid("存在未登记的来源迁移目录，拒绝覆盖 / An unregistered source migration directory exists; refusing to overwrite it".into()));
         }
@@ -423,7 +386,6 @@ pub(super) fn prepare(
             return Err(Error::Invalid("来源迁移对象或授权已改变，拒绝继续 / Source migration object or authorization has changed; refusing to continue".into()));
         }
         check_tree(backend, source)?;
-        check_other_pins(backend, manager, source, own_manifest)?;
         if !disk::exists(&transaction)? {
             fs::create_dir(&transaction).map_err(|e| disk::io(&transaction, e))?;
             migration.transaction_inode = Some(
@@ -486,7 +448,6 @@ pub(super) fn prepare(
             return Err(Error::Invalid("交换前来源或临时子卷身份已改变 / Source or temporary subvolume identity changed before exchange".into()));
         }
         check_transaction(&transaction, &migration)?;
-        check_other_pins(backend, manager, source, own_manifest)?;
         exchange(source, &replacement)?;
         disk::sync(source.parent().unwrap())?;
         disk::sync(&transaction)?;
@@ -722,7 +683,6 @@ mod tests {
             &fixture.source,
             &fixture.manager,
             "manifest-sha256",
-            None,
         )
         .unwrap();
         backend.check_subvolume(&fixture.source, false).unwrap();
@@ -783,16 +743,7 @@ mod tests {
                 "exchange" => backend.fail_after_exchange.set(true),
                 _ => backend.fail_cleanup.set(true),
             }
-            assert!(
-                prepare(
-                    &backend,
-                    &fixture.source,
-                    &fixture.manager,
-                    "manifest",
-                    None
-                )
-                .is_err()
-            );
+            assert!(prepare(&backend, &fixture.source, &fixture.manager, "manifest").is_err());
             assert_eq!(
                 before,
                 super::super::inheritance_inputs::migration_hash(&backend, &fixture.source)
@@ -811,14 +762,7 @@ mod tests {
             if phase != "cleanup" {
                 assert_eq!(pinned_sources(&fixture.manager).unwrap().len(), 1);
             }
-            prepare(
-                &backend,
-                &fixture.source,
-                &fixture.manager,
-                "manifest",
-                None,
-            )
-            .unwrap();
+            prepare(&backend, &fixture.source, &fixture.manager, "manifest").unwrap();
             backend.check_subvolume(&fixture.source, false).unwrap();
             assert!(pinned_sources(&fixture.manager).unwrap().is_empty());
         }
@@ -831,28 +775,10 @@ mod tests {
         };
         let backend = TestBackend::default();
         backend.busy.set(true);
-        assert!(
-            prepare(
-                &backend,
-                &fixture.source,
-                &fixture.manager,
-                "manifest",
-                None
-            )
-            .is_err()
-        );
+        assert!(prepare(&backend, &fixture.source, &fixture.manager, "manifest").is_err());
         backend.busy.set(false);
         fs::hard_link(fixture.source.join(".hidden"), fixture.root.join("outside")).unwrap();
-        assert!(
-            prepare(
-                &backend,
-                &fixture.source,
-                &fixture.manager,
-                "manifest",
-                None
-            )
-            .is_err()
-        );
+        assert!(prepare(&backend, &fixture.source, &fixture.manager, "manifest").is_err());
         assert!(!backend.is_subvolume(&fixture.source).unwrap());
         assert!(pinned_sources(&fixture.manager).unwrap().is_empty());
     }
@@ -983,20 +909,45 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_pending_sources_block_conversion() {
-        let Some(fixture) = Fixture::new() else {
-            return;
-        };
-        let backend = TestBackend::default();
-        let other = pending_fixture(&fixture, &backend, "v00000001");
-        let error = prepare(&backend, &fixture.source, &fixture.manager, "build", None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("其他待办"), "{error}");
-        assert!(!backend.is_subvolume(&fixture.source).unwrap());
-        backend
-            .set_readonly(&other.parent().unwrap().join("prepared-root"), false)
-            .unwrap();
+    fn overlapping_pending_and_failed_sources_do_not_block_conversion() {
+        for state in ["pending-inheritance", "failed"] {
+            for overlap in ["same", "ancestor", "descendant"] {
+                let Some(fixture) = Fixture::new() else {
+                    return;
+                };
+                let backend = TestBackend::default();
+                let other = pending_fixture(&fixture, &backend, "v00000001");
+                let mut manifest = super::super::deferred::read_manifest(&other).unwrap();
+                manifest.sources[0].path = match overlap {
+                    "ancestor" => fixture.root.clone(),
+                    "descendant" => fixture.source.join("journal"),
+                    _ => fixture.source.clone(),
+                };
+                disk::write(&other, &manifest).unwrap();
+                let state_path = other.parent().unwrap().join("state.toml");
+                fs::write(&state_path, format!("state='{state}'\n")).unwrap();
+                let saved_manifest = fs::read(&other).unwrap();
+                let saved_state = fs::read(&state_path).unwrap();
+                let before =
+                    super::super::inheritance_inputs::migration_hash(&backend, &fixture.source)
+                        .unwrap();
+
+                prepare(&backend, &fixture.source, &fixture.manager, "build").unwrap();
+
+                backend.check_subvolume(&fixture.source, false).unwrap();
+                assert_eq!(
+                    super::super::inheritance_inputs::migration_hash(&backend, &fixture.source)
+                        .unwrap(),
+                    before
+                );
+                assert_eq!(fs::read(&other).unwrap(), saved_manifest);
+                assert_eq!(fs::read(&state_path).unwrap(), saved_state);
+                assert!(pinned_sources(&fixture.manager).unwrap().is_empty());
+                backend
+                    .set_readonly(&other.parent().unwrap().join("prepared-root"), false)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
@@ -1006,13 +957,13 @@ mod tests {
         };
         let backend = TestBackend::default();
         backend.fail_snapshot.set(true);
-        assert!(prepare(&backend, &fixture.source, &fixture.manager, "build", None).is_err());
+        assert!(prepare(&backend, &fixture.source, &fixture.manager, "build").is_err());
         let (_, _, _, transaction) = location(&backend, &fixture.source, &fixture.manager).unwrap();
         let work = transaction.join("work");
         fs::rename(&work, transaction.join("saved-work")).unwrap();
         backend.create_subvolume(&work).unwrap();
         fs::write(work.join("unrelated"), "must survive").unwrap();
-        assert!(prepare(&backend, &fixture.source, &fixture.manager, "build", None).is_err());
+        assert!(prepare(&backend, &fixture.source, &fixture.manager, "build").is_err());
         assert_eq!(fs::read(work.join("unrelated")).unwrap(), b"must survive");
         assert!(!backend.is_subvolume(&fixture.source).unwrap());
     }

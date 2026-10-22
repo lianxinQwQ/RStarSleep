@@ -54,7 +54,7 @@ pub(super) fn apply_build(
         let directory = check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
         if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
-            super::inheritance_migration::prepare(backend, &resolved, manager, "build", None)?;
+            super::inheritance_migration::prepare(backend, &resolved, manager, "build")?;
         }
         inherit_path(
             backend,

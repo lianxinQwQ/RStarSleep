@@ -96,7 +96,7 @@ pub(super) fn freeze(
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
             if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
-                super::inheritance_migration::prepare(backend, &source, manager, "build", None)?;
+                super::inheritance_migration::prepare(backend, &source, manager, "build")?;
             }
             let frozen = container.join(index.to_string());
             inheritance::inherit_path(

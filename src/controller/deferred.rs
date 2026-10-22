@@ -446,13 +446,7 @@ fn finalize_inheritance_inner(
     if manifest.nocow_handling == NocowHandling::MoveSnapshot {
         for (source, path) in &sources {
             if source.directory {
-                super::inheritance_migration::prepare(
-                    backend,
-                    path,
-                    manager,
-                    &digest,
-                    Some(manifest_path),
-                )?;
+                super::inheritance_migration::prepare(backend, path, manager, &digest)?;
             }
         }
     }
