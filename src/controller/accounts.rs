@@ -128,18 +128,18 @@ fn capture(plugin: &LoadedPlugin, source_root: &Path, name: &str) -> Result<()> 
 }
 
 /// Called under the system lock, before versions, target downloads or cache retirement.
+/// 在系统锁内执行，早于版本分配、目标下载或缓存清理。
 pub(super) fn preflight(
     plugin: &LoadedPlugin,
     context: &BuildContext,
     source_root: &Path,
     report: &mut preflight::Report,
 ) -> Result<()> {
-    let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
-    let config = AccountInheritanceConfig::read(&parameters)?;
     let Some(requirements) = &plugin.metadata.account_inheritance else {
-        // Absence is an explicit distribution opt-out, including for nontraditional account systems.
         return Ok(());
     };
+    let parameters = crate::config::read_plugin_parameters_at(&context.config)?;
+    let config = AccountInheritanceConfig::read(&parameters)?;
     let work = workspace(plugin);
     disk::directory(&work)?;
     fs::set_permissions(&work, fs::Permissions::from_mode(0o700))

@@ -1,7 +1,9 @@
 # 账户继承与统一构建预检
 
-账户继承由发行版插件显式注册。未注册 `[account_inheritance]` 的插件保持原流程，
-不会运行账户操作，也不会自动套用 passwd/shadow 规则。
+账户继承由发行版插件显式注册。`[account_inheritance]` 仅开启账户操作调用；
+具体配置项仍由统一的 `[config]` 元数据声明及约束负责。
+未注册能力时不运行账户操作、不解释账户配置的协议语义，也不自动套用 passwd/shadow 规则；
+显式配置的字段仍须经过元数据校验。
 
 系统配置可写在 `config/build/accounts.conf` 或其他构建 INI 文件中：
 
@@ -14,8 +16,30 @@ DriftPolicy=warn
 ```
 
 Users、Groups 支持重复赋值、多行值和空列表；重复名称去重。DriftPolicy 为单项，
-只接受 `silent`、`warn`、`error`、`assess`，默认 `warn`。这些是控制器配置，
-不需要加入插件普通参数声明，也不影响基础、软件阶段的配置摘要。
+只接受 `silent`、`warn`、`error`、`assess`，默认 `warn`。Arch 插件通过以下元数据声明接受它们：
+
+```toml
+[config]
+required = []
+optional = ["RSTAR_ACCOUNTINHERITANCE_USERS", "RSTAR_ACCOUNTINHERITANCE_GROUPS", "RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY"]
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_USERS]
+kind = "free-list"
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_GROUPS]
+kind = "free-list"
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY]
+kind = "enum-single"
+values = ["silent", "warn", "error", "assess"]
+```
+
+以上仅展示账户字段；完整插件还须声明其他接受的构建参数。
+未声明字段、缺失必填项、违反单项或枚举约束都在任何插件调用及版本分配前报错。
+控制器从校验后的参数提取标准账户请求，并负责漂移策略的执行；
+账户字段同时作为普通配置环境变量及 `RSTAR_PARAMETERS_JSON` 传给插件。
+插件可声明额外的 `[AccountInheritance]` 字段，控制器不解释这些扩展字段，由插件自行读取。
+Arch 未把账户字段加入基础、软件缓存选择器，因此这些字段不使这两个阶段缓存失效。
 不根据 UID/GID 范围猜测账户来源，不自动合并全部运行期账户修改。
 账户来源根使用本次 build 的 `--inheritance-root <绝对路径>`，默认 `/`，与选择管理存储的
 `--root` 独立。例如 `RStarSleep build desktop --inheritance-root /mnt/source-system`

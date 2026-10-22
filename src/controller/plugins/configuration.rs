@@ -172,7 +172,6 @@ impl LoadedPlugin {
         let mut plugin_values = parameters.values.clone();
         plugin_values.retain(|name, _| {
             !name.starts_with("RSTAR_INHERITANCE_")
-                && !name.starts_with("RSTAR_ACCOUNTINHERITANCE_")
                 && !matches!(
                     name.as_str(),
                     "RSTAR_CONFIG_CACHEREUSEMINUTES"

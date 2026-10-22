@@ -1,6 +1,7 @@
 # Arch Linux 预设插件
 
-0.17.0 注册可选账户继承操作，配置、检查协议及限制见
+0.17.1 将账户继承配置及约束纳入统一元数据声明；账户能力声明只开启相关操作。
+配置、检查协议及限制见
 [账户继承与统一构建预检](../../../docs/account-inheritance.md)。
 账户宿主工具额外需要 Python 3；未注册能力的旧插件保持原流程。
 
@@ -37,6 +38,8 @@ optional = [
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
     "RSTAR_CONTENT_ROOTPASSWORD",
     "RSTAR_DISTRIBUTION_AURDEVEL", "RSTAR_DISTRIBUTION_AURREBUILD",
+    "RSTAR_ACCOUNTINHERITANCE_USERS", "RSTAR_ACCOUNTINHERITANCE_GROUPS",
+    "RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY",
 ]
 
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
@@ -49,6 +52,8 @@ software = []
 匹配成功后检查全部节及裸参数，包括 SchemaVersion、Distribution 和 Packages。
 必选参数缺失或为空、出现未声明参数时均报错，不执行插件操作。
 控制器独立读取的 `[Inheritance]` 不要求在插件配置中声明。
+`[AccountInheritance]` 的 `Users`、`Groups`、`DriftPolicy` 仍须在插件配置中声明，
+分别约束为自由列表、自由列表和单项枚举；账户能力声明不会自动接受这些配置。
 声明使用规范大写名称，重复赋值按原始列表保留；四个列表都必须提供，适用时显式使用空列表。
 基础缓存检测 Config 节及上述 Distribution 字段；AurDevel/AurRebuild 只影响软件准备，
 不使基础或软件阶段缓存失效。Packages 变化由软件维护处理，不使缓存失效。

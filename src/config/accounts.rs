@@ -1,4 +1,5 @@
-//! Controller-owned, explicitly selected account inheritance.
+//! Interpret standard account requests after plugin metadata validates configuration.
+//! 插件元数据校验配置后，解释标准账户继承请求。
 use super::{Error, PluginParameters, Result};
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,8 @@ pub struct AccountInheritanceConfig {
 }
 
 impl AccountInheritanceConfig {
+    /// Extract standard protocol fields without restricting plugin-declared extensions.
+    /// 提取标准协议字段，不限制插件元数据声明的扩展字段。
     pub fn read(parameters: &PluginParameters) -> Result<Self> {
         let mut result = Self::default();
         for (key, values) in &parameters.lists {
@@ -70,11 +73,7 @@ impl AccountInheritanceConfig {
                         _ => return Err(Error::Invalid("DriftPolicy 必须只赋值一次 / DriftPolicy must be assigned exactly once".into())),
                     };
                 }
-                _ => {
-                    return Err(Error::Invalid(format!(
-                        "未知账户继承配置: {key} / unknown account inheritance setting: {key}"
-                    )));
-                }
+                _ => (),
             }
         }
         Ok(result)

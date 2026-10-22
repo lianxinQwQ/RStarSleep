@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.17.0"
+version = "0.17.1"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"
@@ -30,6 +30,9 @@ persistent_dirs = [
 ]
 
 # Account semantics are distribution-owned; all three actions run on the host.
+# 账户语义由发行版定义；三个操作均在宿主运行。
+# This capability enables calls; accepted settings are declared in config below.
+# 此能力开启操作调用；接受的配置项由下方 config 声明。
 [account_inheritance]
 workdir = "account-inheritance"
 paths = ["/etc/passwd", "/etc/group", "/etc/shadow", "/etc/gshadow"]
@@ -69,6 +72,8 @@ optional = [
     "RSTAR_DISTRIBUTION_MIRROR", "RSTAR_DISTRIBUTION_AURKEYSERVER", "RSTAR_CONTENT_FSTABLINES",
     "RSTAR_CONTENT_ROOTPASSWORD",
     "RSTAR_DISTRIBUTION_AURDEVEL", "RSTAR_DISTRIBUTION_AURREBUILD",
+    "RSTAR_ACCOUNTINHERITANCE_USERS", "RSTAR_ACCOUNTINHERITANCE_GROUPS",
+    "RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY",
 ]
 
 [config.constraints.RSTAR_CONFIG_SCHEMAVERSION]
@@ -112,6 +117,16 @@ values = ["true", "false"]
 
 [config.constraints.RSTAR_DISTRIBUTION_AURREBUILD]
 kind = "free-list"
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_USERS]
+kind = "free-list"
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_GROUPS]
+kind = "free-list"
+
+[config.constraints.RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY]
+kind = "enum-single"
+values = ["silent", "warn", "error", "assess"]
 
 # Base changes invalidate downstream caches; package targets are reconciled during maintenance.
 # 基础变化使后续缓存失效；软件目标在维护中协调。

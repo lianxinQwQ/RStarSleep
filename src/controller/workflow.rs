@@ -633,7 +633,6 @@ fn check_system(
             .into_iter()
             .filter(|(name, _)| {
                 !name.starts_with("RSTAR_INHERITANCE_")
-                    && !name.starts_with("RSTAR_ACCOUNTINHERITANCE_")
                     && !matches!(
                         name.as_str(),
                         "RSTAR_CONFIG_CACHEREUSEMINUTES"

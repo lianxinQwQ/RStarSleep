@@ -10,6 +10,190 @@ use support::build::{Fixture, SimulatedBackend};
 const EMPTY: &str = r#"{"schema_version":1,"consistent":true}"#;
 const DROPPED: &str = r#"{"schema_version":1,"consistent":false,"dropped_users":["alice"]}"#;
 
+/// Edit an isolated plugin's metadata and resources, then replace its test archive.
+/// 编辑隔离插件的元数据和资源，然后替换测试归档。
+fn configure_plugin(fixture: &Fixture, edit: impl FnOnce(&std::path::Path, &mut toml::Value)) {
+    let path = fixture.store.plugins_path().join("arch.tar");
+    let plugin = rstarsleep::controller::plugins::load(&path).unwrap();
+    let metadata = plugin.root().join("plugin.toml");
+    let mut parsed = toml::from_str(&fs::read_to_string(&metadata).unwrap()).unwrap();
+    edit(plugin.root(), &mut parsed);
+    fs::write(metadata, toml::to_string(&parsed).unwrap()).unwrap();
+    let mut archive = tar::Builder::new(fs::File::create(path).unwrap());
+    archive.append_dir_all(".", plugin.root()).unwrap();
+    archive.finish().unwrap();
+}
+
+/// Advertising account actions must not implicitly accept any account configuration.
+/// 声明账户能力不应自动接受任何账户配置。
+#[test]
+fn account_capability_requires_explicit_configuration_declarations() {
+    for (field, value) in [
+        ("Users", "alice"),
+        ("Groups", "wheel"),
+        ("DriftPolicy", "warn"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("source");
+        fs::write(&source, "data").unwrap();
+        fixture.account_plugin(&source, EMPTY, EMPTY);
+        let name = format!("RSTAR_ACCOUNTINHERITANCE_{}", field.to_ascii_uppercase());
+        configure_plugin(&fixture, |_, metadata| {
+            metadata["config"]["optional"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|entry| entry.as_str() != Some(name.as_str()));
+            metadata["config"]["constraints"]
+                .as_table_mut()
+                .unwrap()
+                .remove(&name);
+        });
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/accounts.conf"),
+            format!("[AccountInheritance]\n{field}={value}\n"),
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("undeclared settings"), "{message}");
+        assert!(message.contains(&name), "{message}");
+        assert!(backend.events.borrow().is_empty());
+        assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
+    }
+}
+
+/// Account constraints and required fields fail before account checks or build allocation.
+/// 账户约束和必填字段错误应早于账户检查和构建分配。
+#[test]
+fn account_metadata_rejects_invalid_configuration_before_operations() {
+    for (settings, expected) in [
+        ("DriftPolicy=unknown\n", "enum candidate values"),
+        (
+            "DriftPolicy=warn\nDriftPolicy=error\n",
+            "requires a single item",
+        ),
+        ("Custom=undeclared\n", "undeclared settings"),
+        ("", "missing or empty required settings"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let source = fixture.store.root().parent().unwrap().join("source");
+        fs::write(&source, "data").unwrap();
+        fixture.account_plugin(&source, "invalid check result", EMPTY);
+        if settings.is_empty() {
+            configure_plugin(&fixture, |_, metadata| {
+                let name = "RSTAR_ACCOUNTINHERITANCE_USERS";
+                metadata["config"]["optional"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|entry| entry.as_str() != Some(name));
+                metadata["config"]["required"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(name.into());
+            });
+        }
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/accounts.conf"),
+            format!("[AccountInheritance]\n{settings}"),
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        let message = build_with_backend(&fixture.store, Some("desktop"), &backend)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains(expected), "{message}");
+        assert!(backend.events.borrow().is_empty());
+        assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
+    }
+}
+
+/// Declared fields remain ordinary plugin inputs without enabling account operations.
+/// 已声明字段在未开启账户能力时仍是普通插件输入。
+#[test]
+fn declared_account_fields_do_not_enable_account_operations() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    configure_plugin(&fixture, |_, metadata| {
+        metadata["config"]["constraints"]["RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY"]["values"] =
+            toml::Value::Array(vec!["plugin-policy".into()]);
+    });
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/accounts.conf"),
+        "[AccountInheritance]\nUsers=plugin-specific name\nGroups=plugin-specific group\nDriftPolicy=plugin-policy\n",
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        .unwrap()
+        .remove(0);
+    assert!(!outcome.root.join(".accounts").exists());
+    let events = backend.events.borrow();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|event| {
+        !event.operation.starts_with("account_")
+            && event.parameters["RSTAR_ACCOUNTINHERITANCE_USERS"] == "plugin-specific name"
+            && event.parameters["RSTAR_ACCOUNTINHERITANCE_GROUPS"] == "plugin-specific group"
+            && event.parameters["RSTAR_ACCOUNTINHERITANCE_DRIFTPOLICY"] == "plugin-policy"
+    }));
+}
+
+/// Declared extensions and original lists reach account scripts alongside standard requests.
+/// 已声明扩展字段及原始列表应与标准请求一同传入账户脚本。
+#[test]
+fn declared_account_extensions_reach_plugin_environment_and_requests() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let source = fixture.store.root().parent().unwrap().join("source");
+    fs::write(&source, "data").unwrap();
+    fixture.account_plugin(&source, EMPTY, EMPTY);
+    configure_plugin(&fixture, |root, metadata| {
+        metadata["config"]["optional"]
+            .as_array_mut()
+            .unwrap()
+            .push("RSTAR_ACCOUNTINHERITANCE_CUSTOM".into());
+        fs::write(
+            root.join("account_prepare.sh"),
+            "set -eu\ntest \"$RSTAR_ACCOUNTINHERITANCE_CUSTOM\" = plugin-choice\ntest \"$RSTAR_ACCOUNTINHERITANCE_GROUPS\" = wheel\nprintf '%s' \"$RSTAR_PARAMETERS_JSON\" > \"$RSTAR_ROOT/.account-parameters.json\"\ncat \"$2/request.json\" > \"$RSTAR_ROOT/.account-request.json\"\n",
+        )
+        .unwrap();
+    });
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/accounts.conf"),
+        "[AccountInheritance]\nUsers=alice\nUsers=bob\nUsers=alice\nGroups=wheel\nDriftPolicy=warn\nCustom=plugin-choice\n",
+    )
+    .unwrap();
+    let outcome = build_with_backend(
+        &fixture.store,
+        Some("desktop"),
+        &SimulatedBackend::default(),
+    )
+    .unwrap()
+    .remove(0);
+    let request: serde_json::Value =
+        serde_json::from_slice(&fs::read(outcome.root.join(".account-request.json")).unwrap())
+            .unwrap();
+    assert_eq!(request["users"], serde_json::json!(["alice", "bob"]));
+    assert_eq!(request["groups"], serde_json::json!(["wheel"]));
+    let parameters: serde_json::Value =
+        serde_json::from_slice(&fs::read(outcome.root.join(".account-parameters.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        parameters["RSTAR_ACCOUNTINHERITANCE_USERS"],
+        serde_json::json!(["alice", "bob", "alice"])
+    );
+    assert_eq!(
+        parameters["RSTAR_ACCOUNTINHERITANCE_CUSTOM"],
+        serde_json::json!(["plugin-choice"])
+    );
+}
+
 #[test]
 fn preflight_combines_account_and_inheritance_warnings_once_before_any_build() {
     let fixture = Fixture::new();

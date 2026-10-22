@@ -407,12 +407,17 @@ impl<B: BuildBackend> Stages<'_, B> {
         owned: &mut Vec<PathBuf>,
     ) -> Result<Cache> {
         let account_inputs = super::accounts::fingerprint(self.plugin)?;
-        let account_config = crate::config::AccountInheritanceConfig::read(
-            &crate::config::read_plugin_parameters_at(&self.context.config)?,
-        )?;
         // Assess reads live boot/Mount sources; never reuse a previous scan result.
-        let allow_reuse = self.plugin.metadata.account_inheritance.is_none()
-            || account_config.drift_policy != crate::config::AccountDriftPolicy::Assess;
+        // Assess 读取实时启动/Mount 来源，不能复用上次扫描结果。
+        let allow_reuse = if self.plugin.metadata.account_inheritance.is_some() {
+            crate::config::AccountInheritanceConfig::read(
+                &crate::config::read_plugin_parameters_at(&self.context.config)?,
+            )?
+            .drift_policy
+                != crate::config::AccountDriftPolicy::Assess
+        } else {
+            true
+        };
         let frozen = if self.reuse_minutes > 0 {
             Some(super::inheritance_inputs::freeze(
                 self.backend,

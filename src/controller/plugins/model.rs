@@ -252,7 +252,8 @@ pub struct Metadata {
     /// 可选的软件维护后行为，在单系统用户脚本之前执行。
     #[serde(default)]
     pub post_maintenance: bool,
-    /// Optional host-side prepare/check/apply account protocol.
+    /// Enable the host-side prepare/check/apply account protocol; settings still require config declarations.
+    /// 开启宿主侧 prepare/check/apply 账户协议；配置项仍需在 config 中声明。
     #[serde(default)]
     pub account_inheritance: Option<AccountInheritanceRequirements>,
     /// Optional query of configured targets, base packages and runtime dependencies.
