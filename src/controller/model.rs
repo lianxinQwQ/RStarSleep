@@ -374,7 +374,16 @@ pub trait BuildBackend {
     fn check_cow_source(&self, source: &Path, destination_parent: &Path) -> Result<()> {
         let source_info =
             std::fs::symlink_metadata(source).map_err(|e| super::fs::io(source, e))?;
-        let (source_uuid, _) = self.filesystem_location(source)?;
+        let container = if source_info.file_type().is_symlink() {
+            source.parent().ok_or_else(|| {
+                Error::Invalid(
+                    "继承条目缺少父目录 / Inheritance entry has no parent directory".into(),
+                )
+            })?
+        } else {
+            source
+        };
+        let (source_uuid, _) = self.filesystem_location(container)?;
         let (target_uuid, _) = self.filesystem_location(destination_parent)?;
         if source_uuid != target_uuid {
             return Err(Error::Invalid(format!(
@@ -382,8 +391,9 @@ pub trait BuildBackend {
                 source.display()
             )));
         }
-        super::mounts::check_descendant_mounts(source)?;
-        let _ = source_info;
+        if !source_info.file_type().is_symlink() {
+            super::mounts::check_descendant_mounts(source)?;
+        }
         Ok(())
     }
 

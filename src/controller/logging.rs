@@ -381,9 +381,10 @@ mod tests {
         let path = parent.path().join("inheritance.log");
         let log = BuildLog::append(&path).unwrap();
         let _scope = enter([log.clone()]);
-        let source = parent.path().join("missing source");
+        let source = parent.path().join("source file");
+        fs::write(&source, b"content").unwrap();
         let error = SystemBackend
-            .copy_inherited(&source, &parent.path().join("target"), false)
+            .copy_inherited(&source, &parent.path().join("missing parent/target"), false)
             .unwrap_err();
         assert!(error.to_string().contains("cp inheritance"));
         let missing_command = parent.path().join("missing-command");

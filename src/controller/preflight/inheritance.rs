@@ -29,7 +29,7 @@ pub(in crate::controller) fn inspect(
         } else {
             let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
             let resolved = source_root.join(unmarked.strip_prefix("/").unwrap());
-            inheritance::check_source(&resolved, system)?
+            inheritance::check_mount_source(&resolved, system)?
         };
         validate_inheritance_type(source, directory)?;
     }
@@ -49,7 +49,7 @@ pub(in crate::controller) fn inspect(
     let destination = work.ancestors().find(|path| path.exists()).unwrap();
     for source in &config.copy_on_write_build {
         let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-        let resolved = disk::source_path(source_root, unmarked)?;
+        let resolved = disk::inheritance_source_path(source_root, unmarked)?;
         let directory = inheritance::check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
         backend.check_cow_source(&resolved, destination)?;
@@ -63,10 +63,15 @@ pub(in crate::controller) fn inspect(
         // 此处只诊断所选来源的当前挂载视图，不生成启动来源映射。
         let check = (|| {
             let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-            let resolved = disk::source_path(source_root, unmarked)?;
-            let info = fs::metadata(&resolved).map_err(|e| disk::io(source, e))?;
+            let resolved = disk::inheritance_source_path(source_root, unmarked)?;
+            let info = fs::symlink_metadata(&resolved).map_err(|e| disk::io(source, e))?;
             validate_inheritance_type(source, info.is_dir())?;
-            let (uuid, _) = backend.filesystem_location(&resolved)?;
+            let container = if info.file_type().is_symlink() {
+                resolved.parent().unwrap()
+            } else {
+                &resolved
+            };
+            let (uuid, _) = backend.filesystem_location(container)?;
             match &target_uuid {
                 Ok(target) if *target == uuid => Ok(()),
                 Ok(_) => Err(Error::Invalid(

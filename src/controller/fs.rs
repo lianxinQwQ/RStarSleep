@@ -60,6 +60,32 @@ pub(super) fn checked(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Check an entry's ancestors without following or rejecting its final symbolic link.
+/// 检查条目的祖先，不跟随或拒绝末段符号链接。
+pub(super) fn checked_entry(path: &Path) -> Result<()> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Error::Invalid(format!(
+            "路径必须绝对且不含父级跳转: {0} / Path must be absolute and must not contain parent-directory traversal: {0}",
+            path.display()
+        )));
+    }
+    checked(path.parent().ok_or_else(|| {
+        Error::Invalid("继承条目缺少父目录 / Inheritance entry has no parent directory".into())
+    })?)
+}
+
+/// Select an inheritance entry literally; directory markers never dereference links.
+/// 按字面选择继承条目；目录标记不会导致链接解引用。
+pub(super) fn inheritance_source_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf> {
+    crate::config::inheritance_name(guest)?;
+    checked(root)?;
+    let unmarked = Path::new(guest.to_str().unwrap().trim_end_matches('/'));
+    let path = root.join(unmarked.strip_prefix("/").unwrap());
+    checked_entry(&path)?;
+    fs::symlink_metadata(&path).map_err(|e| io(&path, e))?;
+    Ok(path)
+}
+
 /// Create an ordinary directory after validating its ancestors.
 /// 校验祖先后创建普通目录。
 /// # Arguments
@@ -135,42 +161,26 @@ pub(super) fn write_text(path: &Path, text: &str) -> Result<()> {
 /// The final entry is left unresolved so inheritance can replace a symlink itself.
 /// 在系统根内解析目标路径的祖先，包括绝对目录链接；保留末段链接，以便继承替换链接本身。
 pub(super) fn guest_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf> {
-    rooted_path(root, guest, false)
-}
-
-/// Resolve a source inside its root, including the final symbolic link.
-/// 在来源根内解析来源路径，包括末段符号链接。
-pub(super) fn source_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf> {
-    rooted_path(root, guest, true)
+    rooted_path(root, guest)
 }
 
 /// Interpret absolute links relative to the selected root and clamp parent traversal there.
 /// 将绝对链接解释为相对于所选根的路径，并将父级跳转限制在该根内。
-fn rooted_path(root: &Path, guest: &Path, follow_final: bool) -> Result<std::path::PathBuf> {
+fn rooted_path(root: &Path, guest: &Path) -> Result<std::path::PathBuf> {
     use std::{collections::VecDeque, ffi::OsString, path::PathBuf};
-    let requires_directory = |path: &Path| {
-        let bytes = path.as_os_str().as_encoded_bytes();
-        bytes.ends_with(b"/") || bytes.ends_with(b"/.") || bytes == b"."
-    };
     checked(root)?;
     if !guest.is_absolute() {
-        return Err(Error::Invalid(if follow_final {
-            "来源系统路径必须绝对 / Source system path must be absolute".into()
-        } else {
-            "目标系统路径必须绝对 / Target system path must be absolute".into()
-        }));
+        return Err(Error::Invalid(
+            "目标系统路径必须绝对 / Target system path must be absolute".into(),
+        ));
     }
     let mut pending: VecDeque<OsString> = guest
         .components()
         .filter_map(|p| match p {
             Component::Normal(p) => Some(p.to_owned()),
-            Component::ParentDir if follow_final => Some(OsString::from("..")),
             _ => None,
         })
         .collect();
-    if follow_final && requires_directory(guest) {
-        pending.push_back(OsString::from("."));
-    }
     let mut relative = PathBuf::new();
     let mut links = 0;
     while let Some(part) = pending.pop_front() {
@@ -183,20 +193,18 @@ fn rooted_path(root: &Path, guest: &Path, follow_final: bool) -> Result<std::pat
         }
         let path = root.join(&relative).join(&part);
         match fs::symlink_metadata(&path) {
-            Ok(info) if info.file_type().is_symlink() && (follow_final || !pending.is_empty()) => {
+            Ok(info) if info.file_type().is_symlink() && !pending.is_empty() => {
                 links += 1;
                 if links > 40 {
-                    return Err(Error::Invalid(if follow_final {
-                        "来源路径符号链接循环 / Symbolic-link loop in source path".into()
-                    } else {
-                        "目标路径符号链接循环 / Symbolic-link loop in target path".into()
-                    }));
+                    return Err(Error::Invalid(
+                        "目标路径符号链接循环 / Symbolic-link loop in target path".into(),
+                    ));
                 }
                 let link = fs::read_link(&path).map_err(|e| io(&path, e))?;
                 if link.is_absolute() {
                     relative.clear();
                 }
-                let mut parts: Vec<_> = link
+                let parts: Vec<_> = link
                     .components()
                     .filter_map(|p| match p {
                         Component::Normal(p) => Some(p.to_owned()),
@@ -204,23 +212,12 @@ fn rooted_path(root: &Path, guest: &Path, follow_final: bool) -> Result<std::pat
                         _ => None,
                     })
                     .collect();
-                if follow_final && requires_directory(&link) {
-                    parts.push(OsString::from("."));
-                }
                 for part in parts.into_iter().rev() {
                     pending.push_front(part);
                 }
             }
-            Ok(info) if follow_final && !pending.is_empty() && !info.is_dir() => {
-                return Err(Error::Invalid(format!(
-                    "来源路径祖先必须为目录: {0} / Source path ancestor must be a directory: {0}",
-                    path.display()
-                )));
-            }
             Ok(_) => relative.push(part),
-            Err(error) if !follow_final && error.kind() == std::io::ErrorKind::NotFound => {
-                relative.push(part)
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => relative.push(part),
             Err(error) => return Err(io(&path, error)),
         }
     }
@@ -254,76 +251,32 @@ mod guest_path_tests {
         assert!(guest_path(root, Path::new("/loop/data")).is_err());
     }
 
-    /// Source links, including final links, resolve inside the selected root.
-    /// 来源链接（包括末段链接）均在所选根内解析。
+    /// Source entries preserve every link byte and never traverse an ancestor link.
+    /// 来源条目保留链接的每个字节，且不遍历祖先链接。
     #[test]
-    fn source_links_follow_final_entries_without_escaping_the_root() {
+    fn inheritance_sources_leave_links_unresolved() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        fs::create_dir_all(root.join("usr/lib")).unwrap();
-        fs::write(root.join("usr/lib/data"), "selected source").unwrap();
-        symlink("/usr/lib", root.join("lib")).unwrap();
-        symlink("/lib/data", root.join("selected")).unwrap();
-        symlink("../../../../selected", root.join("relative")).unwrap();
-        for guest in ["/selected", "/relative", "/../../selected"] {
-            let source = source_path(root, Path::new(guest)).unwrap();
-            assert_eq!(source, root.join("usr/lib/data"));
-            assert_eq!(fs::read_to_string(source).unwrap(), "selected source");
+        fs::create_dir(root.join("data")).unwrap();
+        let links = [
+            ("absolute", OsString::from("/missing//../target/")),
+            ("relative", OsString::from("../missing/./target")),
+            ("loop", OsString::from("loop")),
+            ("directory", OsString::from("data/")),
+            ("native", OsString::from_vec(b"target-\xff".to_vec())),
+        ];
+        for (name, text) in links {
+            symlink(&text, root.join(name)).unwrap();
+            let path = inheritance_source_path(root, &Path::new("/").join(name)).unwrap();
+            assert_eq!(path, root.join(name));
+            assert_eq!(fs::read_link(path).unwrap().as_os_str(), text);
         }
-        assert_eq!(
-            guest_path(root, Path::new("/selected")).unwrap(),
-            root.join("selected")
-        );
-        assert!(source_path(root, Path::new("relative")).is_err());
-    }
-
-    /// A final source link loop fails without reading any alternative source.
-    /// 末段来源链接循环会直接失败，不会读取其他来源。
-    #[test]
-    fn source_final_link_loops_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        symlink("/second", root.join("first")).unwrap();
-        symlink("first", root.join("second")).unwrap();
-        let error = source_path(root, Path::new("/first"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("符号链接循环"));
-        assert!(error.contains("Symbolic-link loop"));
-    }
-
-    /// Missing or non-directory ancestors cannot be skipped by a later parent traversal.
-    /// 缺失或非目录祖先不能被之后的父级跳转绕过。
-    #[test]
-    fn source_links_cannot_skip_invalid_ancestors() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        fs::write(root.join("real"), "selected source").unwrap();
-        fs::write(root.join("file"), "not a directory").unwrap();
-        symlink("missing/../real", root.join("missing-alias")).unwrap();
-        symlink("file/../real", root.join("file-alias")).unwrap();
-        symlink("file/", root.join("file-slash-alias")).unwrap();
-        symlink("file/.", root.join("file-dot-alias")).unwrap();
-        for guest in [
-            "/missing-alias",
-            "/file-alias",
-            "/missing",
-            "/file/data",
-            "/file-slash-alias",
-            "/file-dot-alias",
-            "/file/",
-            "/file/.",
-        ] {
-            assert!(source_path(root, Path::new(guest)).is_err(), "{guest}");
-        }
-        let error = source_path(root, Path::new("/file-alias"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("来源路径祖先必须为目录"));
-        assert!(error.contains("Source path ancestor must be a directory"));
-        assert_eq!(
-            guest_path(root, Path::new("/missing/new-target")).unwrap(),
-            root.join("missing/new-target")
-        );
+        assert!(inheritance_source_path(root, Path::new("/directory/file")).is_err());
+        assert!(inheritance_source_path(root, Path::new("/../data")).is_err());
+        assert!(inheritance_source_path(root, Path::new("relative")).is_err());
+        assert!(inheritance_source_path(root, Path::new("/missing")).is_err());
+        fs::write(root.join("file"), "data").unwrap();
+        assert!(inheritance_source_path(root, Path::new("/file/child")).is_err());
     }
 }

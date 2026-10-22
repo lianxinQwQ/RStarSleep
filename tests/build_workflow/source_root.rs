@@ -409,7 +409,13 @@ fn invalid_boot_root_identity_fails_before_warning_callback_and_allocation() {
 
 #[test]
 fn invalid_new_mount_sources_fail_before_warning_callback_or_any_build_work() {
-    for invalid in ["missing", "file-marked-directory", "directory-marked-file"] {
+    for invalid in [
+        "missing",
+        "file-marked-directory",
+        "directory-marked-file",
+        "symlink",
+        "dangling-symlink",
+    ] {
         let fixture = Fixture::new();
         fixture.system("desktop", &["editor"]);
         let selected = source_root(&fixture, "selected-source");
@@ -420,6 +426,13 @@ fn invalid_new_mount_sources_fail_before_warning_callback_or_any_build_work() {
             }
             "directory-marked-file" => {
                 fs::create_dir(selected.join("var")).unwrap();
+                "/var"
+            }
+            "symlink" | "dangling-symlink" => {
+                if invalid == "symlink" {
+                    fs::create_dir(selected.join("data")).unwrap();
+                }
+                std::os::unix::fs::symlink("data", selected.join("var")).unwrap();
                 "/var"
             }
             _ => "/var/",
@@ -441,7 +454,119 @@ fn invalid_new_mount_sources_fail_before_warning_callback_or_any_build_work() {
         )
         .unwrap_err();
         assert!(!error.to_string().is_empty());
+        if invalid.ends_with("symlink") {
+            let message = error.to_string();
+            assert!(
+                message.contains("Mount 不支持直接继承符号链接"),
+                "{message}"
+            );
+            assert!(
+                message.contains("Mount cannot directly inherit a symbolic link"),
+                "{message}"
+            );
+        }
         assert_no_build(&fixture, &backend);
+    }
+}
+
+/// Preserve raw link texts across freezing, caching, publication, and later rebuilds.
+/// 冻结、缓存、发布及后续重建均保留原始链接文本。
+#[test]
+fn cow_build_preserves_symbolic_links_instead_of_their_targets() {
+    use std::{
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::symlink},
+    };
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let selected = source_root(&fixture, "selected-source");
+    fs::create_dir(selected.join("data")).unwrap();
+    fs::write(selected.join("data/value"), "original target").unwrap();
+    let links = [
+        ("absolute", OsString::from("/data//value")),
+        ("relative", OsString::from("./data/../data/value")),
+        ("dangling", OsString::from("../missing/./target")),
+        ("loop", OsString::from("loop")),
+        ("directory", OsString::from("data/")),
+        ("native", OsString::from_vec(b"missing-\xff".to_vec())),
+    ];
+    let mut config = String::from("[Inheritance]\nNocowHandling=move-snapshot\n");
+    for (name, text) in &links {
+        symlink(text, selected.join(name)).unwrap();
+        config.push_str(&format!("CopyOnWriteBuild=/{name}\n"));
+    }
+    configure(&fixture, &config);
+    let backend = SimulatedBackend::default();
+    let first = build(&fixture, &backend, &selected).unwrap();
+    for (name, text) in &links {
+        for root in [&first.root, &fixture.cache(&first.version, "script")] {
+            let target = root.join(name);
+            assert!(
+                fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read_link(target).unwrap().as_os_str(), text);
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(selected.join("data/value")).unwrap(),
+        "original target"
+    );
+    assert!(!first.root.join("data").exists());
+    assert!(
+        !backend
+            .filesystem_inspections
+            .borrow()
+            .iter()
+            .any(|p| p == &selected.join("absolute"))
+    );
+    fs::remove_file(selected.join("dangling")).unwrap();
+    symlink("../../new//missing/target", selected.join("dangling")).unwrap();
+    let second = build(&fixture, &backend, &selected).unwrap();
+    assert_eq!(
+        fs::read_link(second.root.join("dangling")).unwrap(),
+        Path::new("../../new//missing/target")
+    );
+    assert_eq!(
+        fs::read_link(first.root.join("dangling")).unwrap(),
+        Path::new("../missing/./target")
+    );
+}
+
+/// A source ancestor link and a directory marker on a link fail before any build work.
+/// 来源祖先链接及链接上的目录标记均在任何构建操作前失败。
+#[test]
+fn cow_build_rejects_ancestor_links_and_links_marked_as_directories() {
+    for guest in ["/alias/value", "/alias/"] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let selected = source_root(&fixture, "selected-source");
+        fs::create_dir(selected.join("data")).unwrap();
+        fs::write(selected.join("data/value"), "keep").unwrap();
+        std::os::unix::fs::symlink("data", selected.join("alias")).unwrap();
+        configure(
+            &fixture,
+            &format!("[Inheritance]\nCopyOnWriteBuild={guest}\n"),
+        );
+        let backend = SimulatedBackend::default();
+        let error = build(&fixture, &backend, &selected)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(if guest.ends_with('/') {
+                "继承文件路径不能以 / 结尾"
+            } else {
+                "路径不能经过链接"
+            }),
+            "{error}"
+        );
+        assert_no_build(&fixture, &backend);
+        assert_eq!(
+            fs::read_to_string(selected.join("data/value")).unwrap(),
+            "keep"
+        );
     }
 }
 

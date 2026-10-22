@@ -345,7 +345,10 @@ impl BuildBackend for SimulatedBackend {
         if self.fail_inheritance_copy.replace(false) {
             return Err(Error::Invalid("injected inheritance copy failure".into()));
         }
-        if source.is_dir() {
+        let info = fs::symlink_metadata(source).unwrap();
+        if info.file_type().is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(source).unwrap(), target).unwrap();
+        } else if info.is_dir() {
             if _force_cow {
                 copy_inherited_stubs(source, target);
             } else {
@@ -367,7 +370,13 @@ impl BuildBackend for SimulatedBackend {
     }
     fn check_cow_source(&self, source: &Path, parent: &Path) -> Result<()> {
         self.cow_checks.borrow_mut().push(source.to_path_buf());
-        if self.filesystem_location(source)?.0 != self.filesystem_location(parent)?.0 {
+        let info = fs::symlink_metadata(source).unwrap();
+        let container = if info.file_type().is_symlink() {
+            source.parent().unwrap()
+        } else {
+            source
+        };
+        if self.filesystem_location(container)?.0 != self.filesystem_location(parent)?.0 {
             return Err(Error::Invalid("CoW 继承必须位于同一 Btrfs 文件系统".into()));
         }
         Ok(())

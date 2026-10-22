@@ -92,7 +92,7 @@ pub(super) fn freeze(
         backend.create_subvolume(&container)?;
         for (index, target) in config.copy_on_write_build.iter().enumerate() {
             let unmarked = Path::new(target.to_str().unwrap().trim_end_matches('/'));
-            let source = disk::source_path(source_root, unmarked)?;
+            let source = disk::inheritance_source_path(source_root, unmarked)?;
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
             if directory && config.nocow_handling == NocowHandling::MoveSnapshot {

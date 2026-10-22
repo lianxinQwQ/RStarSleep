@@ -107,7 +107,13 @@ pub(super) struct Status<'a> {
 /// # Arguments
 /// - `layout`: Existing managed-system layout. 已有被管理系统布局。
 pub(super) fn lock_system(layout: &SystemLayout) -> Result<Lock> {
-    lock_directory(&layout.root).map(Lock)
+    lock_directory_guard(&layout.root)
+}
+
+/// Release the directory lock explicitly even if a concurrent fork inherited it.
+/// 即使并发 fork 继承了锁，也显式释放目录锁。
+pub(super) fn lock_directory_guard(root: &std::path::Path) -> Result<Lock> {
+    lock_directory(root).map(Lock)
 }
 
 pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {

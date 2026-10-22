@@ -156,14 +156,14 @@ pub(super) fn assess(
         .copy_on_write_build
         .iter()
         .chain(&config.copy_on_write_boot)
-        .map(|target| disk::source_path(source_root, target))
+        .map(|target| disk::inheritance_source_path(source_root, target))
         .collect::<Vec<_>>();
     for target in &config.mounts {
         let persistent = system.join("persistent").join(inheritance_name(target)?);
         sources.push(if disk::exists(&persistent)? {
             Ok(persistent)
         } else {
-            disk::source_path(source_root, target)
+            disk::inheritance_source_path(source_root, target)
         });
     }
     for source in sources {
@@ -175,18 +175,21 @@ pub(super) fn assess(
             }
         };
         let path = source.as_path();
-        // Resolve a declared root once; never follow links encountered below that root.
-        match fs::canonicalize(path) {
-            Ok(path) => match fs::symlink_metadata(&path) {
-                Ok(info) => {
-                    let uuid = backend
-                        .filesystem_location(&path)
-                        .ok()
-                        .map(|(uuid, _)| uuid);
-                    scanner.visit(&path, info.dev(), &uuid, &mut HashMap::new());
-                }
-                Err(e) => scanner.errors.push(format!("{}: {e}", path.display())),
-            },
+        // Inspect the inherited object itself, including a declared symbolic link.
+        // 检查继承对象自身，包括直接声明的符号链接。
+        match fs::symlink_metadata(path) {
+            Ok(info) => {
+                let container = if info.file_type().is_symlink() {
+                    path.parent().unwrap()
+                } else {
+                    path
+                };
+                let uuid = backend
+                    .filesystem_location(container)
+                    .ok()
+                    .map(|(uuid, _)| uuid);
+                scanner.visit(path, info.dev(), &uuid, &mut HashMap::new());
+            }
             Err(e) => scanner.errors.push(format!("{}: {e}", path.display())),
         }
     }

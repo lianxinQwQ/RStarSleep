@@ -202,7 +202,7 @@ pub fn finalize_inheritance_with_backend(
                     .into(),
             )
         })?;
-    let _lock = super::records::lock_directory(system)?;
+    let _lock = super::records::lock_directory_guard(system)?;
     finalize_inheritance_locked(manifest_path, filesystem_root, backend)
 }
 
@@ -408,7 +408,7 @@ fn finalize_inheritance_inner(
         crate::config::inheritance_name(&source.target)?;
         validate_inheritance_type(&source.target, source.directory)?;
         let path = if let Some(root) = &source_root {
-            top_path(root, &source.path)?
+            disk::inheritance_source_path(root, &source.path)?
         } else {
             top_path(filesystem_root, &source.path)?
         };
@@ -432,7 +432,7 @@ fn finalize_inheritance_inner(
                 backend.source_subvolume_id(&path)? == source.subvolume_id
             };
         if info.is_dir() != source.directory
-            || (!info.is_dir() && !info.is_file())
+            || (!info.is_dir() && !info.is_file() && !info.file_type().is_symlink())
             || !identity_valid
         {
             return Err(Error::Invalid(format!(

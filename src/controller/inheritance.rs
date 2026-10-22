@@ -50,7 +50,7 @@ pub(super) fn apply_build(
             format!("Inherit copy-on-write path: {}", source.display()),
         );
         let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-        let resolved = disk::source_path(source_root, unmarked)?;
+        let resolved = disk::inheritance_source_path(source_root, unmarked)?;
         let directory = check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
         if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
@@ -105,9 +105,10 @@ pub(super) fn apply_mounts(
         if !disk::exists(&persistent)? {
             // Remove the marker before inspecting a file so a mismatched trailing slash
             // produces a type error instead of ENOTDIR, and links remain rejected.
+            // 先去掉目录标记，以类型错误代替 ENOTDIR，并继续拒绝挂载来源链接。
             let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
             let resolved = source_root.join(unmarked.strip_prefix("/").unwrap());
-            let directory = check_source(&resolved, system)?;
+            let directory = check_mount_source(&resolved, system)?;
             validate_inheritance_type(source, directory)?;
             if backend.check_subvolume(&resolved, false).is_ok()
                 || backend.check_subvolume(&resolved, true).is_ok()
@@ -277,7 +278,7 @@ fn subvolume_options(subvolume: &Path, readonly: bool) -> Result<String> {
 /// - `source`: Current-running-system source. 当前运行系统来源。
 /// - `system`: Owning system directory. 所属系统目录。
 pub(super) fn check_source(source: &Path, system: &Path) -> Result<bool> {
-    disk::checked(source)?;
+    disk::checked_entry(source)?;
     let manager = system
         .parent()
         .and_then(Path::parent)
@@ -286,13 +287,27 @@ pub(super) fn check_source(source: &Path, system: &Path) -> Result<bool> {
         return Err(Error::Invalid("继承来源不能与管理器目录重叠 / Inheritance source must not overlap the manager directory".into()));
     }
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
-    if !info.is_dir() && !info.is_file() {
+    if !info.is_dir() && !info.is_file() && !info.file_type().is_symlink() {
         return Err(Error::Invalid(
-            "继承来源必须为普通文件或目录 / Inheritance source must be a regular file or directory"
+            "继承来源必须为普通文件、目录或符号链接 / Inheritance source must be a regular file, directory, or symbolic link"
                 .into(),
         ));
     }
     Ok(info.is_dir())
+}
+
+/// A bind mount cannot preserve a symbolic link as the mounted object.
+/// 绑定挂载无法将符号链接自身保留为挂载对象。
+pub(super) fn check_mount_source(source: &Path, system: &Path) -> Result<bool> {
+    disk::checked_entry(source)?;
+    let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
+    if info.file_type().is_symlink() {
+        return Err(Error::Invalid(format!(
+            "Mount 不支持直接继承符号链接，请使用 CopyOnWriteBuild 或 CopyOnWriteBoot: {0} / Mount cannot directly inherit a symbolic link; use CopyOnWriteBuild or CopyOnWriteBoot: {0}",
+            source.display()
+        )));
+    }
+    check_source(source, system)
 }
 
 /// Replace a target only after checking paths and descendant storage.
@@ -409,9 +424,13 @@ pub(super) fn inherit_path(
     nocow_handling: NocowHandling,
 ) -> Result<()> {
     let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
+    if info.file_type().is_symlink() {
+        replace_target(backend, target)?;
+        return backend.copy_inherited(source, target, true);
+    }
     if !info.is_dir() && !info.is_file() {
         return Err(Error::Invalid(
-            "继承来源必须为普通文件或目录 / Inheritance source must be a regular file or directory"
+            "继承来源必须为普通文件、目录或符号链接 / Inheritance source must be a regular file, directory, or symbolic link"
                 .into(),
         ));
     }

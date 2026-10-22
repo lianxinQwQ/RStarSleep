@@ -42,6 +42,73 @@ fn nested_subvolumes(root: &Path) -> Result<Vec<PathBuf>> {
 #[derive(Debug, Default)]
 pub struct SystemBackend;
 
+#[cfg(test)]
+mod symlink_tests {
+    use super::*;
+    use crate::config::NocowHandling;
+    use std::{
+        ffi::OsString,
+        fs,
+        os::unix::{ffi::OsStringExt, fs::symlink},
+    };
+
+    /// Real archive copies preserve native link bytes under every NOCOW policy.
+    /// 所有 NOCOW 策略下，实际归档复制均保留原生链接字节。
+    #[test]
+    fn native_inheritance_copies_links_without_reading_or_rewriting_targets() {
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path();
+        fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join("data/value"), "keep target").unwrap();
+        let texts = [
+            OsString::from("/missing//../target/"),
+            OsString::from("../missing/./target"),
+            OsString::from("source"),
+            OsString::from("data/"),
+            OsString::from_vec(b"missing-\xff".to_vec()),
+        ];
+        for text in texts {
+            let source = root.join("source");
+            symlink(&text, &source).unwrap();
+            for policy in [
+                NocowHandling::Error,
+                NocowHandling::Reflink,
+                NocowHandling::Copy,
+                NocowHandling::MoveSnapshot,
+            ] {
+                let target = root.join("target");
+                symlink(root.join("data/value"), &target).unwrap();
+                super::super::inheritance::inherit_path(
+                    &SystemBackend,
+                    &source,
+                    &target,
+                    true,
+                    policy,
+                )
+                .unwrap();
+                assert!(
+                    fs::symlink_metadata(&target)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(fs::read_link(&target).unwrap().as_os_str(), text);
+                assert_eq!(
+                    fs::read_to_string(root.join("data/value")).unwrap(),
+                    "keep target"
+                );
+                fs::remove_file(&target).unwrap();
+                SystemBackend
+                    .copy_inherited_with_policy(&source, &target, policy)
+                    .unwrap();
+                assert_eq!(fs::read_link(&target).unwrap().as_os_str(), text);
+                fs::remove_file(target).unwrap();
+            }
+            fs::remove_file(source).unwrap();
+        }
+    }
+}
+
 /// Execute Btrfs without shell interpolation, preserving native path bytes.
 /// 不经 shell 插值执行 Btrfs，保留路径原生字节。
 /// # Arguments
@@ -140,15 +207,19 @@ impl BuildBackend for SystemBackend {
         self.check_subvolume(path, readonly)
     }
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
-        fs::checked(source)?;
+        fs::checked_entry(source)?;
         fs::checked(target)?;
-        let directory = source.is_dir();
+        let info = std::fs::symlink_metadata(source).map_err(|e| fs::io(source, e))?;
+        let directory = info.is_dir();
         let source = if directory {
             source.join(".")
         } else {
             source.to_path_buf()
         };
         let mut command = Command::new("cp");
+        if info.file_type().is_symlink() {
+            command.arg("--no-target-directory");
+        }
         // Btrfs child subvolumes have separate device identities. Preserve them with
         // explicit recursive snapshots instead of descending into them during cp.
         if directory && force_cow {
@@ -180,6 +251,13 @@ impl BuildBackend for SystemBackend {
         target: &Path,
         policy: crate::config::NocowHandling,
     ) -> Result<()> {
+        if std::fs::symlink_metadata(source)
+            .map_err(|e| fs::io(source, e))?
+            .file_type()
+            .is_symlink()
+        {
+            return self.copy_inherited(source, target, true);
+        }
         match policy {
             crate::config::NocowHandling::Error | crate::config::NocowHandling::MoveSnapshot => {
                 self.copy_inherited(source, target, true)

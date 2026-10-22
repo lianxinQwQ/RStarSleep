@@ -420,9 +420,11 @@ Mount=/etc/myapp.conf
 
 控制器以 `InheritanceConfig::read()` 从合并参数独立读取这些设置，接受 CopyOnWriteBuild、CopyOnWriteBoot、Mount、DirectorySubvolume、NocowHandling，
 不要求插件在 `[config]` 声明控制器所属继承参数。每行一个规范绝对路径，必须以 `/` 开头，
-目录必须以 `/` 结尾，普通文件不能以 `/` 结尾；执行继承时核验类型。不接受 `/`、
+目录必须以 `/` 结尾，普通文件和符号链接不能以 `/` 结尾；执行继承时核验类型。不接受 `/`、
 `//`、`.` 或 `..` 路径段、重复、相互包含或持久名称冲突；两份 CoW 列表和 Mount 统一校验，
 来源还不能包含目标管理存储。
+两份 CoW 列表原样复制符号链接自身，不解析或改写链接文本，支持断链及循环链接。
+来源祖先链接会被拒绝；Mount 直接配置符号链接同样在预检时报错，目录内部链接仍可保留。
 Mount 路径还不能遮盖 `/rstarsleep`、`/run/rstarsleep` 或包含 nspawn 绑定分隔字符 `:`、`\`。
 
 CopyOnWriteBuild 在软件安装/维护及 `packages` 缓存提交后，在新建的 `script-root` 中继承当前运行系统，

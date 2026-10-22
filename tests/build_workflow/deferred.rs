@@ -16,7 +16,11 @@ fn pending(
             "[Inheritance]\nDirectorySubvolume={}\nCopyOnWriteBoot={}{}\n",
             if subvolumes { "yes" } else { "no" },
             source.display(),
-            if source.is_dir() { "/" } else { "" }
+            if fs::symlink_metadata(source).is_ok_and(|info| info.is_dir()) {
+                "/"
+            } else {
+                ""
+            }
         ),
     )
     .unwrap();
@@ -1104,7 +1108,7 @@ fn boot_manifest_does_not_expand_existing_descendant_mounts() {
 }
 
 #[test]
-fn fixed_boot_root_identity_and_source_symlinks_are_rejected_before_staging() {
+fn fixed_boot_root_identity_and_links_marked_as_directories_are_rejected_before_staging() {
     for replace_root in [false, true] {
         let fixture = Fixture::new();
         fixture.system("desktop", &[]);
@@ -1137,7 +1141,7 @@ fn fixed_boot_root_identity_and_source_symlinks_are_rejected_before_staging() {
             error.contains(if replace_root {
                 "来源根身份已改变"
             } else {
-                "路径不能经过链接"
+                "继承文件路径不能以 / 结尾"
             }),
             "{error}"
         );
@@ -1150,6 +1154,90 @@ fn fixed_boot_root_identity_and_source_symlinks_are_rejected_before_staging() {
                 .exists()
         );
     }
+}
+
+/// First boot copies the latest link text once, without accessing any link target.
+/// 首次启动只复制一次最新链接文本，不访问任何链接目标。
+#[test]
+fn boot_inheritance_preserves_raw_symbolic_links_and_does_not_repeat() {
+    use std::{
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::symlink},
+    };
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let backend = SimulatedBackend::default();
+    let old_root = fixture.store.root().parent().unwrap().join("source-root");
+    backend.create_subvolume(&old_root).unwrap();
+    fs::create_dir(old_root.join("data")).unwrap();
+    let links = [
+        ("absolute", OsString::from("/outside//../missing/target")),
+        ("relative", OsString::from("../missing/./target")),
+        ("loop", OsString::from("loop")),
+        ("directory", OsString::from("data/")),
+        ("native", OsString::from_vec(b"missing-\xff".to_vec())),
+    ];
+    let mut config = String::from("[Inheritance]\nNocowHandling=move-snapshot\n");
+    for (name, text) in &links {
+        symlink(text, old_root.join(name)).unwrap();
+        config.push_str(&format!("CopyOnWriteBoot=/{name}\n"));
+    }
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    fs::write(layout.config.join("build/inherit.conf"), &config).unwrap();
+    let outcome = rstarsleep::controller::build_with_options_and_backend_and_warning(
+        &fixture.store,
+        Some("desktop"),
+        &rstarsleep::controller::BuildOptions {
+            inheritance_root: old_root.clone(),
+        },
+        &backend,
+        |_| Ok(()),
+    )
+    .unwrap()
+    .remove(0);
+    fs::remove_file(old_root.join("relative")).unwrap();
+    let latest = Path::new("../../new//target/./");
+    symlink(latest, old_root.join("relative")).unwrap();
+    // Retry must remove partial links themselves, including links to existing directories.
+    // 重试必须删除未提交的链接自身，包括指向已有目录的链接。
+    let staging = outcome.root.parent().unwrap().join("inheritance-staging");
+    backend
+        .snapshot_recursive(&outcome.root, &staging, false)
+        .unwrap();
+    fs::write(old_root.join("data/keep"), "keep target").unwrap();
+    symlink("missing", staging.join("partial-dangling")).unwrap();
+    symlink(old_root.join("data"), staging.join("partial-directory")).unwrap();
+    finalize(&outcome, &backend).unwrap();
+    let root = outcome.root.parent().unwrap().join("root");
+    assert!(fs::symlink_metadata(root.join("partial-dangling")).is_err());
+    assert!(fs::symlink_metadata(root.join("partial-directory")).is_err());
+    assert_eq!(
+        fs::read_to_string(old_root.join("data/keep")).unwrap(),
+        "keep target"
+    );
+    for (name, text) in &links {
+        let target = root.join(name);
+        assert!(
+            fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let expected = if *name == "relative" {
+            latest.as_os_str()
+        } else {
+            text.as_os_str()
+        };
+        assert_eq!(fs::read_link(target).unwrap().as_os_str(), expected);
+        fs::remove_file(old_root.join(name)).unwrap();
+    }
+    finalize(&outcome, &backend).unwrap();
+    assert_eq!(
+        fs::read_link(root.join("relative")).unwrap().as_os_str(),
+        latest.as_os_str()
+    );
+    assert!(!root.join("data").exists());
+    assert!(backend.inheritance_policies.borrow().is_empty());
 }
 
 #[test]
