@@ -5,7 +5,7 @@ use std::{
     cell::RefCell,
     fmt::Display,
     fs::{File, OpenOptions, Permissions},
-    io::{self, Write},
+    io::{self, Seek, SeekFrom, Write},
     marker::PhantomData,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -150,20 +150,60 @@ impl BuildLog {
         let destination = directory.join("install.log");
         disk::checked(&destination)?;
         let mut state = self.state();
-        let temporary = state.temporary.take().ok_or_else(|| {
-            Error::Invalid("安装日志已经归档 / installation log already archived".into())
-        })?;
+        if state.temporary.is_none() {
+            return Err(Error::Invalid(
+                "安装日志已经归档 / installation log already archived".into(),
+            ));
+        }
         let previous_parent = state.path.parent().map(Path::to_owned);
         // Preserve partial logs too: a prior write error is reported after publication.
         // 同样保留不完整日志：已有写入错误在归档后报告。
         if let Err(error) = state.file.sync_data() {
             state.remember(error);
         }
-        if let Err(error) = temporary.persist_noclobber(&destination) {
-            state.temporary = Some(error.path);
-            return Err(disk::io(&destination, error.error));
+
+        // Copy through the held descriptor so cross-filesystem publication retains every byte.
+        // 通过持有的描述符复制，确保跨文件系统归档保留全部字节。
+        let mut staged = tempfile::Builder::new()
+            .prefix(".install-pending-")
+            .permissions(Permissions::from_mode(0o600))
+            .tempfile_in(directory)
+            .map_err(|error| disk::io(directory, error))?;
+        let copied = (|| {
+            let position = state
+                .file
+                .stream_position()
+                .map_err(|error| disk::io(&state.path, error))?;
+            let copy = state
+                .file
+                .rewind()
+                .and_then(|()| io::copy(&mut state.file, staged.as_file_mut()).map(|_| ()));
+            // Failed publication must not change where the original log resumes writing.
+            // 归档失败不能改变原日志继续写入的位置。
+            if let Err(error) = state.file.seek(SeekFrom::Start(position)) {
+                let error = state.remember(error);
+                return Err(disk::io(&state.path, error));
+            }
+            copy.map_err(|error| disk::io(&destination, error))?;
+            staged
+                .as_file()
+                .set_permissions(Permissions::from_mode(0o600))
+                .and_then(|()| staged.as_file().sync_all())
+                .map_err(|error| disk::io(&destination, error))
+        })();
+        if let Err(error) = copied {
+            return Err(discard_staged_log(staged, error));
         }
+        let file = staged
+            .persist_noclobber(&destination)
+            .map_err(|error| discard_staged_log(error.file, disk::io(&destination, error.error)))?;
+        state.file = file;
         state.path = destination;
+        if let Some(temporary) = state.temporary.take()
+            && let Err(error) = temporary.close()
+        {
+            state.remember(error);
+        }
         disk::sync(directory)?;
         if let Some(previous_parent) = previous_parent
             && previous_parent != directory
@@ -204,6 +244,19 @@ impl BuildLog {
             return Err(error.error());
         }
         state.file.flush().map_err(|error| state.remember(error))
+    }
+}
+
+/// Report partial publication cleanup without losing the original archive failure.
+/// 报告未完成归档的清理结果，不丢失原始归档错误。
+fn discard_staged_log(temporary: tempfile::NamedTempFile, original: Error) -> Error {
+    let path = temporary.path().to_owned();
+    match temporary.close() {
+        Ok(()) => original,
+        Err(error) => Error::Invalid(format!(
+            "{original}; 日志暂存文件清理失败: {0} / {original}; staged log cleanup failed: {0}",
+            disk::io(&path, error)
+        )),
     }
 }
 
@@ -440,6 +493,61 @@ mod tests {
     }
 
     #[test]
+    fn publication_retries_preserve_source_position_and_switch_every_writer_to_the_archive() {
+        let parent = tempfile::tempdir().unwrap();
+        let version = parent.path().join("version");
+        fs::create_dir(&version).unwrap();
+        let log = BuildLog::new(parent.path()).unwrap();
+        let clone = log.clone();
+        log.write(b"complete snapshot\n").unwrap();
+        log.state().file.seek(SeekFrom::Start(4)).unwrap();
+        let destination = version.join("install.log");
+        fs::write(&destination, b"existing archive").unwrap();
+        assert!(log.publish(&version).is_err());
+        assert_eq!(log.state().file.stream_position().unwrap(), 4);
+        assert_eq!(fs::read(&destination).unwrap(), b"existing archive");
+        assert_eq!(fs::read_dir(&version).unwrap().count(), 1);
+        fs::remove_file(&destination).unwrap();
+        log.publish(&version).unwrap();
+        clone.write(b"from clone\n").unwrap();
+        log.write(b"from original\n").unwrap();
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"complete snapshot\nfrom clone\nfrom original\n"
+        );
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_copy_leaves_no_archive_and_keeps_the_original_log_writable() {
+        let parent = tempfile::tempdir().unwrap();
+        let version = parent.path().join("version");
+        fs::create_dir(&version).unwrap();
+        let log = BuildLog::new(parent.path()).unwrap();
+        let source = log.state().path.clone();
+        log.write(b"before failure\n").unwrap();
+        // A write-only source reliably rejects copying without relying on filesystem capacity.
+        // 只写来源能稳定拒绝复制，无需依赖文件系统容量。
+        log.state().file = OpenOptions::new().write(true).open(&source).unwrap();
+        let position = log.state().file.seek(SeekFrom::End(0)).unwrap();
+        assert!(log.publish(&version).is_err());
+        assert_eq!(log.state().file.stream_position().unwrap(), position);
+        assert_eq!(fs::read_dir(&version).unwrap().count(), 0);
+        log.write(b"after failure\n").unwrap();
+        log.state().file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&source)
+            .unwrap();
+        log.publish(&version).unwrap();
+        assert_eq!(
+            fs::read(version.join("install.log")).unwrap(),
+            b"before failure\nafter failure\n"
+        );
+        assert!(!source.exists());
+    }
+
+    #[test]
     fn restores_nested_scopes_and_keeps_writer_snapshots_independent() {
         let parent = tempfile::tempdir().unwrap();
         let first = BuildLog::new(parent.path()).unwrap();
@@ -510,7 +618,11 @@ mod tests {
         broken.state().file = File::open(&broken_path).unwrap();
         let _scope = enter([broken.clone(), healthy.clone()]);
         assert!(writer().write_all(b"first\n").is_err());
-        broken.state().file = OpenOptions::new().append(true).open(&broken_path).unwrap();
+        broken.state().file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&broken_path)
+            .unwrap();
         assert!(writer().write_all(b"second\n").is_err());
         assert!(broken.check().is_err());
         healthy.check().unwrap();

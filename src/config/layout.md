@@ -357,7 +357,10 @@ cargo run -- packages /mnt/btrfs/@RStarSleep desktop
 旧 TOML 已知顶层字段映射到对应节；`distribution_options` 字符串表映射到 Distribution 节，
 其他顶层字段保留为裸参数，其他表作为同名节。`read_distribution_options_at()` 仅为统一预下载
 保留原来的 Distribution 环境和分组方式。
-构建先冻结全部普通配置文件，后续只读冻结版本。插件必须声明 `[cache] base_system`、
+构建先在 `std::env::temp_dir()` 所选目录下的私有 `rstarsleep-preflight-*` 会话内冻结配置并暂存预检日志；
+预检通过后，跨文件系统复制同一份冻结配置和日志，在版本目录内完成发布。
+本次调用正常返回前显式清理预检会话，清理失败会报错；强制终止可能留下系统临时目录。
+后续只读冻结版本。插件必须声明 `[cache] base_system`、
 `software`；支持 `RSTAR_裸参数名`、`RSTAR_节名`（整节）和 `RSTAR_*节名_参数名`（精确字段）。
 基础字段变化清理历史基础及后续缓存；仅软件字段变化清理软件及后续缓存；空列表不按字段失效。
 软件缓存还依赖基础字段，未选参数变化保留缓存。Arch 预设检测 Config、Distribution 整节，

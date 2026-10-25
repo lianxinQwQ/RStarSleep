@@ -48,21 +48,75 @@ pub(super) struct Attempt {
 /// 分配构建版本前用于校验的已锁定、冻结输入。
 pub(super) struct Preflight {
     pub layout: SystemLayout,
-    pub config: tempfile::TempDir,
+    pub config: PathBuf,
     pub log: super::logging::BuildLog,
     lock: Lock,
 }
 
+/// Retain temporary preflight sessions until every build handle has been released.
+/// 在所有构建句柄释放之前保留预检临时会话。
+#[derive(Default)]
+pub(super) struct PreflightSessions {
+    directories: Vec<tempfile::TempDir>,
+}
+
+impl PreflightSessions {
+    /// Report cleanup failures on every ordinary return, preserving the original build error.
+    /// 在每个正常返回路径报告清理失败，同时保留原始构建错误。
+    pub fn run<T>(operation: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let mut sessions = Self::default();
+        let result = operation(&mut sessions);
+        let mut failures = Vec::new();
+        for directory in sessions.directories {
+            let path = directory.path().to_owned();
+            if let Err(error) = directory.close() {
+                failures.push(disk::io(&path, error).to_string());
+            }
+        }
+        if failures.is_empty() {
+            return result;
+        }
+        let cleanup = format!(
+            "预检临时目录清理失败 / Preflight temporary-directory cleanup failed:\n{}",
+            failures.join("\n")
+        );
+        Err(Error::Invalid(match result {
+            Ok(_) => cleanup,
+            Err(error) => format!("{error}; {cleanup}"),
+        }))
+    }
+
+    fn create(&mut self) -> Result<PathBuf> {
+        let parent = std::env::temp_dir();
+        // Resolve environment-selected aliases before applying owned-path checks.
+        // 在校验所属路径前解析环境所选临时路径的别名。
+        let parent = fs::canonicalize(&parent).map_err(|error| disk::io(&parent, error))?;
+        disk::checked(&parent)?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("rstarsleep-preflight-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        let directory = builder
+            .tempdir_in(&parent)
+            .map_err(|error| disk::io(&parent, error))?;
+        let path = directory.path().to_owned();
+        self.directories.push(directory);
+        Ok(path)
+    }
+}
+
 impl Preflight {
-    pub fn begin(store: &ConfigStore, id: &str) -> Result<Self> {
+    pub fn begin(store: &ConfigStore, id: &str, sessions: &mut PreflightSessions) -> Result<Self> {
         let layout = store.system_layout(id)?;
         let lock = lock_system(&layout)?;
-        let log = super::logging::BuildLog::new(&layout.root)?;
-        let config = tempfile::Builder::new()
-            .prefix("config-preflight-")
-            .tempdir_in(&layout.root)
-            .map_err(|e| disk::io(&layout.root, e))?;
-        super::frozen::copy_config(&layout.config, config.path())?;
+        let session = sessions.create()?;
+        let log = super::logging::BuildLog::new(&session)?;
+        let config = session.join("config");
+        fs::create_dir(&config).map_err(|error| disk::io(&config, error))?;
+        super::frozen::copy_config(&layout.config, &config)?;
         Ok(Self {
             layout,
             config,
@@ -201,9 +255,7 @@ impl Attempt {
         let directory = layout.versions.join(&version);
         fs::create_dir(&directory).map_err(|e| disk::io(&directory, e))?;
         disk::sync(&layout.versions)?;
-        let frozen = directory.join("config");
-        fs::rename(config.path(), &frozen).map_err(|e| disk::io(&frozen, e))?;
-        disk::sync(&directory)?;
+        super::frozen::publish_config(&config, &directory)?;
         log.publish(&directory)?;
         Ok(Self {
             log,
@@ -250,6 +302,139 @@ pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<Lock> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preflight_uses_system_temporary_storage_and_archives_the_checked_snapshot() {
+        // Keep the manager on the workspace filesystem so a separate system temp filesystem is exercised.
+        // 将管理器置于工作区文件系统，以覆盖系统临时目录位于另一文件系统的情况。
+        let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let store = ConfigStore::new(directory.path()).unwrap();
+        fs::create_dir(directory.path().join("config")).unwrap();
+        fs::write(store.global_config_path(), "schema_version = 1\n").unwrap();
+        let layout = store.initialize_system("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/environment.conf"),
+            "[Environment]\nSOURCE=frozen\n",
+        )
+        .unwrap();
+        fs::create_dir_all(layout.config.join("script/example/resources")).unwrap();
+        fs::write(
+            layout.config.join("script/example/main.sh"),
+            "printf frozen\n",
+        )
+        .unwrap();
+        fs::write(
+            layout.config.join("script/example/resources/data"),
+            b"\0\xfffrozen",
+        )
+        .unwrap();
+        let mut session_path = PathBuf::new();
+        let archived = PreflightSessions::run(|sessions| {
+            let inputs = Preflight::begin(&store, "desktop", sessions)?;
+            session_path = inputs.config.parent().unwrap().to_owned();
+            assert_eq!(
+                session_path.parent().unwrap(),
+                fs::canonicalize(std::env::temp_dir()).unwrap()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&session_path).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+            assert!(!session_path.starts_with(&layout.root));
+            assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
+            assert!(!layout.root.join("version-counter").exists());
+            let expected = super::super::frozen::config_hash(&inputs.config)?;
+            fs::write(
+                layout.config.join("build/environment.conf"),
+                "[Environment]\nSOURCE=changed\n",
+            )
+            .unwrap();
+            fs::write(
+                layout.config.join("script/example/resources/data"),
+                b"changed",
+            )
+            .unwrap();
+            let _log = super::super::logging::enter([inputs.log.clone()]);
+            super::super::logging::diagnostic("before publication");
+            let attempt = Attempt::begin(inputs)?;
+            assert_eq!(
+                super::super::frozen::config_hash(&attempt.config)?,
+                expected
+            );
+            super::super::logging::diagnostic("after publication");
+            attempt.log.check()?;
+            let bytes = fs::read_to_string(attempt.directory.join("install.log")).unwrap();
+            assert!(bytes.contains("before publication\nafter publication\n"));
+            assert_eq!(fs::read_dir(&attempt.directory).unwrap().count(), 2);
+            Ok(attempt.config.clone())
+        })
+        .unwrap();
+        assert!(!session_path.exists());
+        assert_eq!(
+            fs::read_to_string(archived.join("build/environment.conf")).unwrap(),
+            "[Environment]\nSOURCE=frozen\n"
+        );
+        assert_eq!(
+            fs::read(archived.join("script/example/resources/data")).unwrap(),
+            b"\0\xfffrozen"
+        );
+        assert!(fs::read_dir(&layout.root).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name();
+            !name.to_string_lossy().contains("preflight-")
+        }));
+    }
+
+    #[test]
+    fn failed_preflight_removes_its_session_without_allocating_a_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore::new(directory.path()).unwrap();
+        let layout = store.system_layout("desktop").unwrap();
+        fs::create_dir_all(layout.config.join("build")).unwrap();
+        fs::write(layout.config.join("build/config.conf"), "frozen").unwrap();
+        let mut session_path = PathBuf::new();
+        let result: Result<()> = PreflightSessions::run(|sessions| {
+            let inputs = Preflight::begin(&store, "desktop", sessions)?;
+            session_path = inputs.config.parent().unwrap().to_owned();
+            Err(Error::Invalid("预检拒绝 / Preflight rejected".into()))
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Preflight rejected")
+        );
+        assert!(!session_path.exists());
+        assert!(!layout.versions.exists());
+        assert!(!layout.root.join("version-counter").exists());
+        assert!(lock_system(&layout).is_ok());
+    }
+
+    #[test]
+    fn cleanup_reports_failures_and_preserves_the_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let result: Result<()> = PreflightSessions::run(|sessions| {
+            let blocked = tempfile::tempdir_in(directory.path()).unwrap();
+            let path = blocked.path().to_owned();
+            fs::remove_dir(&path).unwrap();
+            fs::write(&path, b"replacement").unwrap();
+            sessions.directories.push(blocked);
+            sessions
+                .directories
+                .push(tempfile::tempdir_in(directory.path()).unwrap());
+            Err(Error::Invalid("原始错误 / Original error".into()))
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Original error"), "{error}");
+        assert!(
+            error.contains("Preflight temporary-directory cleanup failed"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn dropping_lock_releases_it_even_when_another_description_survives() {

@@ -6,7 +6,7 @@ use super::{
     fs, logging,
     plugins::{self, LoadedPlugin},
     progress,
-    records::{Attempt, Preflight, Status},
+    records::{Attempt, Preflight, PreflightSessions, Status},
     stages::Stages,
 };
 use crate::config::{
@@ -122,7 +122,22 @@ pub fn build_with_options_and_backend_and_warning(
     system: Option<&str>,
     options: &BuildOptions,
     backend: &impl BuildBackend,
+    warning: impl FnMut(&[String]) -> Result<()>,
+) -> Result<Vec<BuildOutcome>> {
+    PreflightSessions::run(|sessions| {
+        build_with_sessions(store, system, options, backend, warning, sessions)
+    })
+}
+
+/// Release all build handles before checking temporary preflight-session cleanup.
+/// 在检查预检临时会话清理结果前释放所有构建句柄。
+fn build_with_sessions(
+    store: &ConfigStore,
+    system: Option<&str>,
+    options: &BuildOptions,
+    backend: &impl BuildBackend,
     mut warning: impl FnMut(&[String]) -> Result<()>,
+    sessions: &mut PreflightSessions,
 ) -> Result<Vec<BuildOutcome>> {
     if options.inheritance_root.is_some() && system.is_none() {
         return Err(Error::Invalid(
@@ -170,7 +185,7 @@ pub fn build_with_options_and_backend_and_warning(
     let system_count = systems.len();
     for (index, id) in systems.into_iter().enumerate() {
         let checked = (|| {
-            let inputs = Preflight::begin(store, &id)?;
+            let inputs = Preflight::begin(store, &id, sessions)?;
             let _log = logging::enter([inputs.log.clone()]);
             progress::run(
                 &id,
@@ -557,7 +572,7 @@ fn check_system(
         "冻结配置，检查插件、参数及启动要求",
         "Freeze configuration and check plugin, parameters and boot requirements",
     );
-    let frozen = inputs.config.path();
+    let frozen = inputs.config.as_path();
     let config = read_build_config_at(frozen)?;
     let reuse_minutes = store.cache_reuse_minutes_at(frozen)?;
     let deduplicate_packages = crate::config::read_deduplicate_packages_at(frozen)?;

@@ -20,6 +20,32 @@ pub(super) fn copy_config(source: &Path, destination: &Path) -> Result<()> {
     copy_directory(source, destination, true)
 }
 
+/// Archive the checked snapshot across filesystems and publish only a complete configuration.
+/// 跨文件系统归档已经检查的副本，仅发布完整配置。
+pub(super) fn publish_config(source: &Path, directory: &Path) -> Result<()> {
+    let staging = tempfile::Builder::new()
+        .prefix(".config-pending-")
+        .tempdir_in(directory)
+        .map_err(|error| disk::io(directory, error))?;
+    let temporary = staging.path().join("config");
+    let destination = directory.join("config");
+    let result = (|| {
+        fs::create_dir(&temporary).map_err(|error| disk::io(&temporary, error))?;
+        copy_config(source, &temporary)?;
+        fs::rename(&temporary, &destination).map_err(|error| disk::io(&destination, error))?;
+        disk::sync(directory)
+    })();
+    let path = staging.path().to_owned();
+    let cleanup = staging.close().map_err(|error| disk::io(&path, error));
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(Error::Invalid(format!(
+            "{error}; 配置暂存目录清理失败: {cleanup} / {error}; configuration staging cleanup failed: {cleanup}"
+        ))),
+    }
+}
+
 /// Copy configuration recursively while reserving resource semantics for the top-level script tree.
 /// 递归复制配置，仅为顶层 script 树保留资源语义。
 /// # Arguments
@@ -131,4 +157,30 @@ fn hash_directory(root: &Path, relative: &Path, digest: &mut Sha256) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_configuration_copies_are_removed_without_publishing() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let version = directory.path().join("version");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&version).unwrap();
+        fs::write(source.join("a.conf"), b"copied before failure").unwrap();
+        std::os::unix::fs::symlink("missing", source.join("z.conf")).unwrap();
+        let error = publish_config(&source, &version).unwrap_err().to_string();
+        assert!(
+            error.contains("Configuration permits only regular files"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(&version).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(source.join("a.conf")).unwrap(),
+            b"copied before failure"
+        );
+    }
 }
