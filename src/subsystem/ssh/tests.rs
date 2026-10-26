@@ -296,3 +296,116 @@ fn key_file_validation_is_strict() {
     assert!(parse_keys(&format!("command=\"id\" {key}")).is_err());
     assert!(parse_keys("\n# empty\n").unwrap().is_empty());
 }
+
+/// RSA authorization must verify signatures with both modern SHA-2 algorithms.
+/// RSA 授权必须能验证两种现代 SHA-2 算法的签名。
+#[tokio::test]
+async fn rsa_sha2_login_and_revocation() {
+    use russh::keys::ssh_key::{HashAlg, private::RsaKeypair};
+
+    let (_directory, workspace) = fixture();
+    let key = RsaKeypair::random(&mut rand::rng(), 2048).unwrap();
+    let identity = Arc::new(PrivateKey::new(key.into(), "test RSA / 测试 RSA").unwrap());
+    let host = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let host_public = host.public_key().clone();
+    let authorization = workspace
+        .store
+        .system_layout("apps")
+        .unwrap()
+        .config
+        .join("subsystem/authorized_keys");
+    fs::write(&authorization, identity.public_key().to_openssh().unwrap()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = Arc::new(server::Config {
+        methods: (&[russh::MethodKind::PublicKey][..]).into(),
+        keys: vec![host],
+        auth_rejection_time: Duration::ZERO,
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        ..Default::default()
+    });
+    let mut server = SshServer {
+        store: workspace.store.clone(),
+        authorize: fixture_authorized,
+    };
+    let running = server.run_on_socket(config, &listener);
+    let shutdown = running.handle();
+    let test = async {
+        for hash in [HashAlg::Sha256, HashAlg::Sha512] {
+            let mut connection = client::connect(
+                Arc::new(client::Config::default()),
+                address,
+                Client {
+                    host: host_public.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                connection
+                    .authenticate_publickey(
+                        "apps",
+                        PrivateKeyWithHashAlg::new(identity.clone(), Some(hash)),
+                    )
+                    .await
+                    .unwrap()
+                    .success(),
+                "RSA SHA-2 登录失败 / RSA SHA-2 login failed: {hash:?}"
+            );
+            let mut channel = connection.channel_open_session().await.unwrap();
+            channel.exec(true, "pwd").await.unwrap();
+            let (mut output, mut exit) = (Vec::new(), None);
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    ChannelMsg::ExitStatus { exit_status } => exit = Some(exit_status),
+                    _ => {}
+                }
+            }
+            assert_eq!(exit, Some(0));
+            assert_eq!(output, b"/\n");
+            connection
+                .disconnect(
+                    russh::Disconnect::ByApplication,
+                    "测试完成 / test complete",
+                    "",
+                )
+                .await
+                .unwrap();
+        }
+        fs::write(&authorization, "").unwrap();
+        let mut connection = client::connect(
+            Arc::new(client::Config::default()),
+            address,
+            Client { host: host_public },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !connection
+                .authenticate_publickey(
+                    "apps",
+                    PrivateKeyWithHashAlg::new(identity, Some(HashAlg::Sha512)),
+                )
+                .await
+                .unwrap()
+                .success(),
+            "撤销的 RSA 公钥仍可登录 / Revoked RSA key can still log in"
+        );
+        connection
+            .disconnect(
+                russh::Disconnect::ByApplication,
+                "测试完成 / test complete",
+                "",
+            )
+            .await
+            .unwrap();
+        shutdown.shutdown("测试完成 / test complete".into());
+    };
+    let (result, ()) = tokio::join!(running, async {
+        tokio::time::timeout(Duration::from_secs(20), test)
+            .await
+            .expect("RSA SSH 测试超时 / RSA SSH test timed out")
+    });
+    result.unwrap();
+}

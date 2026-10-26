@@ -9,6 +9,27 @@ subsystem's configuration and lifecycle; `shell` opens its root login shell. The
 configuration view contains only `/build/` and `/script/`. Host shell execution,
 pipes, redirection and expansion are unsupported.
 
+本机连接示例：`ssh -t -p 2222 lin@localhost`。用户名是子系统 ID，端口取自
+`config/ssh.toml`。如需指定客户端私钥，使用 `-i ~/.ssh/id_rsa`；对应的公钥应写入
+`systems/lin/config/subsystem/authorized_keys`。支持 Ed25519、ECDSA 和 RSA SHA-2
+公钥认证。本机连接同样需要认证。
+
+Local connection example: `ssh -t -p 2222 lin@localhost`. The username is the
+subsystem ID; the port comes from `config/ssh.toml`. To select a client private key,
+add `-i ~/.ssh/id_rsa` and place its public key in
+`systems/lin/config/subsystem/authorized_keys`. Ed25519, ECDSA and RSA SHA-2 public-key
+authentication are supported. Local connections also require authentication.
+
+服务端的 `early eof` 表示客户端在 SSH 数据包尚未读完时断开，单凭这条日志无法
+判断是否为公钥问题。用 `ssh -vvv -p 2222 lin@localhost` 查看客户端失败阶段。
+旧版本若接受 RSA 候选公钥后拒绝签名认证，需要更新管理器并重启 daemon。
+
+The server's `early eof` means the client disconnected before a complete SSH packet
+was read; that message alone does not identify an authorization problem. Use
+`ssh -vvv -p 2222 lin@localhost` to inspect the failing client stage. Older builds
+that accept an RSA key probe but reject signed authentication require a manager
+update and daemon restart.
+
 ## CLI
 
 | 操作 / Operation | 按键或命令 / Key or command |
