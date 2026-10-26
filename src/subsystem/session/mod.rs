@@ -1,6 +1,7 @@
 //! Connect only the authenticated caller's graphical and audio resources.
 //! 仅接入已认证调用者的图形与音频资源。
 mod bus;
+mod mount_helper;
 mod mounts;
 mod resources;
 #[cfg(test)]
@@ -17,6 +18,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+
+pub(crate) use mount_helper::entry as mount_entry;
 
 type BindIdentity = (u64, u64);
 static SESSIONS: Mutex<BTreeMap<(String, u32), BTreeMap<PathBuf, BindIdentity>>> =
@@ -89,7 +92,7 @@ pub fn refresh(
                 {
                     let metadata = target.metadata()?;
                     if (metadata.dev(), metadata.ino()) == *identity {
-                        mount_command(&context, None, &target, "unmount")?;
+                        mount_command(&context, None, &target, path, "unmount")?;
                     }
                 }
             }

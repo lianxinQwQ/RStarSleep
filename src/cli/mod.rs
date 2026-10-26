@@ -24,6 +24,7 @@ pub(crate) const BUILTIN_COMMANDS: &[&str] = &[
     "daemon",
     "guest",
     "__export-user",
+    "__session-mount",
 ];
 
 use std::ffi::OsString;
@@ -104,6 +105,9 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "daemon" => subsystem::daemon(rest)?,
         [command, rest @ ..] if command == "guest" => subsystem::guest(rest)?,
         [command] if command == "__export-user" => crate::subsystem::exports::user_entry()?,
+        [command, rest @ ..] if command == "__session-mount" => {
+            crate::subsystem::session::mount_entry(rest)?
+        }
         [command, rest @ ..] if command == "finalize-inheritance" => {
             finalize_inheritance::run(rest)?
         }

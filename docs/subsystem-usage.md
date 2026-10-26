@@ -8,6 +8,9 @@
 ## 安装和配置
 
 宿主需要 Linux `openat2`、Btrfs、systemd/machined/nspawn 和 util-linux。
+启用调用者会话资源时，还需要 `open_tree`、`move_mount`；只读资源另需
+`mount_setattr`（Linux 5.12 起提供）。内核或权限不支持时会直接报错，不回退路径挂载
+或可写绑定。
 宿主及容器 systemd 需要支持 `ExitType=cgroup` 和 `systemd-run --expand-environment=no`
 （systemd 254 或更新版本）。容器需具备可引导的 systemd、getent、useradd/groupadd、
 install 和 `/bin/sh`；默认 isolated 会话还需要 `/usr/bin/dbus-daemon`。
@@ -96,6 +99,14 @@ dev/inode 和容器可见挂载并重新绑定。isolated 使用容器私有用�
 off 禁用这些资源。本地文件参数要求容器实际可见；主客路径不一致时提示使用客体路径。
 当前本地 file URL 要求绝对未编码路径，portal 自动文件传递尚未支持。
 
+会话资源以固定文件描述符跨挂载命名空间接入：先在宿主克隆分离挂载，再由重新执行
+当前程序的独立辅助进程进入固定的容器命名空间，挂到固定目标。过程不经过 util-linux
+对 `/proc/self/fd` 路径的解析，也不会将描述符还原成可被替换的路径。只读资源在挂入前
+设置只读，不先暴露可写挂载；挂入后核对容器路径实际可见的 dev/inode。发布失败时
+通过保留的挂载描述符清理本次挂载，避免误卸载原路径上的替换对象；清理失败也会报出。
+错误包含操作、资源路径及失败的系统调用。卸载采用 `MNT_DETACH`，解除该挂载树的
+命名空间可见性；已经打开的引用仍可使用旧对象，不保证立即撤销既有连接。
+
 Wayland 与本地 X11/XWayland 可以同时接入，分别使用调用者的 `WAYLAND_DISPLAY`
 和 `DISPLAY`。`DISPLAY` 不要求同时设置 `XAUTHORITY`；只有调用者显式提供非空
 `XAUTHORITY` 时才校验并只读挂载该文件、设置容器内认证文件路径。显式提供的文件
@@ -163,3 +174,7 @@ add-copy 保存捕获资源及构建脚本，后续每次构建应用；add-moun
 清理保护，另外用真实 Unix socket/子进程验证流、PTY、信号、退出状态、固定 socket
 inode、所有权协调和迁移发布重试。真实 Btrfs+nspawn 引导、图形出窗、音频与重登录
 仍需在可执行特权操作的隔离环境完成验收；当前开发环境没有免密 sudo，未安装或启动宿主服务。
+
+`cargo test --test session_mounts -- --include-ignored` 在独立 user/mount 命名空间中
+验证真实 Unix socket 跨命名空间接入、源路径替换、只读绑定和固定挂载清理；需要启用
+非特权用户命名空间，并提供 `unshare` 和 `mount`。默认测试会跳过这项环境相关验证。
