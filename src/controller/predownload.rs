@@ -16,11 +16,15 @@ use std::{
     path::Path,
 };
 
+mod cleanup;
+pub(super) use cleanup::BuildCache;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
     schema_version: u32,
-    plugin_sha256: String,
+    plugin_id: String,
+    predownload_version: String,
     architecture: String,
     distribution_sha256: String,
     software: SoftwareState,
@@ -61,6 +65,9 @@ pub(super) fn with_environment<T>(
     action: impl FnOnce(&Path, &BuildContext) -> Result<T>,
 ) -> Result<T> {
     plugin.validate_configuration(&target.parameters)?;
+    let version = plugin.metadata.predownload_version.as_deref().ok_or_else(|| {
+        Error::Invalid("预下载环境缺少 predownload_version / Predownload environment has no predownload_version".into())
+    })?;
     let architecture = &target.architecture;
     let options = toml::to_string(&target.distribution_options).map_err(|e| {
         Error::Invalid(format!(
@@ -70,7 +77,8 @@ pub(super) fn with_environment<T>(
     let options_hash = format!("{:x}", Sha256::digest(options.as_bytes()));
     let directory = store
         .predownload_path()
-        .join(&plugin.archive_sha256)
+        .join(&plugin.metadata.id)
+        .join(version)
         .join(architecture)
         .join(&options_hash);
     disk::directory(&directory)?;
@@ -149,8 +157,9 @@ pub(super) fn with_environment<T>(
                             "预下载环境记录无效 / Invalid predownload environment record: {e}"
                         ))
                     })?;
-            if record.schema_version != 1
-                || record.plugin_sha256 != plugin.archive_sha256
+            if record.schema_version != 2
+                || record.plugin_id != plugin.metadata.id
+                || record.predownload_version != version
                 || &record.architecture != architecture
                 || record.distribution_sha256 != options_hash
             {
@@ -203,8 +212,9 @@ pub(super) fn with_environment<T>(
         disk::write(
             &pending.join("environment.toml"),
             &Record {
-                schema_version: 1,
-                plugin_sha256: plugin.archive_sha256.clone(),
+                schema_version: 2,
+                plugin_id: plugin.metadata.id.clone(),
+                predownload_version: version.into(),
                 architecture: architecture.clone(),
                 distribution_sha256: options_hash.clone(),
                 software,

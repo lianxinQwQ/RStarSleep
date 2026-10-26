@@ -214,6 +214,10 @@ pub struct Metadata {
     /// Plugin release version retained in build records.
     /// 留存在构建记录中的插件发布版本。
     pub version: String,
+    /// Independent download-environment compatibility version, required by resolver plugins.
+    /// 独立下载环境兼容版本；提供解析环境的插件必须声明。
+    #[serde(default)]
+    pub predownload_version: Option<String>,
     /// System types served by this plugin; omission falls back to its identity.
     /// 此插件支持的系统类型；省略时使用插件标识。
     #[serde(default)]

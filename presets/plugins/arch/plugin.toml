@@ -4,6 +4,9 @@ schema_version = 1
 api_version = 3
 id = "arch"
 version = "0.17.1"
+# Bump only when the independent download environment becomes incompatible.
+# 仅在独立下载环境不兼容时递增。
+predownload_version = "1"
 system_types = ["arch"]
 architectures = ["x86_64"]
 cache_format = "arch-root-v1"

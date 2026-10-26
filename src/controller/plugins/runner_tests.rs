@@ -44,6 +44,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             api_version: 2,
             id: "test".into(),
             version: "1".into(),
+            predownload_version: None,
             system_types: vec!["test".into()],
             architectures: vec!["x86_64".into()],
             cache_format: "test-v1".into(),

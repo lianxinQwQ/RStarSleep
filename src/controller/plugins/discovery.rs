@@ -3,7 +3,32 @@
 use super::{Error, LoadedPlugin, Result, identifier, io_error, load};
 use crate::config::ConfigStore;
 use crate::controller::resources::archive_format;
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+/// Validate every installed plugin before deciding which cache versions may be retired.
+/// 决定可清理的缓存版本前，校验全部已安装插件。
+pub(crate) fn installed(directory: &Path) -> Result<Vec<LoadedPlugin>> {
+    candidates(directory)?
+        .iter()
+        .map(|path| load(path))
+        .collect()
+}
+
+/// Enumerate supported plugin resources in a deterministic order.
+/// 按确定性顺序枚举受支持的插件资源。
+fn candidates(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = fs::read_dir(directory)
+        .map_err(|source| io_error(directory, source))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(|source| io_error(directory, source))?;
+    paths.retain(|path| path.is_dir() || archive_format(path).is_some());
+    paths.sort();
+    Ok(paths)
+}
 /// Select a plugin using a managed system's current type and optional architecture.
 /// 使用被管理系统的当前类型和可选架构选择插件。
 ///
@@ -55,19 +80,10 @@ pub fn for_system(store: &ConfigStore, id: &str) -> Result<LoadedPlugin> {
 pub fn find(directory: &Path, system_type: &str, architecture: &str) -> Result<LoadedPlugin> {
     identifier(system_type)?;
     identifier(architecture)?;
-    let mut paths = fs::read_dir(directory)
-        .map_err(|source| io_error(directory, source))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<io::Result<Vec<_>>>()
-        .map_err(|source| io_error(directory, source))?;
-    paths.sort();
     let mut matches = Vec::new();
     let mut unsupported = Vec::new();
     let mut warnings = Vec::new();
-    for path in paths
-        .into_iter()
-        .filter(|path| path.is_dir() || archive_format(path).is_some())
-    {
+    for path in candidates(directory)? {
         let plugin = match load(&path) {
             Ok(plugin) => plugin,
             Err(error) => {

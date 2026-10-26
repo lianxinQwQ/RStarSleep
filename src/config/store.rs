@@ -111,7 +111,8 @@ impl ConfigStore {
         self.root.join("persistent")
     }
 
-    /// Download-environment caches keyed by complete plugin digest and architecture.
+    /// Download-environment caches keyed by plugin identity, declared version and architecture.
+    /// 按插件标识、声明版本及架构组织的下载环境缓存。
     pub fn predownload_path(&self) -> PathBuf {
         self.root.join("predownload")
     }

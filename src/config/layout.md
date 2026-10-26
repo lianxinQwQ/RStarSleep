@@ -22,7 +22,8 @@ Btrfs 顶层/
     ├── plugins/                        # 用户存放的插件压缩包或目录
     │   └── arch.tar.gz                 # init 安装的内嵌 Arch 预设
     ├── predownload/                    # 独立下载环境缓存
-    │   └── <完整插件SHA-256>/<架构>/<配置SHA-256>/
+    │   ├── .build.lock                 # 构建期间保护缓存使用及旧版本清理
+    │   └── <插件ID>/<predownload_version>/<架构>/<配置SHA-256>/
     │       └── completed/              # root 子卷及 environment.toml 清单
     ├── persistent/                     # 全局共享，不按插件划分
     │   └── <直属名称>/                 # 首次申请创建的独立子卷

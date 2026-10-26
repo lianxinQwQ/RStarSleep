@@ -172,6 +172,7 @@ fn build_with_sessions(
     let runtime = store.runtime_config()?;
     let work = store.build_work_dir()?;
     check_workspace(store, &work)?;
+    let predownload_cache = super::predownload::BuildCache::begin(store)?;
     let backend = super::scoped_backend::ScopedBackend {
         backend,
         pool: store.persistent_path(),
@@ -218,6 +219,10 @@ fn build_with_sessions(
     if !warnings.is_empty() {
         warning(&warnings)?;
     }
+    for value in &pending {
+        predownload_cache.check_plugin(&value.plugin)?;
+    }
+    predownload_cache.clean(store, &backend)?;
     let collection_failures = collect_plans(store, &backend, &runtime, &mut pending);
     let mut rejected = std::collections::BTreeSet::new();
     for (index, error) in collection_failures {

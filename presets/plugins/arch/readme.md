@@ -352,7 +352,10 @@ JSON 为 `{"schema_version":1,"systems":{"desktop":["linux","gdm"],"minimal":[]}
 下载环境独立 bootstrap、基础安装、身份初始化，首次运行 `predownload/install.sh` 仅补装工具，
 后续仅运行 `predownload/update.sh`；核心不再额外调用通用 update。
 `RSTAR_CONFIG_DIR` 指向插件的 `predownload/`，发行版配置变量仍取自本批已校验冻结输入。
-环境缓存按完整插件哈希、架构及发行版配置哈希保存，不依赖目标系统根。
+环境缓存按插件 ID、`predownload_version`、架构及发行版配置哈希保存，不依赖目标系统根。
+Arch 当前声明 `predownload_version = "1"`；仅在独立下载环境不兼容时修改，
+普通插件文件及发布版本变化可继续复用环境。每次 build 检查全部已安装插件，
+自动清理这些插件不再声明的环境版本；未知插件及旧纯哈希目录保留。
 
 下载脚本复用独立环境已更新的同步数据库，不再执行额外的 -Sy/-Su。
 官方需求使用空 local 数据库解析完整依赖，保留各系统选择的版本和虚拟包提供者。

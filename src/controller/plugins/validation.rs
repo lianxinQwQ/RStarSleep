@@ -27,6 +27,17 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     }
     identifier(&metadata.id)?;
     identifier(&metadata.cache_format)?;
+    if let Some(version) = &metadata.predownload_version {
+        identifier(version).map_err(|error| {
+            Error::Invalid(format!(
+                "predownload_version 无效 / Invalid predownload_version: {error}"
+            ))
+        })?;
+    } else if metadata.predownload || metadata.package_plan.is_some() {
+        return Err(Error::Invalid(
+            "独立预下载或软件包解析环境必须声明 predownload_version / Independent predownload or package resolver environments must declare predownload_version".into(),
+        ));
+    }
     if metadata.version.trim().is_empty() || metadata.architectures.is_empty() {
         return Err(Error::Invalid("插件版本和支持架构不能为空 / plugin version and supported architectures must not be empty".into()));
     }

@@ -767,6 +767,7 @@ fn directory_plugins_reject_escaping_links_and_duplicate_matches() {
 fn predownload_capability_requires_its_entrypoint_and_independent_lifecycle() {
     let root = tempfile::tempdir().unwrap();
     let mut metadata:Metadata=toml::from_str("schema_version=1\napi_version=3\nid='test'\nversion='1'\narchitectures=['x86_64']\ncache_format='test-v1'\npredownload=true\n[config]\nrequired=[]\noptional=['RSTAR_DISTRIBUTION_ARCHITECTURE','RSTAR_CONFIG_SCHEMAVERSION','RSTAR_DISTRIBUTION_DISTRIBUTION','RSTAR_CONTENT_PACKAGES']\n[cache]\nbase_system=[]\nsoftware=[]\n[tools]\nhost=[]\nsystem=[]\n").unwrap();
+    metadata.predownload_version = Some("1".into());
     for op in REQUIRED_OPERATIONS.iter().chain(SYSTEM_OPERATIONS) {
         fs::write(root.path().join(format!("{op}.sh")), "exit 0").unwrap();
     }
@@ -780,6 +781,22 @@ fn predownload_capability_requires_its_entrypoint_and_independent_lifecycle() {
         fs::write(root.path().join(file), "exit 0").unwrap();
     }
     validate_metadata(&metadata, root.path()).unwrap();
+    for version in [
+        None,
+        Some(""),
+        Some("../escape"),
+        Some("/absolute"),
+        Some("bad version"),
+    ] {
+        let mut invalid = metadata.clone();
+        invalid.predownload_version = version.map(str::to_owned);
+        assert!(
+            validate_metadata(&invalid, root.path())
+                .unwrap_err()
+                .to_string()
+                .contains("predownload_version")
+        );
+    }
     #[cfg(unix)]
     for file in ["predownload/install", "predownload/update"] {
         use std::os::unix::fs::PermissionsExt;
@@ -917,6 +934,7 @@ fn package_collection_requires_explicit_capability_and_safe_resolver_lifecycle()
     let plugin = load(&path).unwrap();
     assert!(plugin.metadata.package_plan.is_none());
     let mut metadata = plugin.metadata.clone();
+    metadata.predownload_version = Some("1".into());
     metadata.package_plan = Some(PackagePlanRequirements {
         base_packages: vec!["base".into()],
         tools: vec!["python3".into()],
@@ -933,6 +951,14 @@ fn package_collection_requires_explicit_capability_and_safe_resolver_lifecycle()
     }
     assert!(!metadata.predownload);
     assert!(validate_metadata(&metadata, plugin.root()).is_ok());
+    let mut missing_version = metadata.clone();
+    missing_version.predownload_version = None;
+    assert!(
+        validate_metadata(&missing_version, plugin.root())
+            .unwrap_err()
+            .to_string()
+            .contains("predownload_version")
+    );
     let mut invalid = metadata.clone();
     invalid.api_version = 2;
     assert!(validate_metadata(&invalid, plugin.root()).is_err());

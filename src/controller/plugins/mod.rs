@@ -13,6 +13,7 @@ mod persistent;
 mod runner;
 mod tools;
 mod validation;
+pub(crate) use discovery::installed;
 pub use discovery::{find, for_system};
 pub use loader::load;
 pub use model::{
