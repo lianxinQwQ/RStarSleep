@@ -32,6 +32,8 @@ impl BuildCache {
         }
         let root = store.predownload_path();
         disk::directory(&root)?;
+        // Preserve the file identity; unlinking it would let builds lock different files.
+        // 保留文件身份；删除锁文件会使不同构建锁定不同文件，破坏互斥。
         let path = root.join(".build.lock");
         disk::checked(&path)?;
         let lock = OpenOptions::new()
@@ -166,4 +168,42 @@ fn directories(path: &Path) -> Result<Vec<PathBuf>> {
     }
     paths.sort();
     Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Explicit unlocking releases duplicated descriptions instead of waiting for every close.
+    /// 显式解锁会释放复制的文件描述所持有的锁，无需等待所有描述关闭。
+    #[test]
+    fn build_cache_drop_unlocks_even_with_a_duplicated_file_description() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("plugins")).unwrap();
+        let store = ConfigStore::new(directory.path()).unwrap();
+        let cache = BuildCache::begin(&store).unwrap();
+        let duplicate = cache._lock.0.try_clone().unwrap();
+        assert!(BuildCache::begin(&store).is_err());
+        drop(cache);
+        let reacquired = BuildCache::begin(&store).unwrap();
+        assert!(store.predownload_path().join(".build.lock").is_file());
+        drop(reacquired);
+        drop(duplicate);
+    }
+
+    /// Executed plugin processes cannot retain the build lock after their parent is killed.
+    /// 执行后的插件进程不能在父进程被强杀后继续持有构建锁。
+    #[cfg(unix)]
+    #[test]
+    fn build_cache_lock_descriptor_closes_on_exec() {
+        use std::os::fd::AsRawFd;
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("plugins")).unwrap();
+        let store = ConfigStore::new(directory.path()).unwrap();
+        let cache = BuildCache::begin(&store).unwrap();
+        let flags = unsafe { libc::fcntl(cache._lock.0.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags, -1);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    }
 }

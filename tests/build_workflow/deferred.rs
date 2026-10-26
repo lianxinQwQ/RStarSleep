@@ -731,6 +731,82 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
     assert!(!fixture.store.root().join("RStarSleep").exists());
 }
 
+/// The kernel releases the real build lock on Ctrl+C, termination and uncatchable kill.
+/// 真实构建进程收到 Ctrl+C、终止及不可捕获的强杀后，内核会释放锁。
+#[cfg(unix)]
+#[test]
+fn interrupted_build_process_releases_cache_lock_without_removing_its_file() {
+    use std::{
+        io::{BufRead, BufReader},
+        os::unix::process::ExitStatusExt,
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        fs::write(
+            layout.config.join("build/inherit.conf"),
+            "[Inheritance]\nCopyOnWriteBoot=/boot/\nCopyOnWriteBoot=/usr/lib/modules/\n",
+        )
+        .unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))
+            .args(["build", "desktop", "--inheritance-root", "/", "--root"])
+            .arg(fixture.store.root())
+            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (ready, receive) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let line = line.unwrap();
+                if line.contains("3 秒") {
+                    let _ = ready.send(());
+                }
+            }
+        });
+        if let Err(error) = receive.recv_timeout(Duration::from_secs(10)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            reader.join().unwrap();
+            panic!("构建未进入持锁等待: {error} / Build did not enter its locked wait: {error}");
+        }
+        let path = fixture.store.predownload_path().join(".build.lock");
+        let probe = fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let held = probe.try_lock().is_err();
+        let sent = unsafe { libc::kill(child.id() as i32, signal) };
+        let status = child.wait().unwrap();
+        reader.join().unwrap();
+        assert!(
+            held,
+            "进程运行时必须持锁 / The running process must hold the lock"
+        );
+        assert_eq!(sent, 0);
+        assert_eq!(status.signal(), Some(signal));
+        assert!(path.is_file());
+        probe.try_lock().expect(
+            "中断后旧文件不应继续占锁 / The old file must not remain locked after interruption",
+        );
+        drop(probe);
+        fs::remove_file(layout.config.join("build/inherit.conf")).unwrap();
+        build_with_backend(
+            &fixture.store,
+            Some("desktop"),
+            &SimulatedBackend::default(),
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn script_created_subvolumes_survive_cache_publication_and_first_boot_without_inheritance_entries()
 {

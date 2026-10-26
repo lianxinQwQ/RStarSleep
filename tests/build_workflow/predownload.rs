@@ -176,6 +176,80 @@ fn build_cache_lock_prevents_concurrent_retirement() {
     assert!(backend.events.borrow().is_empty());
 }
 
+/// Failed environment operations release both locks while keeping their stable lock files.
+/// 环境操作失败后释放两层锁，同时保留稳定的锁文件。
+#[test]
+fn failed_predownload_releases_build_and_environment_locks() {
+    let fixture = Fixture::with_predownload(true);
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    backend.fail_operation.borrow_mut().replace("predownload");
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    let pool = fixture.store.predownload_path();
+    let environment = fs::read_dir(pool.join("arch/1/x86_64"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    for path in [pool.join(".build.lock"), environment.join("build.lock")] {
+        let file = fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.try_lock()
+            .expect("错误返回后锁必须已释放 / Lock must be released after an error return");
+    }
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+}
+
+/// Panic unwinding releases the build lock before the next invocation inspects the same cache.
+/// panic 栈展开会在下次调用检查同一缓存前释放构建锁。
+#[test]
+fn panicking_preflight_callback_releases_build_cache_lock() {
+    use rstarsleep::controller::{BuildOptions, build_with_options_and_backend_and_warning};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let fixture = Fixture::with_predownload(true);
+    fixture.system("desktop", &[]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    let missing = fixture
+        .store
+        .root()
+        .parent()
+        .unwrap()
+        .join("missing-lock-test-source");
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", missing.display()),
+    )
+    .unwrap();
+    let backend = SimulatedBackend::default();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        build_with_options_and_backend_and_warning(
+            &fixture.store,
+            Some("desktop"),
+            &BuildOptions {
+                inheritance_root: Some("/".into()),
+            },
+            &backend,
+            |_| panic!("注入预检回调 panic / Injected preflight callback panic"),
+        )
+    }));
+    assert!(result.is_err());
+    let file = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(fixture.store.predownload_path().join(".build.lock"))
+        .unwrap();
+    file.try_lock()
+        .expect("panic 后锁必须已释放 / Lock must be released after panic");
+    drop(file);
+    fs::remove_file(layout.config.join("build/inherit.conf")).unwrap();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+}
+
 /// Reject symlink versions before removing any other obsolete environment.
 /// 删除任何其他废弃环境前，拒绝符号链接版本。
 #[test]
