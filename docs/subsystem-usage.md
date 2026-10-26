@@ -96,6 +96,11 @@ dev/inode 和容器可见挂载并重新绑定。isolated 使用容器私有用�
 off 禁用这些资源。本地文件参数要求容器实际可见；主客路径不一致时提示使用客体路径。
 当前本地 file URL 要求绝对未编码路径，portal 自动文件传递尚未支持。
 
+Wayland 与本地 X11/XWayland 可以同时接入，分别使用调用者的 `WAYLAND_DISPLAY`
+和 `DISPLAY`。`DISPLAY` 不要求同时设置 `XAUTHORITY`；只有调用者显式提供非空
+`XAUTHORITY` 时才校验并只读挂载该文件、设置容器内认证文件路径。显式提供的文件
+无效时仍报错退出。不需要 cookie 文件的 XWayland 会话无需额外设置认证路径。
+
 管理员声明的持久 Mount 由 nspawn 注入。运行时通过独立只读 fstab 覆盖去掉管理器
 挂载块，保留受支持的 guest tmpfs/bind 条目；不改写共享 `/etc` 或持久 fstab。
 需要宿主设备或文件系统的其他 fstab 条目会报错，须改为显式 runtime mounts。

@@ -61,11 +61,11 @@ pub fn refresh(
     if runtime.config.session_mode == "off" {
         return Ok(());
     }
+    let mut resources = resources(uid, environment)?;
     let mut sessions = SESSIONS
         .lock()
         .map_err(|_| Error::Invalid("会话锁损坏 / session lock poisoned".into()))?;
     let context = context(runtime)?;
-    let mut resources = resources(uid, environment)?;
     let result = (|| -> Result<()> {
         private_bus(runtime, uid, &context)?;
         if runtime.config.session_mode == "native" {
@@ -170,10 +170,12 @@ pub fn command_arguments(
         if let Some(value) = environment.get("DISPLAY").filter(|s| !s.is_empty()) {
             xdisplay(value)?;
             values.insert("DISPLAY".into(), value.clone());
-            values.insert(
-                "XAUTHORITY".into(),
-                format!("{}/rstarsleep/Xauthority", host.display()),
-            );
+            if environment.get("XAUTHORITY").is_some_and(|s| !s.is_empty()) {
+                values.insert(
+                    "XAUTHORITY".into(),
+                    format!("{}/rstarsleep/Xauthority", host.display()),
+                );
+            }
             values
                 .entry("XDG_SESSION_TYPE".into())
                 .or_insert_with(|| "x11".into());

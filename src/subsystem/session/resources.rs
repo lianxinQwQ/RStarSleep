@@ -159,6 +159,27 @@ fn authority(path: &Path, uid: u32) -> Result<File> {
     Ok(file)
 }
 
+/// Forward an explicit Xauthority file without requiring cookie authentication.
+/// 转发显式 Xauthority 文件，不强制要求 cookie 认证。
+/// # Arguments
+/// - `uid`, `environment`: Authenticated owner and caller session hints. 认证属主及调用者会话提示。
+pub(super) fn xauthority(
+    uid: u32,
+    environment: &BTreeMap<String, String>,
+) -> Result<Option<Resource>> {
+    environment
+        .get("XAUTHORITY")
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            Ok(Resource {
+                source: authority(Path::new(path), uid)?,
+                target: PathBuf::from(format!("/run/user/{uid}/rstarsleep/Xauthority")),
+                read_only: true,
+            })
+        })
+        .transpose()
+}
+
 /// Build descriptor-pinned GUI/audio resources from an exact caller runtime.
 /// 从准确调用者运行目录建立描述符固定的图形和音频资源。
 /// # Arguments
@@ -173,6 +194,16 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             "XDG_RUNTIME_DIR 与已认证调用者不匹配 / XDG_RUNTIME_DIR does not match the authenticated caller".into(),
         ));
     }
+    let display = environment
+        .get("DISPLAY")
+        .filter(|value| !value.is_empty())
+        .map(|value| xdisplay(value))
+        .transpose()?;
+    let xauthority = if display.is_some() {
+        xauthority(uid, environment)?
+    } else {
+        None
+    };
     let runtime = match runtime_directory(&host, uid) {
         Ok(runtime) => Some(runtime),
         Err(Error::Io { source, .. })
@@ -215,8 +246,7 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             read_only: false,
         });
     }
-    if let Some(display) = environment.get("DISPLAY").filter(|s| !s.is_empty()) {
-        let name = xdisplay(display)?;
+    if let Some(name) = display {
         let directory = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -232,17 +262,9 @@ pub(super) fn resources(uid: u32, environment: &BTreeMap<String, String>) -> Res
             target: PathBuf::from("/tmp/.X11-unix").join(name),
             read_only: false,
         });
-        let path = environment
-            .get("XAUTHORITY")
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                Error::Invalid("本地 X11 转发需要显式指定 XAUTHORITY / local X11 forwarding requires an explicit XAUTHORITY".into())
-            })?;
-        resources.push(Resource {
-            source: authority(Path::new(path), uid)?,
-            target: host.join("rstarsleep/Xauthority"),
-            read_only: true,
-        });
+        if let Some(authority) = xauthority {
+            resources.push(authority);
+        }
     }
     if let Some(runtime) = &runtime {
         let pipewire = component(
