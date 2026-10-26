@@ -33,8 +33,8 @@ pub struct BuildOptions {
 ///   可选所选系统；省略选择全部。
 /// # Errors
 ///
-/// Returns build failures, continuing independent systems in an all-system run.
-/// 返回构建错误；全部构建时继续尝试其他独立系统。
+/// Returns preflight failures before any build; later failures allow independent systems to continue.
+/// 预检失败时在任何构建前返回；后续构建失败时继续尝试其他独立系统。
 pub fn build(store: &ConfigStore, system: Option<&str>) -> Result<Vec<BuildOutcome>> {
     build_with_backend(store, system, &SystemBackend)
 }
@@ -215,12 +215,17 @@ fn build_with_sessions(
             Err(error) => failures.push(format!("{id}: {error}")),
         }
     }
-    let warnings = warnings.messages();
-    if !warnings.is_empty() {
-        warning(&warnings)?;
+    // Reject the entire selection before warnings or build work if any input failed preflight.
+    // 任一输入预检失败时，在警告或构建操作前拒绝本次全部所选系统。
+    if !failures.is_empty() {
+        return Err(Error::Batch(failures));
     }
     for value in &pending {
         predownload_cache.check_plugin(&value.plugin)?;
+    }
+    let warnings = warnings.messages();
+    if !warnings.is_empty() {
+        warning(&warnings)?;
     }
     predownload_cache.clean(store, &backend)?;
     let collection_failures = collect_plans(store, &backend, &runtime, &mut pending);

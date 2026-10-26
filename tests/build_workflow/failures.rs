@@ -271,43 +271,105 @@ fn unmarked_cache_directory_is_rejected_before_plugin_execution() {
     assert!(backend.events.borrow().is_empty());
 }
 
-/// Verify an all-system run continues after malformed inputs and returns aggregated failure.
-/// 验证全系统构建在输入损坏后继续并返回汇总失败。
+/// Reject malformed batch inputs before warnings, cache cleanup, or any system build.
+/// 批量输入格式错误时，在警告、缓存清理及任何系统构建前退出。
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn batch_build_continues_after_one_system_has_malformed_config() {
+fn batch_malformed_config_stops_all_systems_before_warning_or_build() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+
+    for (broken, good) in [("a-broken", "z-good"), ("z-broken", "a-good")] {
+        let fixture = Fixture::with_predownload(true);
+        fixture.system(broken, &[]);
+        fixture.system(good, &["editor"]);
+        let broken_layout = fixture.store.system_layout(broken).unwrap();
+        let good_layout = fixture.store.system_layout(good).unwrap();
+        let invalid = format!("{}missing-equals\n", "# padding / 填充\n".repeat(23));
+        fs::write(broken_layout.config.join("build/config.conf"), invalid).unwrap();
+        fs::write(
+            good_layout.config.join("build/inherit.conf"),
+            "[Inheritance]\nCopyOnWriteBuild=/missing-source\n",
+        )
+        .unwrap();
+        let obsolete = fixture.store.predownload_path().join("arch/obsolete");
+        fs::create_dir_all(&obsolete).unwrap();
+        fs::write(obsolete.join("sentinel"), "keep").unwrap();
+        for layout in [&broken_layout, &good_layout] {
+            fs::write(layout.cache.join("sentinel"), "keep").unwrap();
+        }
+
+        let backend = SimulatedBackend::default();
+        let error = build_with_backend_and_warning(&fixture.store, None, &backend, |_| {
+            panic!("配置错误必须在警告回调前退出 / Configuration errors must exit before the warning callback")
+        })
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Batch(ref errors) if errors.len() == 1
+                && errors[0].contains(broken)
+                && errors[0].contains("config.conf:24")
+                && errors[0].contains("设置必须包含 = / setting must contain =")),
+            "{error}"
+        );
+        assert!(backend.events.borrow().is_empty());
+        assert!(backend.snapshots.borrow().is_empty());
+        assert_eq!(
+            fs::read_to_string(obsolete.join("sentinel")).unwrap(),
+            "keep"
+        );
+        for layout in [&broken_layout, &good_layout] {
+            assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
+            assert!(!layout.root.join("version-counter").exists());
+            assert!(!layout.root.join("build-current.toml").exists());
+            assert_eq!(
+                fs::read_to_string(layout.cache.join("sentinel")).unwrap(),
+                "keep"
+            );
+        }
+    }
+}
+
+/// Report every batch configuration failure before the shared warning countdown.
+/// 在统一警告倒计时前报告本批全部配置错误。
+#[test]
+fn batch_semantic_config_errors_exit_before_warning_or_build() {
+    use rstarsleep::controller::build_with_backend_and_warning;
+
     let fixture = Fixture::new();
-    fixture.system("a-broken", &[]);
-    fixture.system("z-good", &["editor"]);
-    fs::write(
-        fixture
-            .store
-            .system_layout("a-broken")
-            .unwrap()
-            .config
-            .join("build/config.conf"),
-        "broken = [",
-    )
-    .unwrap();
+    for (id, settings) in [
+        (
+            "a-good",
+            "[Inheritance]\nCopyOnWriteBuild=/missing-source\n",
+        ),
+        ("b-environment", "[Environment]\nA=x\nA=y\n"),
+        ("c-plugin", "[Content]\nUndeclaredSetting=value\n"),
+    ] {
+        fixture.system(id, &[]);
+        let layout = fixture.store.system_layout(id).unwrap();
+        fs::write(layout.config.join("build/extra.conf"), settings).unwrap();
+    }
     let backend = SimulatedBackend::default();
-    let error = build_with_backend(&fixture.store, None, &backend).unwrap_err();
+    let error = build_with_backend_and_warning(&fixture.store, None, &backend, |_| {
+        panic!("配置错误必须在警告回调前退出 / Configuration errors must exit before the warning callback")
+    })
+    .unwrap_err();
     assert!(
-        matches!(error, Error::Batch(ref errors) if errors.len() == 1 && errors[0].contains("a-broken"))
+        matches!(error, Error::Batch(ref errors) if errors.len() == 2
+            && errors[0].contains("b-environment")
+            && errors[0].contains("must be assigned exactly once")
+            && errors[1].contains("c-plugin")
+            && errors[1].contains("undeclared settings")),
+        "{error}"
     );
-    let good = fixture
-        .store
-        .system_layout("z-good")
-        .unwrap()
-        .versions
-        .join("v00000001");
-    assert_eq!(
-        record(&good.join("state.toml"))["state"].as_str(),
-        Some("complete")
-    );
-    backend.check_subvolume(&good.join("root"), false).unwrap();
+    assert!(backend.events.borrow().is_empty());
+    assert!(backend.snapshots.borrow().is_empty());
+    for id in ["a-good", "b-environment", "c-plugin"] {
+        let layout = fixture.store.system_layout(id).unwrap();
+        assert_eq!(fs::read_dir(layout.versions).unwrap().count(), 0);
+        assert!(!layout.root.join("version-counter").exists());
+    }
 }
 
 /// Verify lock contention allocates no version and executes no plugin.
