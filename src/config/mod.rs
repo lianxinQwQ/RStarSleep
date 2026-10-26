@@ -6,6 +6,8 @@
 #![doc = include_str!("layout.md")]
 
 mod accounts;
+mod edit;
+pub use edit::lock_configuration;
 mod build;
 mod environment;
 mod filesystem;

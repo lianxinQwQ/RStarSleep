@@ -115,6 +115,7 @@ impl Preflight {
     pub fn begin(store: &ConfigStore, id: &str, sessions: &mut PreflightSessions) -> Result<Self> {
         let layout = store.system_layout(id)?;
         let lock = lock_system(&layout)?;
+        let _configuration = crate::config::lock_configuration(&layout.root)?;
         let session = sessions.create()?;
         let log = super::logging::BuildLog::new(&session)?;
         let config = session.join("config");
