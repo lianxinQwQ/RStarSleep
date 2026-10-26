@@ -33,6 +33,9 @@ pub(super) struct Attempt {
     /// Latest prior attempt, including failed builds.
     /// 最新过往尝试，包括失败构建。
     pub previous: Option<String>,
+    /// All prior attempts in descending numeric order, captured under the system lock.
+    /// 在系统锁内取得的全部过往尝试，按数字序号倒序排列。
+    pub history: Vec<String>,
     /// Current version record directory outside all roots.
     /// 所有根之外的当前版本记录目录。
     pub directory: PathBuf,
@@ -205,7 +208,7 @@ impl Attempt {
             lock,
         } = inputs;
         disk::directory(&layout.versions)?;
-        let mut previous = None;
+        let mut history = Vec::new();
         let mut highest = 0u64;
         for entry in fs::read_dir(&layout.versions).map_err(|e| disk::io(&layout.versions, e))? {
             let entry = entry.map_err(|e| disk::io(&layout.versions, e))?;
@@ -230,12 +233,13 @@ impl Attempt {
                         "版本记录不是目录: {text} / Version record is not a directory: {text}"
                     )));
                 }
-                if number > highest {
-                    highest = number;
-                    previous = Some(text.into());
-                }
+                highest = highest.max(number);
+                history.push((number, text.to_owned()));
             }
         }
+        history.sort_by(|a, b| b.cmp(a));
+        let history: Vec<_> = history.into_iter().map(|(_, version)| version).collect();
+        let previous = history.first().cloned();
         let counter = layout.root.join("version-counter");
         if disk::exists(&counter)? {
             let saved = fs::read_to_string(&counter)
@@ -263,6 +267,7 @@ impl Attempt {
             layout,
             version,
             previous,
+            history,
             directory,
             _lock: lock,
         })

@@ -1,6 +1,6 @@
 //! Validate completed stages and atomically publish read-only CoW caches.
 //! 校验已完成阶段并原子发布只读 CoW 缓存。
-use super::{BuildBackend, Error, Result, frozen::config_hash, fs as disk};
+use super::{BuildBackend, Error, Result, frozen::config_hash, fs as disk, records::Attempt};
 use crate::software::SoftwareState;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -256,8 +256,39 @@ fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
     record.software.validate()
 }
 
-/// Load only the selected prior attempt's completed and compatible stage.
-/// 仅加载所选过往尝试中已完成且兼容的阶段。
+/// Find the newest completed compatible stage accepted by the caller, preserving real errors.
+/// 倒序查找调用方接受的最新已完成兼容阶段，保留实际错误。
+/// # Arguments
+/// - `backend`: Checked storage backend. 经检查的存储后端。
+/// - `attempt`: Locked attempt with descending prior versions. 带倒序历史版本的已锁定尝试。
+/// - `stage`: Required completed stage. 要求已完成的阶段。
+/// - `identity`: Current compatibility requirements. 当前兼容性要求。
+/// - `accept`: Additional execution-input checks. 额外的执行输入检查。
+pub(super) fn find(
+    backend: &impl BuildBackend,
+    attempt: &Attempt,
+    stage: &str,
+    identity: &Identity,
+    mut accept: impl FnMut(&Cache) -> Result<bool>,
+) -> Result<Option<Cache>> {
+    for version in &attempt.history {
+        if let Some(cache) = load(
+            backend,
+            &attempt.layout.cache.join(version),
+            &attempt.layout.versions.join(version).join("config"),
+            version,
+            stage,
+            identity,
+        )? && accept(&cache)?
+        {
+            return Ok(Some(cache));
+        }
+    }
+    Ok(None)
+}
+
+/// Load one prior attempt's completed and compatible stage.
+/// 加载一个过往尝试中已完成且兼容的阶段。
 /// # Arguments
 ///
 /// - `backend`: Real or simulated CoW validation.

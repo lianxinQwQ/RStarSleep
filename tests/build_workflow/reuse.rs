@@ -145,6 +145,43 @@ fn fresh_caches_skip_all_three_stages_and_keep_time_and_inventory() {
     }
 }
 
+/// Continue through expired or input-mismatched script candidates to a fresh matching history.
+/// 脚本候选过期或输入不匹配时，继续倒序查找未过期且匹配的历史缓存。
+#[test]
+fn script_reuse_searches_past_expired_and_mismatched_candidates() {
+    for expired in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &["editor"]);
+        enable(&fixture);
+        script(&fixture);
+        let backend = SimulatedBackend::default();
+        let first = build(&fixture, &backend);
+        let second = build(&fixture, &backend);
+        edit_record(&fixture, &second.version, "script", |r| {
+            if expired {
+                r["reuse"]["executed_at_unix"] = 1.into();
+            } else {
+                r["reuse"]["inputs_sha256"] = "0".repeat(64).into();
+            }
+        });
+        backend.events.borrow_mut().clear();
+        let outcome = build(&fixture, &backend);
+        assert_eq!(backend.count("script"), 0);
+        let original = record(&fixture.cache(&first.version, "script.toml"));
+        let reused = record(&fixture.cache(&outcome.version, "script.toml"));
+        assert_eq!(
+            reused["source_version"].as_str(),
+            Some(first.version.as_str())
+        );
+        assert_eq!(reused["reuse"], original["reuse"]);
+        assert_eq!(
+            fs::read_to_string(outcome.root.join("script-result")).unwrap(),
+            "original"
+        );
+        fixture.cleaned(&outcome.version);
+    }
+}
+
 /// Reject expired or future executions and downstream outputs from an older base.
 /// 拒绝过期或未来执行记录及来自旧基础的下游产物。
 /// # Arguments

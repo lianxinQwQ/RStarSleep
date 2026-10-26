@@ -96,8 +96,10 @@ fn no_source_warns_before_operations_and_skips_all_inheritance_but_keeps_fstab()
     );
 }
 
+/// Historical scripts are reusable only when the current source-presence fingerprint matches.
+/// 只有当前来源存在性指纹匹配时，历史脚本缓存才能复用。
 #[test]
-fn switching_between_absent_and_present_sources_invalidates_script_reuse() {
+fn source_presence_changes_select_matching_historical_script_cache() {
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     fs::write(
@@ -133,7 +135,11 @@ fn switching_between_absent_and_present_sources_invalidates_script_reuse() {
             .unwrap()
             .remove(0);
     assert!(!third.root.join("saved").exists());
-    assert_eq!(backend.count("post_maintenance"), 3);
+    assert_eq!(backend.count("post_maintenance"), 2);
+    assert_eq!(
+        record(&fixture.cache(&third.version, "script.toml"))["source_version"].as_str(),
+        Some(first.version.as_str())
+    );
 }
 
 #[test]

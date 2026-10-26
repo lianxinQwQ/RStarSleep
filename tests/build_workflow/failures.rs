@@ -130,14 +130,14 @@ fn failed_packages_keep_base_cache_and_next_attempt_reuses_it() {
     fixture.cleaned(&outcome.version);
 }
 
-/// Verify the latest failed attempt prevents fallback to an older completed version.
-/// 验证最新失败尝试阻止回退到更早完成版本。
+/// Recover completed historical stages when the latest attempt failed before committing caches.
+/// 最新尝试在提交缓存前失败时，恢复历史已完成阶段。
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn only_latest_attempt_is_considered_for_cache_reuse() {
+fn failed_latest_attempt_reuses_older_completed_caches() {
     let fixture = Fixture::new();
     fixture.system("desktop", &["editor"]);
     let backend = SimulatedBackend::default();
@@ -149,9 +149,16 @@ fn only_latest_attempt_is_considered_for_cache_reuse() {
         .unwrap()
         .remove(0);
     assert_eq!(outcome.version, "v00000003");
-    assert_eq!(backend.count("bootstrap"), 1);
-    assert_eq!(backend.count("system_init"), 1);
-    assert_eq!(backend.count("update"), 1);
+    assert_eq!(backend.count("bootstrap"), 0);
+    assert_eq!(backend.count("system_init"), 0);
+    assert_eq!(backend.count("update"), 2);
+    for stage in ["base-system", "packages"] {
+        assert_eq!(
+            record(&fixture.cache(&outcome.version, &format!("{stage}.toml")))["source_version"]
+                .as_str(),
+            Some("v00000001")
+        );
+    }
 }
 
 /// Verify failed CoW restore aborts before plugins and leaves no copy fallback.

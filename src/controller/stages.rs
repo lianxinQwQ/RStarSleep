@@ -69,15 +69,12 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   本基础步骤的过往缓存，若可用。
     /// - `packages`: This package step's prior cache, if available.
     ///   本软件包步骤的过往缓存，若可用。
-    /// - `scripts`: Prior script cache eligible for time-bounded validation.
-    ///   待限时校验的过往脚本缓存。
     /// - `owned`: Scratch roots to clean after the attempt.
     ///   此次尝试后需要清理的临时根。
     pub(super) fn run(
         &self,
         base: Option<Cache>,
         packages: Option<Cache>,
-        scripts: Option<Cache>,
         owned: &mut Vec<PathBuf>,
     ) -> Result<BuildOutcome> {
         let id = &self.context.system_id;
@@ -91,7 +88,7 @@ impl<B: BuildBackend> Stages<'_, B> {
             id,
             "构建时继承、软件维护后处理和用户脚本（3/4）",
             "Build-time inheritance, post-maintenance and user scripts (3/4)",
-            || self.script_step(&packages, scripts.as_ref(), owned),
+            || self.script_step(&packages, owned),
         )?;
         progress::run(
             id,
@@ -396,16 +393,9 @@ impl<B: BuildBackend> Stages<'_, B> {
     ///   共享阶段输入。
     /// - `packages`: Completed software stage.
     ///   已完成软件阶段。
-    /// - `cached`: Previous script-stage output, when available.
-    ///   过往脚本阶段产物，若可用。
     /// - `owned`: Scratch roots to clean on success or failure.
     ///   成功或失败时需要清理的临时根。
-    fn script_step(
-        &self,
-        packages: &Cache,
-        cached: Option<&Cache>,
-        owned: &mut Vec<PathBuf>,
-    ) -> Result<Cache> {
+    fn script_step(&self, packages: &Cache, owned: &mut Vec<PathBuf>) -> Result<Cache> {
         let account_inputs = if self.inheritance_root.is_some() {
             super::accounts::fingerprint(self.plugin)?
         } else {
@@ -450,14 +440,21 @@ impl<B: BuildBackend> Stages<'_, B> {
             .transpose()?;
         if allow_reuse
             && let Some(inputs) = &inputs
-            && reuse::matches(
-                cached,
-                self.reuse_minutes,
-                &self.plugin.archive_sha256,
-                inputs,
+            && let Some(cached) = cache::find(
+                self.backend,
+                self.attempt,
+                "script",
+                self.software_identity,
+                |cached| {
+                    reuse::matches(
+                        Some(cached),
+                        self.reuse_minutes,
+                        &self.plugin.archive_sha256,
+                        inputs,
+                    )
+                },
             )?
         {
-            let cached = cached.unwrap();
             if self.plugin.metadata.query_package_files {
                 let source = self
                     .attempt
@@ -482,7 +479,7 @@ impl<B: BuildBackend> Stages<'_, B> {
                 )
                 .map_err(|e| super::Error::Invalid(e.to_string()))?;
             }
-            return self.reuse(cached);
+            return self.reuse(&cached);
         }
         let root = self.scratch.join("script-root");
         owned.push(root.clone());

@@ -1,5 +1,5 @@
-//! Sequential version orchestration with latest-attempt cache selection.
-//! 使用最新尝试缓存选择的顺序版本编排。
+//! Sequential version orchestration with descending historical cache selection.
+//! 按历史版本倒序选择缓存的顺序版本编排。
 use super::{
     BuildBackend, BuildContext, BuildOutcome, Error, Result, SystemBackend,
     cache::{self, Cache, Identity},
@@ -911,10 +911,11 @@ fn prepare_system(
             let (base, packages) = previous_caches(&attempt, &identity, loaded, backend)?;
             if let Some(version) = &attempt.previous {
                 let previous = attempt.layout.versions.join(version).join("config");
-                // Completed donors above have verified provenance. A failed attempt without a
-                // readable config has no donor; retire older caches and install independently.
-                // 上方完成来源已校验出处。失败尝试若无可读配置则没有来源；清理旧缓存并独立安装。
-                if fs::exists(&previous)?
+                // Keep compatible historical donors even when the latest attempt changed inputs.
+                // 即使最新尝试改变了输入，也保留已找到的兼容历史来源。
+                if base.is_none()
+                    && packages.is_none()
+                    && fs::exists(&previous)?
                     && loaded
                         .cache_configuration_hash(&previous, false)
                         .ok()
@@ -927,7 +928,8 @@ fn prepare_system(
                         "Base configuration changed; clearing base and later caches",
                     );
                     cache::clear_from(backend, &attempt.layout.cache, "base-system")?;
-                } else if fs::exists(&previous)?
+                } else if packages.is_none()
+                    && fs::exists(&previous)?
                     && loaded.cache_configuration_hash(&previous, true).ok()
                         != Some(loaded.cache_configuration_hash(&attempt.config, true)?)
                 {
@@ -1117,22 +1119,11 @@ fn build_system(
         let mut software_identity = identity.clone();
         software_identity.options_sha256 =
             loaded.cache_configuration_hash(&attempt.config, true)?;
-        let scripts = if prepared.reuse_minutes > 0 {
-            if let Some(version) = &attempt.previous {
-                cache::load(
-                    backend,
-                    &attempt.layout.cache.join(version),
-                    &attempt.layout.versions.join(version).join("config"),
-                    version,
-                    "script",
-                    &software_identity,
-                )?
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        if prepared.reuse_minutes > 0 {
+            // Validate the nearest script donor before running stages; actual inputs select it later.
+            // 执行阶段前校验最近脚本来源，稍后再按实际输入选择命中。
+            cache::find(backend, attempt, "script", &software_identity, |_| Ok(true))?;
+        }
         let stages = Stages {
             backend,
             plugin: loaded,
@@ -1150,7 +1141,7 @@ fn build_system(
             source_root: prepared.source_root.as_ref(),
             inheritance_root: prepared.inheritance_root.as_deref(),
         };
-        let outcome = stages.run(base, packages, scripts, &mut owned)?;
+        let outcome = stages.run(base, packages, &mut owned)?;
         let source = if prepared.deduplicate_packages {
             Some(super::dedup::Source::load(
                 backend,
@@ -1219,8 +1210,8 @@ fn build_system(
     }
 }
 
-/// Check both stages from only the highest-numbered prior attempt, never older versions.
-/// 仅检查序号最大过往尝试的两个阶段，绝不搜索更早版本。
+/// Find each stage's newest compatible cache independently across all prior attempts.
+/// 在全部过往尝试中分别查找各阶段最新的兼容缓存。
 /// # Arguments
 ///
 /// - `attempt`: Current attempt with selected predecessor.
@@ -1235,29 +1226,12 @@ fn previous_caches(
     plugin: &LoadedPlugin,
     backend: &impl BuildBackend,
 ) -> Result<(Option<Cache>, Option<Cache>)> {
-    let Some(version) = &attempt.previous else {
-        return Ok((None, None));
-    };
-    let directory = attempt.layout.cache.join(version);
-    let config = attempt.layout.versions.join(version).join("config");
     let mut software_identity = identity.clone();
     software_identity.options_sha256 = plugin.cache_configuration_hash(&attempt.config, true)?;
-    let base = cache::load(
-        backend,
-        &directory,
-        &config,
-        version,
-        "base-system",
-        identity,
-    )?;
-    let packages = cache::load(
-        backend,
-        &directory,
-        &config,
-        version,
-        "packages",
-        &software_identity,
-    )?;
+    let base = cache::find(backend, attempt, "base-system", identity, |_| Ok(true))?;
+    let packages = cache::find(backend, attempt, "packages", &software_identity, |_| {
+        Ok(true)
+    })?;
     // The base identity must match even when only the software donor is available.
     // 即使仅有软件来源，基础身份也必须相符。
     Ok((base, packages))
