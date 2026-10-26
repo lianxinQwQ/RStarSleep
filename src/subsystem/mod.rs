@@ -1,20 +1,23 @@
 //! Run the current built artifact without selecting historical versions.
 //! 运行当前构建产物，不选择历史版本。
+pub mod admin;
 pub mod client;
 mod commands;
 mod config;
+pub mod console;
 pub mod daemon;
 pub mod desktop;
 mod execution;
 pub mod exports;
 mod filesystem;
-pub mod guest;
 mod identity;
+pub mod management;
 mod model;
 pub(crate) mod package_files;
 mod preparation;
 pub mod protocol;
 pub mod session;
+pub mod ssh;
 pub mod terminal;
 mod trust;
 

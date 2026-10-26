@@ -12,6 +12,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// 保存存储、协议与应用错误的上下文。
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("SSH 操作失败 / SSH operation failed: {0}")]
+    Ssh(#[from] russh::Error),
     #[error(transparent)]
     Config(#[from] crate::config::Error),
     #[error(transparent)]

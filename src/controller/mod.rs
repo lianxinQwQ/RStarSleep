@@ -49,6 +49,7 @@ pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount
 pub use workflow::{
     BuildOptions, build, build_with_backend, build_with_backend_and_warning, build_with_options,
     build_with_options_and_backend, build_with_options_and_backend_and_warning,
+    check_configuration,
 };
 
 /// Acquire the shared build, startup and cleanup system lock.

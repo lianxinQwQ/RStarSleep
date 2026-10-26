@@ -22,9 +22,10 @@ pub(crate) const BUILTIN_COMMANDS: &[&str] = &[
     "help",
     "subsystem",
     "daemon",
-    "guest",
     "__export-user",
     "__session-mount",
+    "__console-recorder",
+    "__management-job",
 ];
 
 use std::ffi::OsString;
@@ -43,7 +44,6 @@ const USAGE: &str = "用法：
   RStarSleep clean <系统标识> <版本> [--root <管理根绝对路径>]
   RStarSleep daemon install|run [--root <管理根绝对路径>]
   RStarSleep subsystem --help
-  RStarSleep guest --help
 
 init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @RStarSleep 子卷；
 工作目录可使用该子卷路径或其挂载点 /rstarsleep。 / Usage:
@@ -54,7 +54,6 @@ init 默认自动识别当前系统所在 Btrfs 文件系统的顶层并创建 @
   RStarSleep clean <system-id> <version> [--root <absolute-management-root>]
   RStarSleep daemon install|run [--root <absolute-management-root>]
   RStarSleep subsystem --help
-  RStarSleep guest --help
 
 By default, init automatically identifies the top level of the Btrfs filesystem containing
 the current system and creates the @RStarSleep subvolume.
@@ -103,8 +102,13 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "clean" => clean::run(rest)?,
         [command, rest @ ..] if command == "subsystem" => subsystem::run(rest)?,
         [command, rest @ ..] if command == "daemon" => subsystem::daemon(rest)?,
-        [command, rest @ ..] if command == "guest" => subsystem::guest(rest)?,
         [command] if command == "__export-user" => crate::subsystem::exports::user_entry()?,
+        [command] if command == "__console-recorder" => {
+            crate::subsystem::console::recorder_entry()?
+        }
+        [command, rest @ ..] if command == "__management-job" => {
+            crate::subsystem::admin::job_entry(rest)?
+        }
         [command, rest @ ..] if command == "__session-mount" => {
             crate::subsystem::session::mount_entry(rest)?
         }

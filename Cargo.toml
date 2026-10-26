@@ -16,6 +16,11 @@ tar = "0.4"
 tempfile = "3"
 thiserror = "2"
 toml = "0.9"
+russh = { version = "0.61", default-features = false, features = ["ring"] }
+russh-sftp = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+unicode-width = "0.2"
+rand = "0.10"
 xz2 = "0.1"
 zstd = "0.13"
 

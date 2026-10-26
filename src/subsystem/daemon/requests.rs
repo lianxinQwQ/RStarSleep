@@ -91,6 +91,45 @@ impl Manager {
                     },
                 )?;
             }
+            Operation::RootShell {
+                id,
+                pty,
+                window,
+                term,
+            } => {
+                identity::admin(peer)?;
+                let (mut runtime, _lease) = self.lease(&id, peer)?;
+                let account = commands::guest(
+                    &runtime,
+                    &["/usr/bin/getent".into(), "passwd".into(), "0".into()],
+                )?;
+                let text = std::str::from_utf8(&account.stdout).map_err(|_| {
+                    Error::Invalid("root 账户不是 UTF-8 / root account is not UTF-8".into())
+                })?;
+                let fields: Vec<_> = text.trim_end().split(':').collect();
+                if fields.len() != 7 || fields[2] != "0" || !fields[6].starts_with('/') {
+                    return Err(Error::Invalid(
+                        "root 登录 shell 配置无效 / invalid root login shell configuration".into(),
+                    ));
+                }
+                super::filesystem::open_guest(&runtime.root, Path::new(fields[6]), libc::O_RDONLY)?;
+                // A remote administrative shell has no local desktop session to inherit.
+                // 远程管理 shell 没有可继承的本地桌面会话。
+                runtime.config.session_mode = "off".into();
+                execution::execute(
+                    reader,
+                    wire,
+                    runtime,
+                    peer,
+                    execution::ExecutionRequest {
+                        argv: vec![fields[6].into(), "-l".into()],
+                        environment: BTreeMap::from([("TERM".into(), term)]),
+                        terminal: pty,
+                        window,
+                        detached: false,
+                    },
+                )?;
+            }
             Operation::Open {
                 id,
                 target,
@@ -158,10 +197,13 @@ impl Manager {
                     statuses: vec![self.status(&id)?],
                 })?;
             }
-            Operation::Guest { .. } => {
-                return Err(Error::Invalid(
-                    "客体操作必须使用机器专属的客体套接字 / guest actions require the machine-specific guest socket".into(),
-                ));
+            Operation::Console { id, offset, follow } => {
+                if !self.config(&id)?.allows(peer.uid) {
+                    return Err(Error::Invalid(
+                        "子系统访问被拒绝 / subsystem access denied".into(),
+                    ));
+                }
+                super::super::console::serve(&self.store, &id, offset, follow, reader, wire)?;
             }
         }
         Ok(())

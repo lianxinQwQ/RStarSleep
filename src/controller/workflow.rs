@@ -23,6 +23,37 @@ pub struct BuildOptions {
     pub inheritance_root: Option<PathBuf>,
 }
 
+/// Check frozen configuration and existing sources without allocating a build version.
+/// 检查冻结配置及已有来源，不分配构建版本。
+/// # Arguments
+/// - `store`, `id`: Fixed manager and selected system. 固定管理器及所选系统。
+/// # Errors
+/// Reports configuration, plugin, source and workspace errors before build side effects.
+/// 在构建副作用前报告配置、插件、来源及工作区错误。
+pub fn check_configuration(store: &ConfigStore, id: &str) -> Result<Vec<String>> {
+    PreflightSessions::run(|sessions| {
+        let runtime = store.runtime_config()?;
+        let work = store.build_work_dir()?;
+        check_workspace(store, &work)?;
+        let inputs = Preflight::begin(store, id, sessions)?;
+        let mut report = super::preflight::Report::default();
+        let pending = check_system(
+            store,
+            id,
+            &runtime,
+            inputs,
+            &SystemBackend,
+            &work,
+            None,
+            &mut report,
+        )?;
+        // Validate script structure during preflight, before invoking any build step.
+        // 在预检中验证脚本结构，先于任何构建步骤。
+        super::scripts::validate(&pending.context.config)?;
+        Ok(report.messages())
+    })
+}
+
 /// Build one named system or every configured system using native CoW storage.
 /// 使用原生 CoW 存储构建一个命名系统或所有已配置系统。
 /// # Arguments
@@ -583,6 +614,7 @@ fn check_system(
         "Freeze configuration and check plugin, parameters and boot requirements",
     );
     let frozen = inputs.config.as_path();
+    super::scripts::validate(frozen)?;
     let config = read_build_config_at(frozen)?;
     let reuse_minutes = store.cache_reuse_minutes_at(frozen)?;
     let deduplicate_packages = crate::config::read_deduplicate_packages_at(frozen)?;

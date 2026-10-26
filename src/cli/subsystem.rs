@@ -213,47 +213,6 @@ pub(super) fn daemon(arguments: &[OsString]) -> super::Result<()> {
     }
     Ok(())
 }
-/// Submit guest actions exclusively to the machine-bound local endpoint.
-/// 只向机器绑定本地端点提交容器内管理操作。
-/// # Arguments
-/// - `arguments`: Arguments after guest. guest 后参数。
-pub(super) fn guest(arguments: &[OsString]) -> super::Result<()> {
-    let values = arguments
-        .iter()
-        .map(|v| {
-            v.to_str()
-                .map(str::to_owned)
-                .ok_or("guest 参数必须为 UTF-8 / guest arguments must be UTF-8")
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let (action, args) = values
-        .split_first()
-        .ok_or("用法：guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart / Usage: guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart")?;
-    let (path, packages) = match action.as_str() {
-        "add-copy" | "add-mount" | "migrate" if args.len() == 1 => {
-            (Some(args[0].clone()), Vec::new())
-        }
-        "install" if !args.is_empty() => (None, args.to_vec()),
-        "rebuild" | "restart" if args.is_empty() => (None, Vec::new()),
-        "--help" | "-h" => {
-            println!(
-                "用法：sudo /run/rstarsleep/RStarSleep guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart / Usage: sudo /run/rstarsleep/RStarSleep guest add-copy|add-mount|migrate PATH|install PACKAGE...|rebuild|restart"
-            );
-            return Ok(());
-        }
-        _ => return Err("guest 操作参数无效 / invalid guest operation arguments".into()),
-    };
-    client::request(
-        PathBuf::from("/run/rstarsleep/guest.sock").as_path(),
-        Operation::Guest {
-            action: action.clone(),
-            path,
-            packages,
-        },
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

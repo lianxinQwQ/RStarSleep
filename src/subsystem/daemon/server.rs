@@ -96,6 +96,7 @@ pub fn run(store: ConfigStore) -> Result<()> {
         slots: Mutex::new(BTreeMap::new()),
         connections: Mutex::new(BTreeMap::new()),
     });
+    let _ssh = super::super::ssh::start(&manager.store)?;
     let monitor = manager.clone();
     thread::spawn(move || monitor.monitor());
     let _guard = guard;

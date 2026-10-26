@@ -101,15 +101,6 @@ impl Manager {
             } else {
                 StartOrigin::Explicit
             };
-            if self
-                .store
-                .runtime_config()?
-                .subsystems
-                .iter()
-                .any(|configured| configured == id)
-            {
-                super::guest::reconnect(&self.store, runtime)?;
-            }
             state.origin = Some(origin);
             state.generation += 1;
             state.released = Instant::now();
@@ -152,26 +143,7 @@ impl Manager {
             .arg("--directory")
             .arg(&runtime.root)
             .args(&runtime.boot_args);
-        // Dedicated per-machine endpoint exposes no management tree to the guest.
-        // 每机器专用端点不会向容器暴露管理树。
-        let endpoint = super::guest::listen(&self.store, &runtime)?;
-        command.arg(format!(
-            "--bind={}:{}",
-            endpoint.display(),
-            "/run/rstarsleep/guest.sock"
-        ));
-        let binary = fs::canonicalize(std::env::current_exe()?)?;
-        trust::path(&binary)?;
-        command.arg(format!(
-            "--bind-ro={}:{}",
-            binary.display(),
-            "/run/rstarsleep/RStarSleep"
-        ));
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        let mut child = command.spawn()?;
+        let mut child = super::super::console::spawn(&self.store, id, &runtime.machine, &command)?;
         let ready = (|| -> Result<()> {
             let deadline = Instant::now() + Duration::from_secs(45);
             loop {
@@ -196,9 +168,22 @@ impl Manager {
         if let Err(e) = ready {
             let mut command = Command::new(commands::MACHINECTL);
             command.args(["terminate", &runtime.machine]);
-            let _ = commands::output(command, Duration::from_secs(5));
-            let _ = child.kill();
+            let cleanup = commands::output(command, Duration::from_secs(5));
+            // Allow the recorder to drain the final PTY bytes and publish its result.
+            // 允许记录器排空最后的 PTY 字节并发布结果。
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while child.try_wait()?.is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            if child.try_wait()?.is_none() {
+                let _ = child.kill();
+            }
             let _ = child.wait();
+            if let Err(error) = cleanup {
+                return Err(Error::Invalid(format!(
+                    "启动失败且清理失败 / startup failed and cleanup failed: {e}; {error}"
+                )));
+            }
             return Err(e);
         }
         state.runtime = Some(runtime);
@@ -224,8 +209,8 @@ impl Manager {
         }
         Ok(())
     }
-    /// Power off gracefully then terminate after a bounded grace period.
-    /// 先优雅关机，再在有界宽限时间后终止。
+    /// Power off gracefully and report timeout without silently terminating.
+    /// 优雅关机并报告超时，不静默强制终止。
     /// # Arguments
     /// - `id`, `state`: Locked target. 已锁定目标。
     pub(super) fn stop(&self, id: &str, state: &mut State) -> Result<()> {
@@ -235,33 +220,33 @@ impl Manager {
             let runtime = state.runtime.as_ref().unwrap();
             let mut command = Command::new(commands::MACHINECTL);
             command.args(["poweroff", &runtime.machine]);
-            let _ = commands::output(command, Duration::from_secs(5));
+            super::super::console::mark_shutdown(&self.store, id)?;
+            let result = commands::output(command, Duration::from_secs(5))?;
+            if !result.status.success() {
+                return Err(Error::Invalid(format!(
+                    "关机请求失败 / poweroff request failed: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                )));
+            }
             let deadline = Instant::now() + Duration::from_secs(30);
             while commands::alive(&runtime.machine)? && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(100));
             }
             if commands::alive(&runtime.machine)? {
-                let mut command = Command::new(commands::MACHINECTL);
-                command.args(["terminate", &runtime.machine]);
-                commands::output(command, Duration::from_secs(5))?;
-                let deadline = Instant::now() + Duration::from_secs(10);
-                while commands::alive(&runtime.machine)? && Instant::now() < deadline {
-                    thread::sleep(Duration::from_millis(100));
-                }
-                if commands::alive(&runtime.machine)? {
-                    return Err(Error::Invalid(
-                        "终止后机器仍处于登记状态 / machine still registered after terminate"
-                            .into(),
-                    ));
-                }
+                return Err(Error::Invalid("子系统正常关机超时；机器仍在运行 / graceful subsystem shutdown timed out; machine is still running".into()));
             }
             session::cleanup(runtime)?;
         }
         if let Some(mut child) = state.child.take() {
-            if child.try_wait()?.is_none() {
-                let _ = child.kill();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait()?.is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
             }
-            let _ = child.wait();
+            if child.try_wait()?.is_none() {
+                state.child = Some(child);
+                return Err(Error::Invalid("机器已停止但控制台尚未排空 / machine stopped but console has not finished draining".into()));
+            }
+            child.wait()?;
         }
         state.origin = None;
         state.leases = 0;

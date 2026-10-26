@@ -3,7 +3,7 @@
 use super::{
     Error, PreparedRuntime, Result, SubsystemConfig, atomic_write, client, commands, desktop,
     execution::{self, Wire},
-    exports, filesystem, guest,
+    exports, filesystem,
     identity::{self, Peer},
     preparation, prepare,
     protocol::{self, ClientMessage, Event, Operation, StartOrigin, Status},
@@ -23,7 +23,7 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},

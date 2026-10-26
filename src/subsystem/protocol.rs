@@ -6,7 +6,7 @@ use std::{
     io::{self, BufRead, Write},
 };
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_FRAME_BYTES: usize = 128 * 1024;
 pub const STREAM_CHUNK_BYTES: usize = 8192;
 
@@ -51,10 +51,16 @@ pub enum Operation {
     SyncExports {
         id: String,
     },
-    Guest {
-        action: String,
-        path: Option<String>,
-        packages: Vec<String>,
+    Console {
+        id: String,
+        offset: u64,
+        follow: bool,
+    },
+    RootShell {
+        id: String,
+        pty: bool,
+        window: Option<WindowSize>,
+        term: String,
     },
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,37 +225,18 @@ pub fn validate_request(request: &Request) -> io::Result<()> {
             validate_argv(&[vec![target.clone()], args.clone()].concat())?;
             validate_environment(environment)?;
         }
-        Operation::Guest {
-            action,
-            path,
-            packages,
+        Operation::Console { id, .. } => validate_id(id)?,
+        Operation::RootShell {
+            id, window, term, ..
         } => {
-            if !matches!(
-                action.as_str(),
-                "add-copy" | "add-mount" | "migrate" | "install" | "rebuild" | "restart"
-            ) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "未知 guest 操作 / unknown guest action",
-                ));
+            validate_id(id)?;
+            if let Some(window) = window {
+                validate_window(*window)?;
             }
-            if path
-                .as_ref()
-                .is_some_and(|p| p.len() > 4096 || p.contains('\0'))
-            {
+            if term.len() > 128 || term.chars().any(char::is_control) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "guest 路径无效 / invalid guest path",
-                ));
-            }
-            if packages.len() > 256
-                || packages.iter().any(|p| {
-                    p.is_empty() || p.starts_with('-') || p.chars().any(char::is_whitespace)
-                })
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "包请求无效 / invalid package request",
+                    "终端类型无效 / invalid terminal type",
                 ));
             }
         }
