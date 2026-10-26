@@ -111,15 +111,21 @@ impl Workspace {
     /// # Arguments
     /// - `path`: Virtual file. 虚拟文件。
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
+        self.read_limited(path, 256 * 1024 * 1024)
+    }
+    /// Enforce a frontend's size limit before allocating its editable buffer.
+    /// 在分配编辑缓冲区之前执行前端的大小限制。
+    pub(super) fn read_limited(&self, path: &str, limit: usize) -> Result<Vec<u8>> {
         let file = File::open(self.path(path)?)?;
-        if !file.metadata()?.is_file() || file.metadata()?.len() > 256 * 1024 * 1024 {
-            return Err(Error::Invalid(
-                "文件类型或大小不受支持 / unsupported file type or size".into(),
-            ));
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > limit as u64 {
+            return Err(Error::Invalid(format!(
+                "文件类型不受支持或超过 {limit} 字节 / unsupported file type or size exceeds {limit} bytes"
+            )));
         }
         let mut bytes = Vec::new();
-        file.take(256 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 256 * 1024 * 1024 {
+        file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
             return Err(Error::Invalid("文件超出限制 / file exceeds limit".into()));
         }
         Ok(bytes)
@@ -238,13 +244,17 @@ impl Upload {
     pub fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<()> {
         let result = (|| -> Result<()> {
             if offset.saturating_add(bytes.len() as u64) > 256 * 1024 * 1024 {
-                return Err(Error::Invalid("上传超出文件限制 / upload exceeds file limit".into()));
+                return Err(Error::Invalid(
+                    "上传超出文件限制 / upload exceeds file limit".into(),
+                ));
             }
             self.temporary.seek(SeekFrom::Start(offset))?;
             self.temporary.write_all(bytes)?;
             Ok(())
         })();
-        if result.is_err() { self.failed = true; }
+        if result.is_err() {
+            self.failed = true;
+        }
         result
     }
 
@@ -260,7 +270,9 @@ impl Upload {
     /// # Arguments
     /// - `self`: Completed isolated upload. 已完成独立上传。
     pub fn commit(self) -> Result<()> {
-        if self.failed { return Err(Error::Invalid("上传曾经失败，拒绝发布部分内容 / upload failed; refusing to publish partial content".into())); }
+        if self.failed {
+            return Err(Error::Invalid("上传曾经失败，拒绝发布部分内容 / upload failed; refusing to publish partial content".into()));
+        }
         let current = match fs::read(&self.destination) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

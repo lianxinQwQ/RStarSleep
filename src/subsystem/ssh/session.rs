@@ -9,19 +9,124 @@ use super::super::{
     protocol::{self, ClientMessage, Event, Operation, WindowSize},
 };
 use crate::{config::ConfigStore, controller};
-use russh::{Channel, ChannelId, server::{Msg, Handle}};
+use russh::{
+    Channel, ChannelId,
+    server::{Handle, Msg},
+};
 
-struct Remote { handle: Handle, channel: ChannelId }
+struct Remote {
+    handle: Handle,
+    channel: ChannelId,
+}
 use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll},
     time::Duration,
 };
+
+/// Capture ordinary dashboard output; live views retain an explicitly labelled tail.
+/// 收集普通面板输出；实时视图保留明确标注的尾部。
+struct ViewOutput<'a, W> {
+    wire: &'a mut W,
+    capture: bool,
+    tail: bool,
+    bytes: Vec<u8>,
+    omitted: bool,
+}
+impl<'a, W> ViewOutput<'a, W> {
+    fn new(wire: &'a mut W, capture: bool, tail: bool) -> Self {
+        Self {
+            wire,
+            capture,
+            tail,
+            bytes: Vec::new(),
+            omitted: false,
+        }
+    }
+    fn text(&self) -> String {
+        let bytes = if self.omitted {
+            let start = self
+                .bytes
+                .iter()
+                .take(4)
+                .position(|b| b & 0xc0 != 0x80)
+                .unwrap_or(0);
+            &self.bytes[start..]
+        } else {
+            &self.bytes
+        };
+        match std::str::from_utf8(bytes) {
+            Ok(text) => format!("{}{}", if self.omitted { "仅保留最后 64 KiB 输出 / Only the last 64 KiB of output is retained\n" } else { "" }, text.replace("\r\n", "\n")),
+            Err(_) => "输出不是 UTF-8 文本，请使用非交互 SSH 读取原始数据 / output is not UTF-8 text; use noninteractive SSH for raw data".into(),
+        }
+    }
+}
+impl<W: AsyncWrite + Unpin> AsyncWrite for ViewOutput<'_, W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if this.capture {
+            if this.bytes.len() + bytes.len() > 4 * 1024 * 1024 {
+                return Poll::Ready(Err(std::io::Error::other(
+                    "面板输出超出 4 MiB，请缩小日志范围 / dashboard output exceeds 4 MiB; narrow the log range",
+                )));
+            }
+            this.bytes.extend_from_slice(bytes);
+            return Poll::Ready(Ok(bytes.len()));
+        }
+        match Pin::new(&mut *this.wire).poll_write(cx, bytes) {
+            Poll::Ready(Ok(n)) => {
+                if this.tail {
+                    this.bytes.extend_from_slice(&bytes[..n]);
+                    if this.bytes.len() > 65536 {
+                        this.bytes.drain(..this.bytes.len() - 65536);
+                        this.omitted = true;
+                    }
+                }
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.capture {
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut *this.wire).poll_flush(cx)
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.capture {
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut *this.wire).poll_shutdown(cx)
+        }
+    }
+}
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::mpsc,
+    sync::watch,
 };
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;
+
+/// Coalesce resize bursts to the latest size without dropping the final window event.
+/// 将连续尺寸变化合并为最新尺寸，不丢弃最终窗口事件。
+async fn window(sizes: &mut watch::Receiver<(u32, u32)>) -> (u32, u32) {
+    if sizes.changed().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+    *sizes.borrow_and_update()
+}
 
 /// Serve one interactive shell or noninteractive management command channel.
 /// 服务一个交互式 shell 或非交互式管理命令通道。
@@ -32,12 +137,15 @@ pub(super) async fn run(
     store: ConfigStore,
     id: String,
     pty: Option<(String, u32, u32)>,
-    mut sizes: mpsc::Receiver<(u32, u32)>,
+    mut sizes: watch::Receiver<(u32, u32)>,
     command: Option<Vec<u8>>,
     handle: Handle,
 ) -> Result<u32> {
     let workspace = Workspace::new(store, id.as_str())?;
-    let remote = Remote { handle, channel: channel.id() };
+    let remote = Remote {
+        handle,
+        channel: channel.id(),
+    };
     let stream = channel.into_stream();
     let (mut input, mut output) = tokio::io::split(stream);
     let mut dimensions = pty.clone().unwrap_or(("dumb".into(), 80, 24));
@@ -52,7 +160,7 @@ pub(super) async fn run(
             &mut sizes,
             &mut dimensions,
             pty.is_some(),
-            Vec::new(),
+            &mut Vec::new(),
             &remote,
         )
         .await;
@@ -72,7 +180,7 @@ pub(super) async fn run(
         } else {
             tokio::select! {
                 n=input.read(&mut bytes)=>{let n=n?;if n==0{break;}terminal.input(&bytes[..n],&workspace)},
-                Some((cols,rows))=sizes.recv()=>{dimensions.1=cols;dimensions.2=rows;output.write_all(&terminal.resize(cols,rows)).await?;continue;},
+                (cols,rows)=window(&mut sizes)=>{dimensions.1=cols;dimensions.2=rows;output.write_all(&terminal.resize(cols,rows)).await?;continue;},
                 _=tokio::time::sleep(Duration::from_millis(40))=>terminal.flush_escape(&workspace)
             }
         };
@@ -81,7 +189,7 @@ pub(super) async fn run(
             Err(error) => {
                 terminal.take_pending();
                 output
-                    .write_all(&terminal.finish(&format!("操作失败 / operation failed: {error}")))
+                    .write_all(&terminal.error(&format!("操作失败 / operation failed: {error}")))
                     .await?;
                 continue;
             }
@@ -89,35 +197,53 @@ pub(super) async fn run(
         output.write_all(&update.output).await?;
         output.flush().await?;
         if let Some(action) = update.action {
-            let pending = terminal.take_pending();
+            let mut pending = terminal.take_pending();
             let words = match action {
                 Action::Exit => break,
                 Action::Shell => vec!["shell".into()],
                 Action::Command(words) => words,
             };
-            let shell = words.first().is_some_and(|s| s == "shell");
+            let tui = terminal.is_tui();
+            let live = words
+                .first()
+                .is_some_and(|s| s == "shell" || s == "console")
+                || words.iter().any(|s| s == "--follow");
+            if tui && live {
+                output.write_all(b"\x1b[?1049l\x1b[?25h\r\n").await?;
+            }
+            let mut capture = ViewOutput::new(&mut output, tui && !live, tui && live);
             let result = execute(
                 &workspace,
                 words,
                 &mut input,
-                &mut output,
+                &mut capture,
                 &mut sizes,
                 &mut dimensions,
                 true,
-                if shell { pending.clone() } else { Vec::new() },
+                &mut pending,
                 &remote,
             )
             .await;
-            let text = match result {
-                Ok(0) => String::new(),
-                Ok(code) => format!("退出码 {code} / exit code {code}"),
-                Err(error) => format!("操作失败 / operation failed: {error}"),
-            };
-            output.write_all(b"\x1b[0m\x1b[r\x1b[?25h\r\n").await?;
-            output.write_all(&terminal.finish(&text)).await?;
-            if !shell {
-                next = pending;
+            let mut text = capture.text();
+            match result {
+                Ok(0) => {}
+                Ok(code) => text.push_str(&format!("\n退出码 {code} / exit code {code}")),
+                Err(error) => text.push_str(&format!("\n操作失败 / operation failed: {error}")),
             }
+            terminal.set_size(dimensions.1, dimensions.2);
+            if tui {
+                output.write_all(b"\x1b[?1049h").await?;
+            } else if live {
+                // Resetting margins homes the cursor; preserve its position across that reset.
+                // 重置滚动边界会把光标移到原点；重置前后必须保留位置。
+                output
+                    .write_all(b"\x1b7\x1b[0m\x1b[r\x1b8\x1b[?25h\r\n")
+                    .await?;
+            } else {
+                output.write_all(b"\x1b[0m\x1b[?25h\r\n").await?;
+            }
+            output.write_all(&terminal.finish(&text)).await?;
+            next = pending;
         }
     }
     output.write_all(b"\x1b[?2004l\x1b[?25h\x1b[0m").await?;
@@ -133,10 +259,10 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     words: Vec<String>,
     input: &mut R,
     output: &mut W,
-    sizes: &mut mpsc::Receiver<(u32, u32)>,
+    sizes: &mut watch::Receiver<(u32, u32)>,
     dimensions: &mut (String, u32, u32),
     pty: bool,
-    pending: Vec<u8>,
+    pending: &mut Vec<u8>,
     remote: &Remote,
 ) -> Result<u32> {
     super::super::SubsystemConfig::read(&workspace.store, &workspace.id)?;
@@ -144,19 +270,20 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let mut text = String::new();
     match args.as_slice(){
         []=>{},["help"]=>text=HELP.into(),["pwd"]=>text="/".into(),["ls"]=>text=workspace.list("/")?.join("\n"),["ls",path]=>text=workspace.list(path)?.join("\n"),
+        ["clear"]=>{if !pty{return Err(Error::Invalid("clear 需要 PTY / clear requires a PTY".into()));}output.write_all(b"\x1b[2J\x1b[H").await?;return Ok(0);},
         ["cat",path]=>{output.write_all(&workspace.read(path)?).await?;return Ok(0);},
         [operation@("mkdir"|"rm"|"rmdir"),path]=>workspace.mutate(operation,path,None)?,["mv",source,target]=>workspace.mutate("mv",source,Some(target))?,
         ["check"]=>{let store=workspace.store.clone();let id=workspace.id.clone();let warnings=tokio::task::spawn_blocking(move||controller::check_configuration(&store,&id)).await.map_err(|e|Error::Invalid(format!("检查任务失败 / check task failed: {e}")))??;text=format!("配置及已有来源检查通过；软件包解析与脚本执行结果在构建时检查。\nConfiguration and existing-source checks passed; package resolution and script execution are checked during build.\n{}",warnings.join("\n"));},
-        ["status"]=>{let store=workspace.store.clone();let id=workspace.id.clone();let statuses=tokio::task::spawn_blocking(move||client::request(&client::socket_for_root(store.root())?,Operation::Status{id})).await.map_err(|e|Error::Invalid(format!("状态任务失败 / status task failed: {e}")))??;text=serde_json::to_string_pretty(&statuses).map_err(|e|Error::Protocol(format!("状态编码失败 / status encoding failed: {e}")))?;let current=controller::read_current_build(&workspace.store,&workspace.id)?;text.push_str(&format!("\n当前成功产物 / current successful artifact: {}",current.version));},
+        ["status"]=>{let store=workspace.store.clone();let id=workspace.id.clone();let statuses=tokio::task::spawn_blocking(move||client::request(&client::socket_for_root(store.root())?,Operation::Status{id})).await.map_err(|e|Error::Invalid(format!("状态任务失败 / status task failed: {e}")))??;text=serde_json::to_string_pretty(&statuses).map_err(|e|Error::Protocol(format!("状态编码失败 / status encoding failed: {e}")))?;let reference=workspace.store.system_layout(&workspace.id)?.root.join("build-current.toml");if reference.try_exists()?{let current=controller::read_current_build(&workspace.store,&workspace.id)?;text.push_str(&format!("\n当前成功产物 / current successful artifact: {}",current.version));}else{text.push_str("\n尚无成功构建产物 / no successful build artifact yet");}},
         [operation@("start"|"stop"|"restart"|"build")] | [operation@("start"|"stop"|"restart"|"build"),"--follow"]=>{
             let offset=fs::metadata(console::directory(&workspace.store,&workspace.id)?.join("console.log")).map(|m|m.len()).or_else(|e|if e.kind()==std::io::ErrorKind::NotFound{Ok(0)}else{Err(e)})?;
             let store=workspace.store.clone();let id=workspace.id.clone();let operation=operation.to_string();
             let job=tokio::task::spawn_blocking(move||admin::submit(&store,&id,&operation)).await.map_err(|e|Error::Invalid(format!("任务提交失败 / job submission failed: {e}")))??;
             output.write_all(format!("任务已提交 / task submitted: {}\r\n",job.task).as_bytes()).await?;
-            if args.len()==2{return follow(workspace,input,output,Some(job.task),offset,None).await;}
+            if args.len()==2{return follow(workspace,input,output,Some(job.task.clone()),if args[0]=="build"{0}else{offset},if args[0]=="build"{Some(admin::directory(&workspace.store,&workspace.id)?.join(format!("{}.log",job.task)))}else{None},pending).await;}
         },
         ["jobs"]=>text=serde_json::to_string_pretty(&admin::jobs(&workspace.store,&workspace.id)?).map_err(|e|Error::Protocol(format!("任务编码失败 / job encoding failed: {e}")))?,
-        ["console"]=>{let offset=tail_offset(&console::directory(&workspace.store,&workspace.id)?.join("console.log"),100)?;console::current(&workspace.store,&workspace.id)?;return follow(workspace,input,output,None,offset,None).await;},
+        ["console"]=>{let offset=tail_offset(&console::directory(&workspace.store,&workspace.id)?.join("console.log"),100)?;console::current(&workspace.store,&workspace.id)?;return follow(workspace,input,output,None,offset,None,pending).await;},
         ["shell"]=>return shell(workspace,input,output,sizes,dimensions,pty,pending,remote).await,
         ["logs",rest@..]=>{
             let mut kind="boot";let mut follow_output=false;let mut lines=None;let mut task=None;let mut i=0;
@@ -165,13 +292,13 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             if kind=="build"{
                 let jobs=admin::jobs(&workspace.store,&workspace.id)?;let job=jobs.iter().rev().find(|job|job.operation=="build"&&task.as_ref().is_none_or(|task|task==&job.task)).ok_or_else(||Error::Invalid("没有对应构建任务 / no matching build job".into()))?;
                 let path=admin::directory(&workspace.store,&workspace.id)?.join(format!("{}.log",job.task));let offset=match lines{Some(lines)=>tail_offset(&path,lines)?,None=>0};
-                if follow_output{return follow(workspace,input,output,Some(job.task.clone()),offset,Some(path)).await;}read_file(&path,offset,output).await?;
+                if follow_output{return follow(workspace,input,output,Some(job.task.clone()),offset,Some(path),pending).await;}read_file(&path,offset,output).await?;
             }else{
                 let directory=console::directory(&workspace.store,&workspace.id)?;
                 let run=if let Some(task)=task{if task.contains('/')||task.contains("..")||!task.starts_with("boot-"){return Err(Error::Invalid("控制台任务标识无效 / invalid console task identity".into()));}super::super::read_record::<console::Run>(&directory.join(format!("{task}.toml")))?}else{console::current(&workspace.store,&workspace.id)?};
                 let offset=if kind=="shutdown"{run.shutdown_offset.ok_or_else(||Error::Invalid("此启动尚无关机记录 / this boot has no shutdown record".into()))?}else{run.offset};
                 let offset=if let Some(lines)=lines{offset.max(tail_offset(&directory.join("console.log"),lines)?)}else{offset};
-                if follow_output{return follow(workspace,input,output,None,offset,None).await;}
+                if follow_output{return follow(workspace,input,output,None,offset,None,pending).await;}
                 read_file(&directory.join("console.log"),offset,output).await?;
             }return Ok(0);
         },
@@ -237,10 +364,41 @@ async fn read_file<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Follow a recorder or durable task while concurrently accepting cancellation.
-/// 跟随记录器或持久任务，同时接受取消。
-/// # Arguments
-/// - `workspace`, `input`, `output`, `task`, `offset`, `job_log`: Fixed view, SSH streams, optional job and source cursor. 固定视图、SSH 流、可选任务及来源游标。
+/// Preserve type-ahead, consuming only a real cancellation key outside bracketed paste.
+/// 保留预输入，只消费括号粘贴之外的真实取消键。
+#[derive(Default)]
+struct FollowInput {
+    scanned: usize,
+    paste: bool,
+    eof: bool,
+}
+impl FollowInput {
+    fn cancelled(&mut self, pending: &mut Vec<u8>) -> bool {
+        const START: &[u8] = b"\x1b[200~";
+        const END: &[u8] = b"\x1b[201~";
+        while self.scanned < pending.len() {
+            let tail = &pending[self.scanned..];
+            if tail.starts_with(START) {
+                self.paste = true;
+                self.scanned += START.len();
+            } else if tail.starts_with(END) {
+                self.paste = false;
+                self.scanned += END.len();
+            } else if tail[0] == 27 && (START.starts_with(tail) || END.starts_with(tail)) {
+                break;
+            } else if tail[0] == 3 && !self.paste {
+                pending.remove(self.scanned);
+                return true;
+            } else {
+                self.scanned += 1;
+            }
+        }
+        false
+    }
+}
+
+/// Follow durable files fairly; stdin EOF does not mean the remote job has succeeded.
+/// 公平跟随持久文件；标准输入 EOF 不代表远程任务成功。
 async fn follow<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     workspace: &Workspace,
     input: &mut R,
@@ -248,23 +406,103 @@ async fn follow<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     task: Option<String>,
     mut offset: u64,
     job_log: Option<PathBuf>,
+    pending: &mut Vec<u8>,
 ) -> Result<u32> {
-    let mut bytes = [0; 8192];
-    let mut lifecycle_log_offset = 0;
+    let path = job_log
+        .clone()
+        .unwrap_or(console::directory(&workspace.store, &workspace.id)?.join("console.log"));
+    let task_path = task
+        .as_ref()
+        .filter(|_| job_log.is_none())
+        .map(|task| {
+            admin::directory(&workspace.store, &workspace.id).map(|d| d.join(format!("{task}.log")))
+        })
+        .transpose()?;
+    let mut task_offset = 0;
+    let mut control = FollowInput::default();
+    let mut input_bytes = [0; 8192];
+    let mut queued = Vec::new();
+    let mut written = 0;
+    let mut completed: Option<(u32, Option<String>, u64, u64)> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        if control.cancelled(pending) {
+            return Ok(0);
+        }
+        if completed
+            .as_ref()
+            .is_some_and(|(_, _, end, task_end)| offset >= *end && task_offset >= *task_end)
+            && written == queued.len()
+        {
+            let (code, error, _, _) = completed.as_mut().unwrap();
+            if let Some(error) = error.take() {
+                queued = format!("\r\n{error}\r\n").into_bytes();
+                written = 0;
+                continue;
+            }
+            return Ok(*code);
+        }
         tokio::select! {
-            n=input.read(&mut bytes)=>{let n=n?;if n==0||bytes[..n].contains(&3){return Ok(0);}},
+            biased;
+            n=input.read(&mut input_bytes), if !control.eof => {
+                let n=n?;
+                if n==0 { control.eof=true; }
+                else {
+                    if pending.len()+n > 65536 { return Err(Error::Invalid("跟随期间预输入超出限制 / type-ahead during follow exceeds limit".into())); }
+                    pending.extend_from_slice(&input_bytes[..n]);
+                }
+            },
+            result=output.write(&queued[written..]), if written<queued.len() => {
+                let n=result?;
+                if n==0 { return Err(Error::Invalid("SSH 输出已关闭 / SSH output closed".into())); }
+                written+=n;
+            },
             _=tick.tick()=>{
-                let path=job_log.clone().unwrap_or(console::directory(&workspace.store,&workspace.id)?.join("console.log"));
-                if path.try_exists()?{let mut file=fs::File::open(&path)?;file.seek(SeekFrom::Start(offset))?;let n=file.read(&mut bytes)?;if n>0{output.write_all(&bytes[..n]).await?;offset+=n as u64;continue;}}
-                if let Some(task)=&task{let jobs=admin::jobs(&workspace.store,&workspace.id)?;let job=jobs.iter().find(|job|&job.task==task).ok_or_else(||Error::Invalid("任务丢失 / task was lost".into()))?;
-                    if job_log.is_none(){let path=admin::directory(&workspace.store,&workspace.id)?.join(format!("{task}.log"));let mut file=fs::File::open(&path)?;file.seek(SeekFrom::Start(lifecycle_log_offset))?;let n=file.read(&mut bytes)?;if n>0{output.write_all(&bytes[..n]).await?;lifecycle_log_offset+=n as u64;}}
-                    if !matches!(job.state.as_str(),"queued"|"running"){if let Some(error)=&job.error{output.write_all(format!("\r\n{error}\r\n").as_bytes()).await?;}return Ok(job.exit_code.unwrap_or(1).clamp(0,255) as u32);}
-                }else if console::current(&workspace.store,&workspace.id)?.finished{return Ok(0);}
+                if completed.is_none() {
+                    let status = if let Some(task)=&task {
+                        let jobs=admin::jobs(&workspace.store,&workspace.id)?;
+                        let job=jobs.into_iter().find(|job| &job.task==task).ok_or_else(||Error::Invalid("任务丢失 / task was lost".into()))?;
+                        if matches!(job.state.as_str(),"queued"|"running") { None }
+                        else { Some((job.exit_code.unwrap_or(1).clamp(0,255) as u32,job.error)) }
+                    } else {
+                        let run=console::current(&workspace.store,&workspace.id)?;
+                        run.finished.then_some((run.exit_code.unwrap_or(0).clamp(0,255) as u32,run.error))
+                    };
+                    if let Some((code,error))=status {
+                        completed=Some((code,error,file_length(&path)?,task_path.as_ref().map(file_length).transpose()?.unwrap_or(0)));
+                    }
+                }
+                if written==queued.len() {
+                    queued.clear(); written=0;
+                    read_chunk(&path,&mut offset,completed.as_ref().map(|v|v.2),&mut queued)?;
+                    if let Some(path)=&task_path { read_chunk(path,&mut task_offset,completed.as_ref().map(|v|v.3),&mut queued)?; }
+                }
             }
         }
     }
+}
+fn file_length(path: &PathBuf) -> Result<u64> {
+    match fs::metadata(path) {
+        Ok(m) => Ok(m.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
+fn read_chunk(path: &PathBuf, offset: &mut u64, end: Option<u64>, out: &mut Vec<u8>) -> Result<()> {
+    let length = end.unwrap_or(file_length(path)?);
+    if length < *offset {
+        return Err(Error::Invalid("日志被截断 / log was truncated".into()));
+    }
+    if length == *offset {
+        return Ok(());
+    }
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(*offset))?;
+    let before = out.len();
+    file.take((length - *offset).min(8192)).read_to_end(out)?;
+    *offset += (out.len() - before) as u64;
+    Ok(())
 }
 
 /// Encode one complete local protocol frame with a single writer.
@@ -287,10 +525,10 @@ async fn shell<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     workspace: &Workspace,
     input: &mut R,
     output: &mut W,
-    sizes: &mut mpsc::Receiver<(u32, u32)>,
+    sizes: &mut watch::Receiver<(u32, u32)>,
     dimensions: &mut (String, u32, u32),
     pty: bool,
-    pending: Vec<u8>,
+    pending: &mut Vec<u8>,
     remote: &Remote,
 ) -> Result<u32> {
     let socket = client::socket_for_root(workspace.store.root())?;
@@ -313,19 +551,21 @@ async fn shell<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         operation: operation.clone(),
     })?;
     send(&mut writer, &protocol::request(operation)).await?;
-    if pty { output.write_all(b"\x1b[?2004l").await?; }
+    if pty {
+        output.write_all(b"\x1b[?2004l").await?;
+    }
     let (mut ready, mut input_open) = (false, true);
     let mut frame = Vec::new();
     let mut bytes = [0; 8192];
-    let mut pending = Some(pending);
+    let mut pending = Some(std::mem::take(pending));
     loop {
         tokio::select! {
             result=reader.read_until(b'\n',&mut frame)=>{if result?==0{return Err(Error::Protocol("root shell 未返回退出状态 / root shell ended without an exit status".into()));}if frame.len()>protocol::MAX_FRAME_BYTES{return Err(Error::Protocol("shell 消息超出限制 / shell message exceeds limit".into()));}let event:Event=serde_json::from_slice(&frame).map_err(|e|Error::Protocol(format!("shell 消息无效 / invalid shell message: {e}")))?;frame.clear();match event{
-                Event::Ready{..}=>{ready=true;if let Some(bytes)=pending.take(){if !bytes.is_empty(){send(&mut writer,&ClientMessage::Input{bytes}).await?;}}},
+                Event::Ready{..}=>{ready=true;if pty{send(&mut writer,&ClientMessage::Resize{window:WindowSize{cols:dimensions.1 as u16,rows:dimensions.2 as u16}}).await?;}if let Some(bytes)=pending.take(){if !bytes.is_empty(){send(&mut writer,&ClientMessage::Input{bytes}).await?;}}},
                 Event::Stdout{bytes}=>output.write_all(&bytes).await?,Event::Stderr{bytes}=>{remote.handle.extended_data(remote.channel,1,bytes).await.map_err(|_|Error::Invalid("SSH 标准错误通道已关闭 / SSH stderr channel closed".into()))?;},Event::Exit{code}=>return Ok(code.clamp(0,255) as u32),Event::Error{message}=>return Err(Error::Invalid(message)),Event::Message{text}=>{output.write_all(text.as_bytes()).await?;},_=>{}
             }},
             n=input.read(&mut bytes),if ready&&input_open=>{let n=n?;if n==0{input_open=false;send(&mut writer,&ClientMessage::Eof).await?;}else{send(&mut writer,&ClientMessage::Input{bytes:bytes[..n].into()}).await?;}},
-            Some((cols,rows))=sizes.recv()=>{dimensions.1=cols;dimensions.2=rows;if ready&&pty{send(&mut writer,&ClientMessage::Resize{window:WindowSize{cols:cols as u16,rows:rows as u16}}).await?;}}
+            (cols,rows)=window(sizes)=>{dimensions.1=cols;dimensions.2=rows;if ready&&pty{send(&mut writer,&ClientMessage::Resize{window:WindowSize{cols:cols as u16,rows:rows as u16}}).await?;}}
         }
     }
 }

@@ -338,7 +338,7 @@ mod tests {
         }
         assert!(
             validate_request(&Request {
-                version: 2,
+                version: PROTOCOL_VERSION + 1,
                 operation: Operation::List
             })
             .is_err()

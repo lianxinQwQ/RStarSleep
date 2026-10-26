@@ -1,9 +1,9 @@
 //! Public-key SSH management transport with no host command execution.
 //! 不执行宿主命令的公钥 SSH 管理传输。
 mod session;
+mod sftp;
 #[cfg(test)]
 mod tests;
-mod sftp;
 use super::{Error, Result};
 use crate::config::ConfigStore;
 use russh::{
@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{oneshot, watch};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -251,8 +251,10 @@ impl server::Server for SshServer {
 struct ChannelState {
     channel: Option<Channel<Msg>>,
     terminal: Option<(String, u32, u32)>,
-    resize: mpsc::Sender<(u32, u32)>,
-    sizes: Option<mpsc::Receiver<(u32, u32)>>,
+    resize: watch::Sender<(u32, u32)>,
+    sizes: Option<watch::Receiver<(u32, u32)>>,
+    _lifetime: oneshot::Sender<()>,
+    closed: Option<oneshot::Receiver<()>>,
 }
 struct Connection {
     store: ConfigStore,
@@ -285,17 +287,22 @@ impl Connection {
         };
         let terminal = state.terminal.clone();
         let sizes = state.sizes.take().unwrap();
+        let closed = state.closed.take().unwrap();
         let store = self.store.clone();
         let handle = session.handle();
         session.channel_success(channel)?;
         tokio::spawn(async move {
-            let result = session::run(wire, store, id, terminal, sizes, command, handle.clone()).await;
+            let result = tokio::select! {
+                result = session::run(wire, store, id, terminal, sizes, command, handle.clone()) => result,
+                _ = closed => return,
+            };
             let code = match result {
                 Ok(code) => code,
                 Err(error) => {
                     let _ = handle
                         .extended_data(
-                            channel, 1,
+                            channel,
+                            1,
                             format!("操作失败 / operation failed: {error}\r\n").into_bytes(),
                         )
                         .await;
@@ -351,7 +358,8 @@ impl server::Handler for Connection {
         if self.id.is_none() || self.channels.len() >= 16 {
             return Ok(false);
         }
-        let (resize, sizes) = mpsc::channel(16);
+        let (resize, sizes) = watch::channel((80, 24));
+        let (lifetime, closed) = oneshot::channel();
         self.channels.insert(
             channel.id(),
             ChannelState {
@@ -359,6 +367,8 @@ impl server::Handler for Connection {
                 terminal: None,
                 resize,
                 sizes: Some(sizes),
+                _lifetime: lifetime,
+                closed: Some(closed),
             },
         );
         Ok(true)
@@ -466,7 +476,7 @@ impl server::Handler for Connection {
     ) -> Result<()> {
         if cols > 0 && rows > 0 && cols <= 1000 && rows <= 1000 {
             if let Some(state) = self.channels.get_mut(&channel) {
-                let _ = state.resize.try_send((cols, rows));
+                state.resize.send_replace((cols, rows));
             }
         }
         Ok(())

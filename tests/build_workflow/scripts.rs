@@ -241,13 +241,13 @@ fn script_failure_keeps_software_cache_and_retry_starts_from_clean_software() {
     fixture.cleaned(&retried.version);
 }
 
-/// Reject missing main.sh and unsupported entries before running any scripts.
-/// 在执行任何脚本前拒绝缺少 main.sh 及不支持的条目。
+/// Reject malformed configuration before allocating build versions or running stages.
+/// 在分配构建版本或执行阶段之前拒绝格式错误的配置。
 /// # Arguments
 /// No parameters.
 /// 无参数。
 #[test]
-fn malformed_script_inputs_stop_the_stage() {
+fn malformed_script_inputs_fail_preflight_without_allocating_stages() {
     for entry in ["directory", "unsupported.txt"] {
         let fixture = Fixture::new();
         fixture.system("desktop", &[]);
@@ -266,7 +266,18 @@ fn malformed_script_inputs_stop_the_stage() {
         let backend = SimulatedBackend::default();
         assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
         assert_eq!(backend.count("script"), 0);
-        assert!(fixture.cache("v00000001", "packages.toml").exists());
+        assert_eq!(backend.count("system_init"), 0);
+        assert_eq!(backend.count("update"), 0);
+        assert!(!fixture.cache("v00000001", "packages.toml").exists());
+        assert!(
+            !fixture
+                .store
+                .system_layout("desktop")
+                .unwrap()
+                .versions
+                .join("v00000001")
+                .exists()
+        );
         fixture.cleaned("v00000001");
     }
 }
