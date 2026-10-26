@@ -57,6 +57,9 @@ pub struct SimulatedBackend {
     pub inheritance_policies: RefCell<Vec<rstarsleep::config::NocowHandling>>,
     pub post_maintenance_probe: RefCell<Option<PathBuf>>,
     pub fail_cleanup: Cell<bool>,
+    /// Report successful deletion of this root while retaining it to test postconditions.
+    /// 声称成功删除此根但将其保留，以验证删除后的状态检查。
+    pub retain_deleted_root: RefCell<Option<PathBuf>>,
     pub boot_publications: Cell<usize>,
     pub snapshots: RefCell<Vec<SnapshotEvent>>,
     pub fail_operation: RefCell<Option<&'static str>>,
@@ -540,6 +543,9 @@ impl BuildBackend for SimulatedBackend {
     }
     fn delete_subvolume(&self, path: &Path) -> Result<()> {
         assert!(path.join(MARKER).is_file());
+        if self.retain_deleted_root.borrow().as_deref() == Some(path) {
+            return Ok(());
+        }
         if self.protect_readonly_snapshots.get() {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }

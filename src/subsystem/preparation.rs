@@ -2,7 +2,7 @@
 //! 创建可写运行代前完成延后的版本任务。
 use super::{
     Error, PreparedRuntime, Result, RuntimeMount, RuntimeRecord, SubsystemConfig, checked,
-    guest_path, read_record, write_record,
+    filesystem::exists, guest_path, read_record, write_record,
 };
 use crate::{
     config::{ConfigStore, InheritanceConfig, inheritance_name, read_plugin_parameters_at},
@@ -74,6 +74,24 @@ fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Res
     Ok(())
 }
 
+/// Remove a generation only after its runtime root has actually disappeared.
+/// 仅在运行根确实消失后删除运行代目录。
+/// # Arguments
+/// - `directory`: Owned obsolete or uncommitted generation. 所属旧代或未提交运行代。
+fn remove_generation(directory: &Path) -> Result<()> {
+    let root = directory.join("root");
+    if exists(&root)? {
+        return Err(Error::Invalid(format!(
+            "旧运行根删除后仍然存在: {0} / obsolete runtime root still exists after deletion: {0}",
+            root.display()
+        )));
+    }
+    fs::remove_dir(directory).map_err(|source| Error::Io {
+        path: directory.into(),
+        source,
+    })
+}
+
 /// Recover an interrupted preparation without deleting a committed current root.
 /// 恢复中断的准备，不删除已提交的当前根。
 /// # Arguments
@@ -83,8 +101,7 @@ fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Res
 fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result<()> {
     let runtime = store.system_layout(id)?.root.join("runtime");
     let path = runtime.join("transaction.toml");
-    checked(&path)?;
-    if !path.exists() {
+    if !exists(&path)? {
         return Ok(());
     }
     let tx: Transaction = read_record(&path)?;
@@ -96,7 +113,7 @@ fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result
         ));
     }
     let current_path = runtime.join("current.toml");
-    let committed = if current_path.exists() {
+    let committed = if exists(&current_path)? {
         let current: RuntimeRecord = read_record(&current_path)?;
         validate_record(&current, store, id)?;
         current.generation == tx.generation
@@ -107,15 +124,20 @@ fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result
         let generation = runtime.join("generations").join(&tx.generation);
         checked(&generation)?;
         let root = generation.join("root");
-        if root.exists() {
+        if exists(&root)? {
             backend.delete_subvolume_recursive(&root)?;
         }
-        if generation.exists() {
-            fs::remove_dir(&generation)?;
+        if exists(&generation)? {
+            remove_generation(&generation)?;
         }
     }
-    fs::remove_file(&path)?;
-    fs::File::open(&runtime)?.sync_all()?;
+    fs::remove_file(&path).map_err(|source| Error::Io { path, source })?;
+    fs::File::open(&runtime)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| Error::Io {
+            path: runtime,
+            source,
+        })?;
     Ok(())
 }
 
@@ -539,8 +561,8 @@ fn mount_arguments(
 /// # Arguments
 /// - `store`, `id`, `backend`: Owning manager, target and recursive storage backend. 所属管理器、目标及递归存储后端。
 /// # Errors
-/// Preserves mounted or pending-source roots; returns corrupt records or storage errors.
-/// 保留已挂载或待办来源根；返回损坏记录或存储错误。
+/// Preserves protected roots and reports failed deletions with their actual paths.
+/// 保留受保护的根，并携带实际路径报告删除失败。
 pub fn prune_with_backend(
     store: &ConfigStore,
     id: &str,
@@ -549,15 +571,22 @@ pub fn prune_with_backend(
     let layout = store.system_layout(id)?;
     let _lock = controller::lock_system_directory(&layout.root)?;
     let runtime = layout.root.join("runtime");
-    if runtime.join("transaction.toml").exists() {
+    if exists(&runtime.join("transaction.toml"))? {
         return Ok(());
     }
     let current: RuntimeRecord = read_record(&runtime.join("current.toml"))?;
     validate_record(&current, store, id)?;
     let directory = runtime.join("generations");
     checked(&directory)?;
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
+    let entries = fs::read_dir(&directory).map_err(|source| Error::Io {
+        path: directory.clone(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io {
+            path: directory.clone(),
+            source,
+        })?;
         let name = entry
             .file_name()
             .to_str()
@@ -577,12 +606,17 @@ pub fn prune_with_backend(
         let path = entry.path();
         checked(&path)?;
         let root = path.join("root");
-        if root.exists() && !controller::retire_runtime_root(store, &root, backend)? {
+        if exists(&root)? && !controller::retire_runtime_root(store, &root, backend)? {
             continue;
         }
-        fs::remove_dir(path)?;
+        remove_generation(&path)?;
     }
-    fs::File::open(directory)?.sync_all()?;
+    fs::File::open(&directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| Error::Io {
+            path: directory,
+            source,
+        })?;
     Ok(())
 }
 

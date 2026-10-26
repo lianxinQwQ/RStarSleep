@@ -275,6 +275,149 @@ fn obsolete_runtime_roots_wait_for_successful_boot() {
     assert!(second.root.exists());
 }
 
+/// A backend's success cannot hide an intact obsolete runtime root.
+/// 后端返回成功不能掩盖仍然完整存在的旧运行根。
+#[test]
+fn runtime_pruning_verifies_root_deletion_before_removing_generation() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let first =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    fs::write(first.root.join("retained-data"), "keep runtime contents").unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let second =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    *b.retain_deleted_root.borrow_mut() = Some(first.root.clone());
+
+    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("旧运行根删除后仍然存在"));
+    assert!(message.contains("obsolete runtime root still exists after deletion"));
+    assert!(message.contains(first.root.to_str().unwrap()));
+    assert_eq!(
+        fs::read_to_string(first.root.join("retained-data")).unwrap(),
+        "keep runtime contents"
+    );
+    assert!(second.root.exists());
+
+    *b.retain_deleted_root.borrow_mut() = None;
+    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
+    assert!(!first.root.parent().unwrap().exists());
+    assert!(second.root.exists());
+}
+
+/// Recovery retains its transaction when a failed deletion leaves an uncommitted root intact.
+/// 删除失败且未提交运行根仍然完整存在时，恢复过程应保留事务。
+#[test]
+fn runtime_recovery_preserves_transaction_until_root_deletion_is_verified() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let current =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    let generations = current.root.parent().unwrap().parent().unwrap();
+    let generation = generations.join("g-interrupted");
+    let root = generation.join("root");
+    fs::create_dir(&generation).unwrap();
+    b.snapshot_recursive(&current.root, &root, false).unwrap();
+    fs::write(root.join("retained-data"), "keep uncommitted contents").unwrap();
+    let transaction = generations.parent().unwrap().join("transaction.toml");
+    let record = format!(
+        "schema_version=1\nsystem_id='desktop'\nversion={:?}\ngeneration='g-interrupted'\n",
+        current.version
+    );
+    fs::write(&transaction, &record).unwrap();
+    *b.retain_deleted_root.borrow_mut() = Some(root.clone());
+
+    let error =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap_err();
+    assert!(error.to_string().contains(root.to_str().unwrap()));
+    assert_eq!(fs::read_to_string(&transaction).unwrap(), record);
+    assert_eq!(
+        fs::read_to_string(root.join("retained-data")).unwrap(),
+        "keep uncommitted contents"
+    );
+    assert!(current.root.exists());
+
+    *b.retain_deleted_root.borrow_mut() = None;
+    let recovered =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    assert_eq!(recovered.root, current.root);
+    assert!(!generation.exists());
+    assert!(!transaction.exists());
+}
+
+/// Leftover siblings identify the exact failed generation without deleting arbitrary entries.
+/// 同级残留应指出失败的具体运行代，且不任意删除条目。
+#[test]
+fn runtime_pruning_reports_nonempty_generation_path() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let first =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    let generation = first.root.parent().unwrap();
+    let leftover = generation.join("leftover");
+    fs::write(&leftover, "retain unknown entry").unwrap();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let second =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+
+    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
+    assert!(matches!(
+        error,
+        subsystem::Error::Io { path, source }
+            if path == generation && source.kind() == std::io::ErrorKind::DirectoryNotEmpty
+    ));
+    assert!(!first.root.exists());
+    assert_eq!(
+        fs::read_to_string(leftover).unwrap(),
+        "retain unknown entry"
+    );
+    assert!(second.root.exists());
+}
+
+/// A dangling root must be rejected explicitly instead of being mistaken for an absent root.
+/// 悬空运行根链接必须明确报错，不能误判为运行根不存在。
+#[test]
+fn runtime_pruning_rejects_dangling_root_without_removing_generation() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let current =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    let generation = current
+        .root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("g-dangling");
+    fs::create_dir(&generation).unwrap();
+    let root = generation.join("root");
+    std::os::unix::fs::symlink(generation.join("missing"), &root).unwrap();
+
+    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
+    assert!(error.to_string().contains(root.to_str().unwrap()));
+    assert!(matches!(error, subsystem::Error::Invalid(_)));
+    assert!(
+        fs::symlink_metadata(&root)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(current.root.exists());
+}
+
 /// Another system's deferred inheritance pins an obsolete runtime source until completion.
 /// 其他系统的延后继承在完成前固定过时运行来源。
 /// # Arguments

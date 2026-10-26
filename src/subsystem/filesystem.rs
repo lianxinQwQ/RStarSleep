@@ -175,6 +175,22 @@ pub(crate) fn checked(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Distinguish a missing owned entry from a failed metadata inspection.
+/// 区分所属条目缺失与元数据检查失败。
+/// # Arguments
+/// - `path`: Absolute manager-owned entry. 管理器所属绝对路径条目。
+pub(super) fn exists(path: &Path) -> Result<bool> {
+    checked(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::Io {
+            path: path.into(),
+            source,
+        }),
+    }
+}
+
 /// Synchronize bytes before replacing an owned regular file.
 /// 替换所属普通文件前同步字节内容。
 /// # Arguments
