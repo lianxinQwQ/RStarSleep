@@ -630,7 +630,7 @@ fn build_inheritance_missing_or_cross_filesystem_sources_fail_before_any_attempt
 }
 
 #[test]
-fn build_inheritance_filesystem_check_runs_once_before_operations() {
+fn build_inheritance_filesystem_check_runs_once_without_warning() {
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let source = fixture.store.root().parent().unwrap().join("source-file");
@@ -642,25 +642,12 @@ fn build_inheritance_filesystem_check_runs_once_before_operations() {
         format!("[Inheritance]\nCopyOnWriteBuild={}\n", source.display()),
     )
     .unwrap();
-    let mut reports = 0;
-    build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |_| {
-        reports += 1;
-        assert_eq!(
-            backend.cow_checks.borrow().as_slice(),
-            std::slice::from_ref(&source)
-        );
-        no_attempt(&fixture, &backend);
-        Ok(())
+    build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |warnings| {
+        panic!("有效的同文件系统继承不应产生预检警告 / Valid same-filesystem inheritance must not produce preflight warnings: {warnings:?}")
     })
     .unwrap();
-    assert_eq!(reports, 1);
     assert_eq!(
-        backend
-            .cow_checks
-            .borrow()
-            .iter()
-            .filter(|p| **p == source)
-            .count(),
-        1
+        backend.cow_checks.borrow().as_slice(),
+        std::slice::from_ref(&source)
     );
 }

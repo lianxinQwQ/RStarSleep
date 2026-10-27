@@ -211,7 +211,9 @@ fn build_and_boot_inheritance_capture_independent_sources_at_their_own_times() {
             ),
         ).unwrap();
         let backend = SimulatedBackend::default();
-        let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend)
+        let outcome = build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |warnings| {
+            panic!("有效的同文件系统继承不应产生预检警告 / Valid same-filesystem inheritance must not produce preflight warnings: {warnings:?}")
+        })
             .unwrap()
             .remove(0);
         assert!(outcome.root.ends_with("prepared-root"));
@@ -695,9 +697,15 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let layout = fixture.store.system_layout("desktop").unwrap();
+    let missing = fixture
+        .store
+        .root()
+        .parent()
+        .unwrap()
+        .join("missing-boot-source");
     fs::write(
         layout.config.join("build/inherit.conf"),
-        "[Inheritance]\nCopyOnWriteBoot=/boot/\nCopyOnWriteBoot=/usr/lib/modules/\n",
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", missing.display()),
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))
@@ -717,7 +725,8 @@ fn build_warning_can_be_cancelled_before_any_version_or_cache_mutation() {
             break;
         }
     }
-    assert!(output.contains("/boot") && output.contains("/usr/lib/modules"));
+    assert!(output.contains(missing.to_str().unwrap()));
+    assert!(output.contains("当前视图检查未通过"));
     assert!(
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
@@ -748,9 +757,15 @@ fn interrupted_build_process_releases_cache_lock_without_removing_its_file() {
         let fixture = Fixture::new();
         fixture.system("desktop", &[]);
         let layout = fixture.store.system_layout("desktop").unwrap();
+        let missing = fixture
+            .store
+            .root()
+            .parent()
+            .unwrap()
+            .join("missing-boot-source");
         fs::write(
             layout.config.join("build/inherit.conf"),
-            "[Inheritance]\nCopyOnWriteBoot=/boot/\nCopyOnWriteBoot=/usr/lib/modules/\n",
+            format!("[Inheritance]\nCopyOnWriteBoot={}/\n", missing.display()),
         )
         .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_RStarSleep"))

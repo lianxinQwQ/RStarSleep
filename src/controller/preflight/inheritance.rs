@@ -36,10 +36,6 @@ pub(in crate::controller) fn inspect(
     if config.copy_on_write_build.is_empty() && config.copy_on_write_boot.is_empty() {
         return Ok(None);
     }
-    warnings.push(format!(
-        "警告：系统 {id} 将从来源根 {4} 在构建时继承 {0:?}，首次启动时继承 {1:?}；DirectorySubvolume={2}，NocowHandling={3}。\n继承路径不设黑名单，内容及兼容性由用户负责；启动时继承使用的内核与启动镜像固定为构建时产物。 / Warning: system {id} will inherit {0:?} at build time and {1:?} at first boot from source root {4}; DirectorySubvolume={2}, NocowHandling={3}. Inheritance paths have no blacklist; inherited content and compatibility are user-managed, and the kernel and boot image remain build-time artifacts.",
-        config.copy_on_write_build, config.copy_on_write_boot,
-        if config.directory_subvolume { "yes" } else { "no" }, config.nocow_handling, source_root.display()));
     if config.nocow_handling == NocowHandling::MoveSnapshot {
         warnings.push("NocowHandling=move-snapshot 会将普通来源目录转换为子卷，并可能进行完整复制。该操作修改实际来源，要求来源离线且已停止写入。 / Converts actual offline source directories into subvolumes; migration may fully copy data.".into());
     }

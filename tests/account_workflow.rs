@@ -244,13 +244,21 @@ fn preflight_combines_account_and_inheritance_warnings_once_before_any_build() {
     )
     .unwrap();
     let backend = SimulatedBackend::default();
+    backend.filesystem_locations.borrow_mut().insert(
+        source.clone(),
+        ("foreign-source-uuid".into(), source.clone()),
+    );
     let mut count = 0;
     let error =
         build_with_backend_and_warning(&fixture.store, Some("desktop"), &backend, |messages| {
             count += 1;
             assert!(messages.iter().any(|m| m.contains("account-selection")));
             assert!(messages.iter().any(|m| m.contains("account-override")));
-            assert!(messages.iter().any(|m| m.contains("inheritance")));
+            assert!(messages.iter().any(|m| {
+                m.contains("[desktop:inheritance]")
+                    && m.contains(source.to_str().unwrap())
+                    && m.contains("UUID 不一致")
+            }));
             assert_eq!(backend.count("bootstrap"), 0);
             assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
             Err(Error::Invalid("cancelled before build".into()))
