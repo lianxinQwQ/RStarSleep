@@ -1,13 +1,16 @@
 //! Root-owned Unix manager and serialized machine lifecycles.
 //! root 所属 Unix 管理器及串行机器生命周期。
 use super::{
-    Error, PreparedRuntime, Result, SubsystemConfig, atomic_write, client, commands, desktop,
+    Error, PreparedRuntime, Result, SubsystemConfig, atomic_write, client, commands, console,
+    desktop,
     execution::{self, Wire},
     exports, filesystem,
     identity::{self, Peer},
     preparation, prepare,
     protocol::{self, ClientMessage, Event, Operation, StartOrigin, Status},
-    prune_with_backend, read_record, session, trust, write_record,
+    prune_with_backend, read_record, session,
+    supervision::{Phase, Supervisor, systemd::Systemd},
+    trust, write_record,
 };
 use crate::config::ConfigStore;
 use serde::{Deserialize, Serialize};
@@ -23,7 +26,7 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -34,23 +37,29 @@ use std::{
 
 struct State {
     runtime: Option<PreparedRuntime>,
-    child: Option<Child>,
+    invocation: Option<String>,
     origin: Option<StartOrigin>,
     leases: usize,
     generation: u64,
     released: Instant,
     indexed_version: Option<String>,
+    reconcile_retry_at: Instant,
+    reconcile_failures: u32,
+    reconcile_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             runtime: None,
-            child: None,
+            invocation: None,
             origin: None,
             leases: 0,
             generation: 0,
             released: Instant::now(),
             indexed_version: None,
+            reconcile_retry_at: Instant::now(),
+            reconcile_failures: 0,
+            reconcile_error: None,
         }
     }
 }
@@ -64,6 +73,7 @@ struct Manager {
     slots: Mutex<BTreeMap<String, Arc<Slot>>>,
     connections: Mutex<BTreeMap<u32, usize>>,
     builds: Arc<BuildState>,
+    supervisor: Arc<dyn Supervisor>,
 }
 struct Lease {
     slot: Arc<Slot>,
@@ -96,6 +106,8 @@ struct Origin {
     machine: String,
     version: String,
     origin: StartOrigin,
+    #[serde(default)]
+    invocation: Option<String>,
 }
 
 /// Lock shared state without silently recovering poisoned state.

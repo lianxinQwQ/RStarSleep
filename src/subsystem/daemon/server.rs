@@ -96,6 +96,7 @@ pub fn run(store: ConfigStore) -> Result<()> {
         slots: Mutex::new(BTreeMap::new()),
         connections: Mutex::new(BTreeMap::new()),
         builds: Arc::new(BuildState::default()),
+        supervisor: Arc::new(Systemd),
     });
     let _ssh = super::super::ssh::start_with_builds(&manager.store, manager.builds.clone())?;
     let monitor = manager.clone();

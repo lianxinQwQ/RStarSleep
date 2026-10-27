@@ -71,6 +71,40 @@ sudo systemctl enable --now rstarsleep-subsystem-<管理根摘要>.service
 开发时可使用 `sudo RStarSleep daemon run --root /rstarsleep` 在前台运行。
 daemon 诊断进入服务 journal；机器原始控制台、管理任务日志和继承错误保留在管理根。
 
+### 控制台记录器监督与升级
+
+每个子系统的控制台记录器由独立的 systemd 临时服务管理，名称为
+`rstarsleep-console-<规范管理根与子系统标识的 SHA-256 摘要>.service`。
+该服务在需要启动子系统时创建，无需单独安装或启用；daemon 重启不会停止它。
+服务不自动重启，由 daemon 统一协调启动和重试。后台协调失败采用最长 60 秒的退避，
+相同错误只在首次出现时输出，恢复成功后重置。
+
+恢复时同时验证服务身份、本次 `InvocationID`、机器运行根和容器内执行能力；
+服务显示 `active` 本身不代表子系统就绪。已有服务正在启动时继续等待，正在关机时
+等待机器退出和控制台日志排空，然后才允许下一次启动。`capture.lock` 保留为防御保护，
+不通过 PID 文件或删除锁文件判断实例是否存活。
+
+`stop` 仍通过正常关机请求关闭机器，并等待记录器提交最后的输出。启动、关机或排空
+超时会明确报错并保留实例，启动失败也不会无条件终止已有机器。可用下列命令查看
+服务状态；具体失败信息会附上对应服务名，再用 `journalctl -u <服务名>` 查看诊断：
+
+```sh
+systemctl list-units --all 'rstarsleep-console-*.service'
+```
+
+机器尚未注册时发出的停止请求按 `InvocationID` 持久保存；即使等待超时或 daemon
+重启，后台仍会继续完成该次停止。它不会影响下一次运行；`autostart=true` 的既有
+自动启动策略仍然有效，需要持续停机时应关闭该配置。
+
+从旧版脱离 daemon 的记录器升级时，应先使用旧版正常停止子系统，并确认旧记录器
+已经退出，再替换程序和重启 daemon。新版不会接管没有服务身份的旧记录器；发现
+旧实例持锁或机器运行但服务缺失时会报错，保留原日志。不要删除 `capture.lock` 来绕过检查。
+
+开发验证中，`subsystem::supervision::systemd::tests::real_systemd_concurrent_start`
+是需要 root 和系统 systemd 的手动测试（默认忽略）；它创建一个短生命周期的独立测试
+服务，验证并发启动共享同一次 `InvocationID`，随后等待服务自然退出。该测试不启动
+nspawn；真实子系统的启动、daemon 重启恢复和关机排空仍需在具备完整宿主条件的环境验证。
+
 ## SSH 监听与公钥认证
 
 SSH 服务由同一 daemon 提供。管理员在管理根创建 `config/ssh.toml`，例如

@@ -104,8 +104,8 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         [command, rest @ ..] if command == "subsystem" => subsystem::run(rest)?,
         [command, rest @ ..] if command == "daemon" => subsystem::daemon(rest)?,
         [command] if command == "__export-user" => crate::subsystem::exports::user_entry()?,
-        [command] if command == "__console-recorder" => {
-            crate::subsystem::console::recorder_entry()?
+        [command, path] if command == "__console-recorder" => {
+            crate::subsystem::console::recorder_entry(std::path::Path::new(path))?
         }
         [command, rest @ ..] if command == "__management-job" => {
             crate::subsystem::admin::job_entry(rest)?

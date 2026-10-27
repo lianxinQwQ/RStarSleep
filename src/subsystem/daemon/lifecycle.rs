@@ -51,6 +51,7 @@ impl Manager {
                 system_id: id.into(),
                 machine: runtime.machine.clone(),
                 version: runtime.version.clone(),
+                invocation: state.invocation.clone(),
                 origin: state
                     .origin
                     .clone()
@@ -58,73 +59,153 @@ impl Manager {
             },
         )
     }
-    /// Reconstruct registrations while retaining demand occupancy through guest units.
-    /// 重建注册，并通过容器服务保留按需占用。
+    /// Recover a supervised recorder before deciding whether a machine needs starting.
+    /// 决定是否启动机器前，恢复受监督记录器。
     /// # Arguments
-    /// - `id`, `state`: Locked machine state. 已锁定机器状态。
+    /// - `id`, `state`: Locked subsystem and durable runtime. 已锁子系统及持久运行环境。
     pub(super) fn recover(&self, id: &str, state: &mut State) -> Result<()> {
         if state.runtime.is_none() {
+            let service = self
+                .supervisor
+                .query(&console::unit_name(&self.store, id)?)?;
             match super::preparation::load_for_drain(&self.store, id) {
                 Ok(runtime) => state.runtime = Some(runtime),
                 Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                    if service.live() {
+                        return Err(Error::Invalid("控制台服务仍运行但运行记录缺失 / console service is live but its runtime record is missing".into()));
+                    }
                     return Ok(());
                 }
                 Err(e) => return Err(e),
             }
         }
         let runtime = state.runtime.as_ref().unwrap();
+        let recorder = console::Recorder::new(&self.store, id, runtime)?;
+        let service = recorder.status(self.supervisor.as_ref())?;
         let alive = commands::alive(&runtime.machine)?;
         if alive {
-            let leader = commands::leader(runtime)?;
-            let actual = fs::metadata(format!("/proc/{leader}/root"))?;
-            let expected = fs::metadata(&runtime.root)?;
-            if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
-                return Err(Error::Invalid(
-                    "已登记机器的根目录与所属运行环境不匹配 / registered machine root does not match the owned runtime".into(),
-                ));
+            let _root = super::filesystem::open_runtime_root(runtime)?;
+            if !service.live() {
+                console::ensure_idle(&self.store, id)?;
+                return Err(Error::Invalid(format!(
+                    "机器仍运行但控制台服务已丢失 / machine is still running but console service was lost: {} ({}, {})",
+                    recorder.unit, service.result, service.exit_status
+                )));
             }
-        }
-        if alive && state.origin.is_none() {
-            let path = self.origin_path(id);
-            let origin = if path.exists() {
-                let saved: Origin = read_record(&path)?;
-                if saved.schema_version != 1
-                    || saved.system_id != id
-                    || saved.machine != runtime.machine
-                    || saved.version != runtime.version
-                {
-                    return Err(Error::Invalid(
-                        "恢复的机器身份不匹配 / recovered machine identity mismatch".into(),
-                    ));
-                }
-                saved.origin
-            } else {
-                StartOrigin::Explicit
+            let Some(run) = recorder.run(&self.store, id, &service)? else {
+                return Err(Error::Invalid("运行中机器缺少匹配的控制台启动记录 / running machine has no matching console invocation record".into()));
             };
-            state.origin = Some(origin);
-            state.generation += 1;
-            state.released = Instant::now();
-        }
-        if !alive && state.origin.is_some() {
-            if let Some(mut child) = state.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+            if run.finished {
+                return Err(Error::Invalid("机器仍运行但控制台任务已结束 / machine is still running but console task has finished".into()));
             }
-            state.origin = None;
+            if state.invocation != run.invocation {
+                state.origin = None;
+                state.leases = 0;
+                state.generation += 1;
+                state.invocation = run.invocation.clone();
+            }
+            if state.origin.is_none()
+                && run.shutdown_offset.is_none()
+                && commands::guest(runtime, &["/bin/true".into()]).is_ok_and(|o| o.status.success())
+            {
+                let path = self.origin_path(id);
+                let mut origin = run.origin.ok_or_else(|| {
+                    Error::Invalid(
+                        "恢复记录缺少启动来源 / recovery record missing start origin".into(),
+                    )
+                })?;
+                if path.exists() {
+                    let saved: Origin = read_record(&path)?;
+                    if saved.schema_version != 1
+                        || saved.system_id != id
+                        || saved.machine != runtime.machine
+                        || saved.version != runtime.version
+                    {
+                        return Err(Error::Invalid(
+                            "恢复的机器身份不匹配 / recovered machine identity mismatch".into(),
+                        ));
+                    }
+                    if saved.invocation == run.invocation {
+                        origin = saved.origin;
+                    }
+                }
+                state.origin = Some(origin);
+                state.released = Instant::now();
+                self.save_origin(id, state)?;
+            }
+        } else if !service.live() {
+            let had_origin = state.origin.take().is_some();
+            let had_invocation = state.invocation.take().is_some();
+            if had_origin || had_invocation {
+                state.leases = 0;
+                state.generation += 1;
+                session::cleanup(runtime)?;
+            }
+            let path = self.origin_path(id);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        } else if state.origin.take().is_some() {
+            // A recorder may still be draining after the machine registration disappears.
+            // 机器注册消失后，记录器可能仍在排空输出。
             state.leases = 0;
             state.generation += 1;
-            let _ = fs::remove_file(self.origin_path(id));
-            session::cleanup(runtime)?;
         }
         Ok(())
     }
-    /// Start exactly the current artifact; reuse any already-running machine.
-    /// 只启动当前产物，复用已运行机器。
+
+    /// Wait for both machine shutdown and recorder completion without terminating either.
+    /// 等待机器关机和记录器完成，不终止任意一方。
+    fn wait_drained(&self, id: &str, runtime: &PreparedRuntime, timeout: Duration) -> Result<()> {
+        let recorder = console::Recorder::new(&self.store, id, runtime)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let service = recorder.status(self.supervisor.as_ref())?;
+            if recorder.drained(
+                &self.store,
+                id,
+                &service,
+                commands::alive(&runtime.machine)?,
+            )? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Invalid(format!(
+                    "等待机器关机及控制台排空超时；实例保留 / timed out waiting for machine shutdown and console drain; instance retained: {}",
+                    recorder.unit
+                )));
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Start the current artifact or resume an already supervised startup.
+    /// 启动当前产物，或恢复已有的受监督启动。
     /// # Arguments
-    /// - `id`, `state`, `origin`: Locked target and start intent. 已锁定目标及启动意图。
+    /// - `id`, `state`, `origin`: Locked target and requested start intent. 已锁目标及请求启动意图。
     pub(super) fn start(&self, id: &str, state: &mut State, origin: StartOrigin) -> Result<()> {
+        self.config(id)?;
+        let binary = console::preflight(&self.store, id)?;
+        self.supervisor
+            .query(&console::unit_name(&self.store, id)?)?;
         let _activity = super::filesystem::activity(&self.store, id, false)?;
         self.recover(id, state)?;
+        let mut reuse = false;
+        if let Some(runtime) = state.runtime.as_ref() {
+            let recorder = console::Recorder::new(&self.store, id, runtime)?;
+            let service = recorder.status(self.supervisor.as_ref())?;
+            let draining = service.phase == Phase::Stopping
+                || recorder.shutdown_requested(&self.store, id, &service)?
+                || recorder
+                    .run(&self.store, id, &service)?
+                    .is_some_and(|run| run.finished || run.shutdown_offset.is_some());
+            if service.live() && draining {
+                self.stop(id, state)?;
+                self.recover(id, state)?;
+            } else {
+                reuse = service.live();
+            }
+        }
         if state.origin.is_some() {
             if (origin == StartOrigin::Explicit && state.origin != Some(StartOrigin::Explicit))
                 || (origin == StartOrigin::Autostart && state.origin == Some(StartOrigin::Demand))
@@ -134,68 +215,76 @@ impl Manager {
             }
             return Ok(());
         }
-        self.config(id)?;
-        let runtime = prepare(&self.store, id)?;
-        let mut command = Command::new("/usr/bin/systemd-nspawn");
-        command
-            .args(["--quiet", "--boot", "--register=yes"])
-            .arg(format!("--machine={}", runtime.machine))
-            .arg("--directory")
-            .arg(&runtime.root)
-            .args(&runtime.boot_args);
-        let mut child = super::super::console::spawn(&self.store, id, &runtime.machine, &command)?;
-        let ready = (|| -> Result<()> {
-            let deadline = Instant::now() + Duration::from_secs(45);
-            loop {
-                if let Some(status) = child.try_wait()? {
-                    return Err(Error::Invalid(format!(
-                        "子系统启动已退出: {status} / subsystem boot exited: {status}"
-                    )));
-                }
-                if commands::alive(&runtime.machine)?
-                    && commands::guest(&runtime, &["/bin/true".into()]).is_ok()
-                {
-                    return Ok(());
-                }
-                if Instant::now() >= deadline {
-                    return Err(Error::Invalid(
-                        "子系统启动超时 / subsystem boot timeout".into(),
-                    ));
-                }
-                thread::sleep(Duration::from_millis(150));
-            }
-        })();
-        if let Err(e) = ready {
-            let mut command = Command::new(commands::MACHINECTL);
-            command.args(["terminate", &runtime.machine]);
-            let cleanup = commands::output(command, Duration::from_secs(5));
-            // Allow the recorder to drain the final PTY bytes and publish its result.
-            // 允许记录器排空最后的 PTY 字节并发布结果。
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while child.try_wait()?.is_none() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(20));
-            }
-            if child.try_wait()?.is_none() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-            if let Err(error) = cleanup {
+        let runtime = if reuse {
+            state.runtime.as_ref().unwrap().clone()
+        } else {
+            console::ensure_idle(&self.store, id)?;
+            let runtime = prepare(&self.store, id)?;
+            // Retain the prepared identity even if service submission or readiness fails.
+            // 即使服务提交或就绪失败，也保留已准备身份。
+            state.runtime = Some(runtime.clone());
+            let recorder = console::Recorder::new(&self.store, id, &runtime)?;
+            recorder.launch(
+                self.supervisor.as_ref(),
+                &self.store,
+                id,
+                &runtime,
+                origin.clone(),
+                binary,
+            )?;
+            runtime
+        };
+        let recorder = console::Recorder::new(&self.store, id, &runtime)?;
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let run = loop {
+            let service = recorder.status(self.supervisor.as_ref())?;
+            if !service.live() {
+                let detail = console::metadata(&self.store, id)?
+                    .and_then(|r| r.error)
+                    .unwrap_or_default();
                 return Err(Error::Invalid(format!(
-                    "启动失败且清理失败 / startup failed and cleanup failed: {e}; {error}"
+                    "子系统启动服务已退出 / subsystem boot service exited: {} ({}, {}); {detail}",
+                    recorder.unit, service.result, service.exit_status
                 )));
             }
-            return Err(e);
-        }
+            if let Some(run) = recorder.run(&self.store, id, &service)? {
+                if run.finished || run.shutdown_offset.is_some() || service.phase == Phase::Stopping
+                {
+                    return Err(Error::Invalid(
+                        "启动期间控制台已进入关机 / console entered shutdown during startup".into(),
+                    ));
+                }
+                if commands::alive(&runtime.machine)? {
+                    let _root = super::filesystem::open_runtime_root(&runtime)?;
+                    if commands::guest(&runtime, &["/bin/true".into()])
+                        .is_ok_and(|o| o.status.success())
+                    {
+                        break run;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Invalid(format!(
+                    "子系统启动超时；服务保留以供检查或正常关机 / subsystem boot timeout; service retained for inspection or graceful shutdown: {}",
+                    recorder.unit
+                )));
+            }
+            thread::sleep(Duration::from_millis(150));
+        };
         state.runtime = Some(runtime);
-        state.child = Some(child);
-        state.origin = Some(origin);
+        let recovered_origin = run.origin.ok_or_else(|| {
+            Error::Invalid("启动记录缺少来源 / boot record missing start origin".into())
+        })?;
+        state.origin = Some(match (&origin, &recovered_origin) {
+            (StartOrigin::Explicit, _) => StartOrigin::Explicit,
+            (StartOrigin::Autostart, StartOrigin::Demand) => StartOrigin::Autostart,
+            _ => recovered_origin,
+        });
+        state.invocation = run.invocation;
         state.leases = 0;
         state.generation += 1;
         state.released = Instant::now();
-        if let Err(e) = self.save_origin(id, state) {
-            self.stop(id, state)?;
-            return Err(e);
-        }
+        self.save_origin(id, state)?;
         let version = state.runtime.as_ref().unwrap().version.clone();
         if let Err(e) = refresh_exports(state, &version, true, || {
             super::exports::sync_registered(&self.store, id)
@@ -209,46 +298,64 @@ impl Manager {
         }
         Ok(())
     }
-    /// Power off gracefully and report timeout without silently terminating.
-    /// 优雅关机并报告超时，不静默强制终止。
+
+    /// Power off gracefully, including recovered or still-starting services, then drain logs.
+    /// 优雅关闭恢复或仍在启动的服务中的机器，然后排空日志。
     /// # Arguments
-    /// - `id`, `state`: Locked target. 已锁定目标。
+    /// - `id`, `state`: Locked target. 已锁目标。
     pub(super) fn stop(&self, id: &str, state: &mut State) -> Result<()> {
         let _activity = super::filesystem::activity(&self.store, id, false)?;
         self.recover(id, state)?;
-        if state.origin.is_some() {
-            let runtime = state.runtime.as_ref().unwrap();
-            let mut command = Command::new(commands::MACHINECTL);
-            command.args(["poweroff", &runtime.machine]);
-            super::super::console::mark_shutdown(&self.store, id)?;
-            let result = commands::output(command, Duration::from_secs(5))?;
-            if !result.status.success() {
-                return Err(Error::Invalid(format!(
-                    "关机请求失败 / poweroff request failed: {}",
-                    String::from_utf8_lossy(&result.stderr)
-                )));
-            }
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while commands::alive(&runtime.machine)? && Instant::now() < deadline {
+        if let Some(runtime) = state.runtime.as_ref() {
+            let recorder = console::Recorder::new(&self.store, id, runtime)?;
+            let service = recorder.status(self.supervisor.as_ref())?;
+            recorder.request_shutdown(&self.store, id, &service)?;
+            let deadline = Instant::now() + Duration::from_secs(45);
+            loop {
+                let service = recorder.status(self.supervisor.as_ref())?;
+                if commands::alive(&runtime.machine)? {
+                    let _root = super::filesystem::open_runtime_root(runtime)?;
+                    if recorder.run(&self.store, id, &service)?.is_none() {
+                        return Err(Error::Invalid(
+                            "关机缺少匹配的控制台记录 / shutdown missing matching console record"
+                                .into(),
+                        ));
+                    }
+                    let mut command = Command::new(commands::MACHINECTL);
+                    command.args(["poweroff", &runtime.machine]);
+                    console::mark_shutdown(&self.store, id)?;
+                    let result = commands::output(command, Duration::from_secs(5))?;
+                    if !result.status.success() {
+                        return Err(Error::Invalid(format!(
+                            "关机请求失败 / poweroff request failed: {}",
+                            String::from_utf8_lossy(&result.stderr)
+                        )));
+                    }
+                    break;
+                }
+                if !service.live() {
+                    break;
+                }
+                if recorder
+                    .run(&self.store, id, &service)?
+                    .is_some_and(|run| run.finished || run.shutdown_offset.is_some())
+                    || service.phase == Phase::Stopping
+                {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(Error::Invalid(format!(
+                        "服务尚未注册机器，无法完成正常关机 / service has not registered a machine; graceful shutdown could not complete: {}",
+                        recorder.unit
+                    )));
+                }
                 thread::sleep(Duration::from_millis(100));
             }
-            if commands::alive(&runtime.machine)? {
-                return Err(Error::Invalid("子系统正常关机超时；机器仍在运行 / graceful subsystem shutdown timed out; machine is still running".into()));
-            }
+            self.wait_drained(id, runtime, Duration::from_secs(35))?;
             session::cleanup(runtime)?;
         }
-        if let Some(mut child) = state.child.take() {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while child.try_wait()?.is_none() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(20));
-            }
-            if child.try_wait()?.is_none() {
-                state.child = Some(child);
-                return Err(Error::Invalid("机器已停止但控制台尚未排空 / machine stopped but console has not finished draining".into()));
-            }
-            child.wait()?;
-        }
         state.origin = None;
+        state.invocation = None;
         state.leases = 0;
         state.generation += 1;
         let path = self.origin_path(id);

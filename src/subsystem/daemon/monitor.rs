@@ -23,10 +23,16 @@ impl Manager {
         if let Err(error) = super::exports::withdraw_disallowed(&self.store, id) {
             eprintln!("子系统导出授权 {id} / subsystem export authorization {id}: {error}");
         }
+        self.recover(id, state)?;
+        if let Some(runtime) = state.runtime.as_ref() {
+            let recorder = console::Recorder::new(&self.store, id, runtime)?;
+            let service = recorder.status(self.supervisor.as_ref())?;
+            if service.live() && recorder.shutdown_requested(&self.store, id, &service)? {
+                self.stop(id, state)?;
+            }
+        }
         if config.autostart {
             self.start(id, state, StartOrigin::Autostart)?;
-        } else {
-            self.recover(id, state)?;
         }
         let export_version = if state.origin.is_some() {
             state.runtime.as_ref().map(|r| r.version.clone())
@@ -111,8 +117,22 @@ impl Manager {
                         let Ok(mut state) = slot.state.try_lock() else {
                             return;
                         };
-                        if let Err(e) = manager.reconcile(&id, &mut state) {
-                            eprintln!("子系统状态协调 {id} / subsystem reconciliation {id}: {e}");
+                        if Instant::now() < state.reconcile_retry_at { return; }
+                        match manager.reconcile(&id, &mut state) {
+                            Ok(()) => {
+                                state.reconcile_failures = 0;
+                                state.reconcile_error = None;
+                            }
+                            Err(e) => {
+                                let error = e.to_string();
+                                if state.reconcile_error.as_ref() != Some(&error) {
+                                    eprintln!("子系统状态协调 {id} / subsystem reconciliation {id}: {error}");
+                                }
+                                state.reconcile_error = Some(error);
+                                state.reconcile_failures = state.reconcile_failures.saturating_add(1);
+                                let seconds = 1u64 << state.reconcile_failures.min(6);
+                                state.reconcile_retry_at = Instant::now() + Duration::from_secs(seconds.min(60));
+                            }
                         }
                     })
                 {

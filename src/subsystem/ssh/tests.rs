@@ -363,6 +363,8 @@ async fn ssh_exec_sftp_and_revocation() {
                 finished: false,
                 exit_code: None,
                 error: None,
+                invocation: None,
+                origin: None,
             },
         )
         .unwrap();

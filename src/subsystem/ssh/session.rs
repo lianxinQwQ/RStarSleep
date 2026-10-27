@@ -539,7 +539,7 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 if follow_output{return follow(workspace,input,output,Some(job.task.clone()),offset,Some(path),pending).await;}read_file(&path,offset,output).await?;
             }else{
                 let directory=console::directory(&workspace.store,&workspace.id)?;
-                let run=if let Some(task)=task{if task.contains('/')||task.contains("..")||!task.starts_with("boot-"){return Err(Error::Invalid("控制台任务标识无效 / invalid console task identity".into()));}super::super::read_record::<console::Run>(&directory.join(format!("{task}.toml")))?}else{console::current(&workspace.store,&workspace.id)?};
+                let run=if let Some(task)=task{console::task(&workspace.store,&workspace.id,&task)?}else{console::current(&workspace.store,&workspace.id)?};
                 let offset=if kind=="shutdown"{run.shutdown_offset.ok_or_else(||Error::Invalid("此启动尚无关机记录 / this boot has no shutdown record".into()))?}else{run.offset};
                 let offset=if let Some(lines)=lines{offset.max(tail_offset(&directory.join("console.log"),lines)?)}else{offset};
                 if follow_output{return follow(workspace,input,output,None,offset,None,pending).await;}

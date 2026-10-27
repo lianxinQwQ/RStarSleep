@@ -18,6 +18,7 @@ mod preparation;
 pub mod protocol;
 pub mod session;
 pub mod ssh;
+mod supervision;
 pub mod terminal;
 mod trust;
 
