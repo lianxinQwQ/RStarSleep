@@ -5,6 +5,44 @@ use crate::subsystem::management::tests::fixture;
 use std::os::fd::AsRawFd;
 
 #[tokio::test]
+async fn management_line_endings_survive_chunk_boundaries_and_backpressure() {
+    let chunks: &[&[u8]] = &[
+        b"first\nsecond\r",
+        b"\n\nprogress\rdone\n",
+        b"\xff\0\x1b[32mfinal\n",
+    ];
+    for pty in [false, true] {
+        let (mut wire, mut reader) = tokio::io::duplex(1);
+        let mut output = CommandOutput {
+            wire: &mut wire,
+            pty,
+            previous_cr: false,
+        };
+        let write = async {
+            for chunk in chunks {
+                output.write_all(chunk).await.unwrap();
+            }
+            output.shutdown().await.unwrap();
+        };
+        let read = async {
+            let mut received = Vec::new();
+            reader.read_to_end(&mut received).await.unwrap();
+            received
+        };
+        let ((), received) =
+            tokio::time::timeout(Duration::from_secs(1), async { tokio::join!(write, read) })
+                .await
+                .expect("换行传输超时 / line ending transfer timed out");
+        let expected = if pty {
+            b"first\r\nsecond\r\n\r\nprogress\rdone\r\n\xff\0\x1b[32mfinal\r\n".to_vec()
+        } else {
+            chunks.concat()
+        };
+        assert_eq!(received, expected);
+    }
+}
+
+#[tokio::test]
 async fn resize_bursts_keep_the_final_window_size() {
     let (sender, mut receiver) = watch::channel((80, 24));
     for width in 81..150 {

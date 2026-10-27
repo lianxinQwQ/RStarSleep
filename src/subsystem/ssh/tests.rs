@@ -233,10 +233,35 @@ async fn ssh_exec_sftp_and_revocation() {
         super::super::write_record(&jobs.join("build-wire.toml"), &job).unwrap();
         registration.recorded().unwrap();
         fs::write(jobs.join("build-wire.log"), b"BUILD-FIRST\n").unwrap();
+        let mut cli = connection.channel_open_session().await.unwrap();
+        cli.request_pty(true, "xterm-256color", 90, 28, 0, 0, &[])
+            .await
+            .unwrap();
+        cli.request_shell(true).await.unwrap();
+        rendered(&mut cli, "apps:/>").await;
+        cli.data(b"build status\r".as_slice()).await.unwrap();
+        let output = rendered(&mut cli, "BUILD-FIRST\r\n").await;
+        assert!(output.contains("BUILD-FIRST\r\n"));
+        fs::write(
+            jobs.join("build-wire.log"),
+            b"BUILD-FIRST\nBUILD-CRLF\r\nBUILD-NEXT\n",
+        )
+        .unwrap();
+        let output = rendered(&mut cli, "BUILD-NEXT\r\n").await;
+        assert!(output.contains("BUILD-CRLF\r\nBUILD-NEXT\r\n"));
+        assert!(!output.contains("\r\r\n"));
+        cli.close().await.unwrap();
+        fs::write(jobs.join("build-wire.log"), b"BUILD-FIRST\n").unwrap();
         // A new SSH connection reads the same daemon-owned build registration.
         // 新的 SSH 连接读取同一份 daemon 所属构建登记。
         let mut observer = connect().await.unwrap();
-        assert!(observer.authenticate_publickey("apps", PrivateKeyWithHashAlg::new(identity.clone(), None)).await.unwrap().success());
+        assert!(
+            observer
+                .authenticate_publickey("apps", PrivateKeyWithHashAlg::new(identity.clone(), None))
+                .await
+                .unwrap()
+                .success()
+        );
         let mut observing = observer.channel_open_session().await.unwrap();
         observing.exec(true, "build status").await.unwrap();
         rendered(&mut observing, "BUILD-FIRST").await;
@@ -271,13 +296,19 @@ async fn ssh_exec_sftp_and_revocation() {
             tokio::time::timeout(Duration::from_millis(20), async {
                 loop {
                     match stopper.wait().await {
-                        Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. } | ChannelMsg::ExitStatus { .. } | ChannelMsg::Close) | None => break,
+                        Some(
+                            ChannelMsg::Data { .. }
+                            | ChannelMsg::ExtendedData { .. }
+                            | ChannelMsg::ExitStatus { .. }
+                            | ChannelMsg::Close,
+                        )
+                        | None => break,
                         _ => {}
                     }
                 }
             })
-                .await
-                .is_err()
+            .await
+            .is_err()
         );
         fs::write(
             jobs.join("build-wire.log"),

@@ -115,6 +115,57 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     sync::watch,
 };
+
+/// Supply terminal line endings for management output while preserving existing CRLF.
+/// 为管理输出补齐终端换行，同时保留已有的 CRLF。
+struct CommandOutput<'a, W> {
+    wire: &'a mut W,
+    pty: bool,
+    previous_cr: bool,
+}
+impl<W: AsyncWrite + Unpin> AsyncWrite for CommandOutput<'_, W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if !this.pty || bytes.is_empty() {
+            return Pin::new(&mut *this.wire).poll_write(cx, bytes);
+        }
+        let count = match bytes.iter().position(|byte| *byte == b'\n') {
+            Some(0) => {
+                if !this.previous_cr {
+                    match Pin::new(&mut *this.wire).poll_write(cx, b"\r") {
+                        Poll::Ready(Ok(0)) => return Poll::Ready(Ok(0)),
+                        Poll::Ready(Ok(_)) => this.previous_cr = true,
+                        other => return other,
+                    }
+                }
+                // Retain the inserted CR across Pending; consume LF only when it is written.
+                // Pending 时保留已补写 CR 的状态；只有写出 LF 后才消费输入中的 LF。
+                1
+            }
+            Some(count) => count,
+            None => bytes.len(),
+        };
+        match Pin::new(&mut *this.wire).poll_write(cx, &bytes[..count]) {
+            Poll::Ready(Ok(n)) => {
+                if n > 0 {
+                    this.previous_cr = bytes[n - 1] == b'\r';
+                }
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.get_mut().wire).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.get_mut().wire).poll_shutdown(cx)
+    }
+}
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
@@ -361,7 +412,10 @@ fn refresh_dashboard(workspace: &Workspace, terminal: &mut Terminal) -> Result<V
             let directory = admin::directory(&workspace.store, &workspace.id)?;
             let status = if let Some(job) = active {
                 if job.state == "preparing" {
-                    format!("正在检查构建配置 / Checking build configuration: {}", job.task)
+                    format!(
+                        "正在检查构建配置 / Checking build configuration: {}",
+                        job.task
+                    )
                 } else if directory
                     .join(format!("{}.cancel", job.task))
                     .try_exists()?
@@ -385,7 +439,8 @@ fn refresh_dashboard(workspace: &Workspace, terminal: &mut Terminal) -> Result<V
                 status
             };
             terminal.update_live(
-                job.filter(|j| j.state != "preparing").map(|j| (directory.join(format!("{}.log", j.task)), 0)),
+                job.filter(|j| j.state != "preparing")
+                    .map(|j| (directory.join(format!("{}.log", j.task)), 0)),
                 &status,
             )
         }
@@ -425,6 +480,14 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     remote: &Remote,
 ) -> Result<u32> {
     super::super::SubsystemConfig::read(&workspace.store, &workspace.id)?;
+    // Root-shell PTY output already owns its terminal processing and must remain byte-exact.
+    // root shell 的 PTY 输出自行负责终端处理，必须逐字节保留。
+    let mut command_output = CommandOutput {
+        wire: output,
+        pty: pty && words.first().is_none_or(|word| word != "shell"),
+        previous_cr: false,
+    };
+    let output = &mut command_output;
     let args = words.iter().map(String::as_str).collect::<Vec<_>>();
     let mut text = String::new();
     match args.as_slice(){
@@ -486,13 +549,8 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         _=>return Err(Error::Invalid("未知命令或参数；输入 help 查看支持的命令 / unknown command or arguments; type help for supported commands".into()))
     }
     if !text.is_empty() {
-        output
-            .write_all(
-                text.replace('\n', if pty { "\r\n" } else { "\n" })
-                    .as_bytes(),
-            )
-            .await?;
-        output.write_all(if pty { b"\r\n" } else { b"\n" }).await?;
+        output.write_all(text.as_bytes()).await?;
+        output.write_all(b"\n").await?;
     }
     Ok(0)
 }
@@ -617,11 +675,12 @@ async fn follow_build<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         true,
     )
     .await?;
-    let status = if admin::active_build(&workspace.store, &workspace.id, &workspace.builds)?.is_none() {
-        "当前系统不在构建 / this system is not building"
-    } else {
-        "本次构建已结束 / this build has finished"
-    };
+    let status =
+        if admin::active_build(&workspace.store, &workspace.id, &workspace.builds)?.is_none() {
+            "当前系统不在构建 / this system is not building"
+        } else {
+            "本次构建已结束 / this build has finished"
+        };
     output
         .write_all(format!("\r\n{status} · exit {code}\r\n").as_bytes())
         .await?;
