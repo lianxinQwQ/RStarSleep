@@ -56,20 +56,169 @@ commands = ["/usr/bin/rg"]
 desktop_files = []
 ```
 
-root 可以管理所有子系统；其他 UID 必须显式授权，只能以自己的 UID/GID 执行。
+本地 Unix socket 接口中，root 可以管理所有子系统；其他 UID 必须显式授权，只能以自己的 UID/GID 执行。
 已有容器账户的 UID/GID 冲突会报错。授权对新请求立即生效；挂载、tmpfs 和 GPU
 设置在下一次启动生效。初版共享宿主网络；nspawn 的 UID 也与宿主一致。
 
 ```sh
 sudo RStarSleep build apps --root /rstarsleep
 sudo RStarSleep daemon install --root /rstarsleep
-# install 输出服务名；随后用它启用服务：
+# install 输出服务名；随后用它启用服务。 / Enable the service named by install.
 sudo systemctl enable --now rstarsleep-subsystem-<管理根摘要>.service
 ```
 
 `daemon install` 生成服务并重载 systemd，启用服务由上面的明确命令执行。
 开发时可使用 `sudo RStarSleep daemon run --root /rstarsleep` 在前台运行。
-机器引导日志进入 daemon 的 journal；构建状态、继承错误及 guest 构建日志保留在管理根。
+daemon 诊断进入服务 journal；机器原始控制台、管理任务日志和继承错误保留在管理根。
+
+## SSH 监听与公钥认证
+
+SSH 服务由同一 daemon 提供。管理员在管理根创建 `config/ssh.toml`，例如
+`/rstarsleep/config/ssh.toml`：
+
+```toml
+schema_version = 1
+listen = "127.0.0.1:2222"
+host_key = "config/ssh_host_ed25519_key"
+```
+
+没有该文件时不启动 SSH。`schema_version` 必须为 `1`；`listen` 和 `host_key`
+可省略，默认值如上。监听地址使用 IP 和非零端口；远程访问可将 `listen` 设置为
+`0.0.0.0:2222`，客户端连接宿主的实际 IP 或域名。监听与主机密钥配置在 daemon
+启动时读取，修改后重启对应的 daemon 服务。
+
+相对 `host_key` 路径基于管理根解析，也可使用绝对路径。父目录须预先存在并受管理员
+控制；首次启动时自动生成 Ed25519 主机私钥，后续复用。已有私钥必须仅属主可访问，
+通常使用 root 所有及 `0600` 权限。SSH 配置、公钥文件或主机私钥无效时明确报错；
+不跳过错误行，也不临时替换已有主机身份。
+
+每个子系统的授权公钥集中写入：
+
+```text
+/rstarsleep/systems/apps/config/subsystem/authorized_keys
+```
+
+该文件由宿主管理员维护，属于 root，不能允许普通用户写入。每行一个 OpenSSH 公钥，
+允许末尾说明、空行和以 `#` 开头的注释；不支持 `command=`、`from=` 等公钥选项。
+同一文件可以包含多个公钥。文件缺失、为空或没有匹配公钥时拒绝登录；仅支持公钥认证。
+
+SSH 用户名就是全局 `subsystems` 中登记的系统名称。例如：
+
+```sh
+ssh -p 2222 apps@127.0.0.1
+ssh -p 2222 apps@host.example 'status'
+```
+
+SSH 公钥授权授予该子系统的配置编辑、构建、生命周期管理及 root shell 权限；
+`allowed_uids` 用于本地宿主 UID 访问，不用于 SSH 公钥认证。每次认证重新读取角色和
+公钥文件，删除公钥会拒绝后续认证，已经建立的连接不会因此自动断开。
+
+## SSH 管理 CLI、编辑器与 TUI
+
+交互登录直接显示类 shell 管理提示符；需要 PTY，从脚本发起交互会话时使用 `ssh -t`。
+CLI 支持历史记录、Tab 补全、引号和转义；参数按字面值解析，不支持管道、重定向、
+变量展开或命令替换。非交互 SSH 可执行单条管理命令；编辑器与 TUI 在交互管理 CLI 中使用。
+
+CLI 与 SFTP 的虚拟根完全相同：
+
+```text
+/
+├── build/     # 构建配置 / Build configuration
+└── script/    # 构建脚本及资源 / Build scripts and resources
+```
+
+这里只显示当前登录子系统的配置。`subsystem/`、其他系统、宿主路径和运行根不在此
+文件视图中；符号链接和特殊文件也不作为可访问的配置文件。
+
+| 命令 | 用途 |
+| --- | --- |
+| `help`、`pwd`、`cd [路径]`、`ls [路径]` | 帮助与虚拟目录导航 |
+| `cat 路径`、`mkdir 路径`、`rm 路径`、`rmdir 路径`、`mv 来源 目标` | 读取文本、创建目录、删除文件或空目录、重命名 |
+| `edit 路径`、`vi 路径`、`vim 路径` | 打开同一个内置类 Vim 编辑器 |
+| `check` | 检查配置、插件要求、脚本结构及已有继承来源；软件包解析和实际脚本结果在构建时检查 |
+| `build`、`jobs` | 提交后台构建，查看持久任务状态、退出码和错误 |
+| `status` | 查看机器状态及当前成功构建产物 |
+| `start`、`stop`、`restart` | 提交生命周期任务；追加 `--follow` 等待并跟随输出 |
+| `logs [boot\|shutdown\|build] [--follow] [--lines N] [--task ID]` | 查看启动、关机或构建日志；默认查看启动日志 |
+| `console` | 从最近 100 行开始跟随机器原始控制台输出 |
+| `shell`、`tui`、`exit` | 进入子系统 root shell、打开 TUI、退出管理会话 |
+
+编辑器支持 UTF-8 文本，打开文件上限为 1 MiB。`i`／`a`／`o` 进入插入模式，
+`Esc` 返回普通模式；方向键或 `h/j/k/l` 移动，`0`／`$` 到行首／行尾，`x` 删除，
+`u` 撤销，`/文本` 搜索，`n` 查找下一处。使用 `:w` 保存、`:q` 退出、`:wq` 保存退出、
+`:q!` 放弃修改。保存时比较原始内容，其他会话已修改同一文件时拒绝覆盖。
+
+保存配置后显式构建，再启动或重启以使用成功产物，例如在管理 CLI 中执行：
+
+```text
+edit /build/config.conf
+check
+build
+jobs
+logs build --follow
+restart --follow
+```
+
+软件包通过 `build/` 中 INI 的 `[Content] Packages` 声明；构建行为与资源通过
+`script/` 管理，持久化和继承通过 `[Inheritance]` 配置。脚本目录的顶层条目遵循
+[构建脚本格式](../src/config/layout.md#系统构建脚本)，资源应放在带 `main.sh` 的目录或资源归档中。
+保存不会自动构建或重启；构建失败保留当前成功产物和正在运行的机器，成功产物在下次
+冷启动或重启时生效。
+
+输入 `tui` 打开全屏快捷键面板：`s` 状态、`b` 构建、`u` 启动、`d` 停止、`r` 重启、
+`c` 控制台、`l` 构建日志、`h` root shell。`e` 返回 CLI 并预填 `edit `，随后输入文件路径；
+`q`、`Esc` 或 `Ctrl+C` 返回 CLI。
+
+## SFTP 配置访问与提交
+
+使用同一个 SSH 地址、系统名称和公钥连接 SFTP：
+
+```sh
+sftp -P 2222 apps@host.example
+```
+
+例如在 SFTP 会话中传输配置和脚本：
+
+```text
+ls /
+get /build/config.conf ./apps.conf
+put ./apps.conf /build/config.conf
+put ./01-configure.sh /script/01-configure.sh
+```
+
+SFTP 支持目录枚举、文件读取和上传、创建／删除目录、删除／重命名文件及受限属性修改。
+上传文件上限为 256 MiB；编辑器之外的二进制脚本资源也可通过 SFTP 上传。配置须保持
+管理员所有，不允许设置普通用户属主、组／其他用户可写权限或特殊权限位。
+
+上传数据先写入独立暂存文件，成功关闭文件句柄后才原子发布；未关闭句柄就断开连接
+会放弃该文件的暂存内容。编辑提交、SFTP 写入和构建输入冻结共用每系统 `config.lock`，
+冲突时报错，请关闭上传并完成提交后重试构建。构建使用冻结输入，之后的编辑留待下次构建。
+
+## root shell 与任务日志
+
+在 SSH 管理 CLI 内输入 `shell`，或直接执行：
+
+```sh
+ssh -t -p 2222 apps@host.example shell
+```
+
+这会按需启动并进入该子系统 root 账户配置的登录 shell，使用子系统内的 home，支持
+终端尺寸变化和双流、退出状态传递。远程 root shell 关闭桌面会话继承；退出后回到
+交互管理 CLI，直接 SSH 执行 `shell` 时则结束该 SSH 命令。
+
+宿主的 `RStarSleep subsystem shell apps --root /rstarsleep` 是本地调用者入口，
+按调用者 UID/GID 运行 `/bin/sh -l`。以 root 调用可进入 root 身份；从管理根运行程序时
+也可使用 `sudo /rstarsleep/RStarSleep subsystem shell apps`。
+
+后台管理任务保存在 `systems/apps/runtime/jobs/`，每个任务有状态文件和日志；构建与
+生命周期任务分别使用锁。同类任务并发提交会报错。任务独立于 SSH 连接运行，断连后
+可重新登录，用 `jobs` 和 `logs build --task <任务ID>` 查看。`logs build --follow`
+跟随对应构建任务日志；`start/stop/restart --follow` 跟随生命周期输出。
+
+原始机器 PTY 输出追加到 `systems/apps/runtime/console/console.log`，启动和关机
+偏移及退出结果保存在同目录的 `current.toml` 和 `boot-*.toml`。`console` 是输出订阅，
+交互操作使用 `shell`。`Ctrl+C` 取消日志跟随或控制台订阅，不取消已提交的后台任务。
+重新查询 `jobs` 时会核对未完成任务的工作进程；未记录完成且工作进程已经结束的任务显示为中断。
 
 ## 运行与应用
 
@@ -89,7 +238,7 @@ sudo RStarSleep subsystem stop apps --root /rstarsleep
 `open` 默认分离图形应用，`open --wait` 等待应用完成；`Terminal=true` 的 desktop
 始终等待终端程序。每个应用服务跟踪整个 cgroup，派生进程仍占用子系统。
 显式启动和自启不会自动停止；按需启动在最后一个应用结束后等待闲置宽限时间再停止。
-daemon 重启会恢复注册机器、检查残留应用服务并修复 guest socket。
+daemon 重启会恢复注册机器并检查残留应用服务。
 闲置检查还覆盖私有总线激活的进程和客体用户应用 scope；最后一次占用结束后重新计算
 宽限时间，探测失败时保留机器。
 
@@ -135,33 +284,14 @@ Terminal 等主组信息；Exec 字段按参数展开，不交给 shell 解析�
 切换会刷新已登记用户；移出角色或撤销 UID 授权时只撤销未修改的自有入口。
 降权导出 helper 的总执行时限为 30 秒，超时会清理其子进程并返回错误。
 
-## 容器内管理
+## 从旧 guest 控制方式迁移
 
-容器只获得 `/run/rstarsleep/guest.sock` 和只读管理器程序，不能读取整个管理根。
-guest 操作要求容器内 root；守护进程核对内核 UID 和机器挂载命名空间，客户端没有
-指定其他系统或宿主路径的参数：
-
-```sh
-sudo /run/rstarsleep/RStarSleep guest install firefox
-sudo /run/rstarsleep/RStarSleep guest rebuild
-sudo /run/rstarsleep/RStarSleep guest restart
-sudo /run/rstarsleep/RStarSleep guest add-copy /etc/myapp.conf
-sudo /run/rstarsleep/RStarSleep guest add-mount /srv/data
-sudo /run/rstarsleep/RStarSleep guest migrate /srv/data
-```
-
-install 写入受控 `build/guest-packages.conf`，保留其他赋值文件，并安排异步构建。
-旧 TOML 构建配置需要先迁移为 INI。响应输出宿主日志位置；构建失败不会影响运行机器，
-成功产物在下一次启动/重启生效。restart 先确认请求再异步重启，原会话会断开。
-
-add-copy 保存捕获资源及构建脚本，后续每次构建应用；add-mount 只登记待迁移项目，
-未迁移时仍可重启。migrate 在互斥锁内复制到暂存 Btrfs 卷，同步并原子发布，随后激活
-运行挂载并尝试热绑定。绑定失败保留已发布数据，重试不覆盖。选择路径及其祖先不能是
-符号链接，内部数据链接按数据保留；控制路径、伪文件系统及特殊节点被拒绝。
-
-捕获与迁移要求退出所有管理器应用/shell 租约，并停止其他可能写入的 guest 服务。
-可显式启动机器后，在宿主使用 `sudo machinectl shell root@<status 输出的机器名>`
-执行这些操作；普通 `subsystem shell` 自身也持有租约。复制期间拒绝新应用请求。
+`guest` 子命令及其 install、rebuild、restart、add-copy、add-mount、migrate 附加机制
+已移除，容器不再获得专用 guest socket 或管理器程序注入。配置管理统一使用 SSH CLI／TUI
+和 SFTP：编辑 Packages 或构建脚本，检查并提交构建，随后显式重启。
+持久数据和继承使用现有 build 配置机制，来源选择遵循构建继承语义；不再提供旧 guest
+捕获、持久迁移收据和运行时热绑定流程。继承说明见
+[配置目录说明](../src/config/layout.md#继承配置与版本数据)。
 
 ## 恢复和验证范围
 
@@ -174,8 +304,10 @@ add-copy 保存捕获资源及构建脚本，后续每次构建应用；add-moun
 
 自动化验证覆盖模拟 CoW 启动、一次性继承、失败引用保持、持久 fstab、版本切换及
 清理保护，另外用真实 Unix socket/子进程验证流、PTY、信号、退出状态、固定 socket
-inode、所有权协调和迁移发布重试。真实 Btrfs+nspawn 引导、图形出窗、音频与重登录
-仍需在可执行特权操作的隔离环境完成验收；当前开发环境没有免密 sudo，未安装或启动宿主服务。
+inode 和所有权协调。SSH/SFTP 测试覆盖真实回环握手、公钥认证与撤销、命令执行和
+二进制上传；工作区与终端测试覆盖路径边界、事务写入、并发保存、UTF-8 编辑和 TUI 返回。
+真实 Btrfs+nspawn 引导、远程 root shell、重建重启闭环、图形出窗、音频与重登录
+仍需在可执行特权操作的隔离环境完成验收。测试结果以实际命令输出为准。
 
 `cargo test --test session_mounts -- --include-ignored` 在独立 user/mount 命名空间中
 验证真实 Unix socket 跨命名空间接入、源路径替换、只读绑定和固定挂载清理；需要启用

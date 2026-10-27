@@ -18,7 +18,9 @@ Btrfs 顶层/
 └── @RStarSleep/                         # 管理器专用子卷
     ├── RStarSleep                      # 每次构建同步的当前可执行程序
     ├── config/
-    │   └── rstarsleep.toml              # 全局配置
+    │   ├── rstarsleep.toml              # 全局配置
+    │   ├── ssh.toml                     # 可选 SSH 监听配置 / Optional SSH listener configuration
+    │   └── ssh_host_ed25519_key         # 默认 SSH 主机私钥 / Default SSH host private key
     ├── plugins/                        # 用户存放的插件压缩包或目录
     │   └── arch.tar.gz                 # init 安装的内嵌 Arch 预设
     ├── predownload/                    # 独立下载环境缓存
@@ -37,12 +39,13 @@ Btrfs 顶层/
             │   ├── build/
             │   │   ├── config.conf     # mkosi 风格 INI，读取 Packages 和发行版
             │   │   ├── environment.conf # [Environment] 执行环境，默认只有注释示例
-            │   │   ├── inherit.conf    # 空继承模板，与其他 INI 一同叠加
-            │   │   └── guest-packages.conf # 可选，guest install 的受控包请求
+            │   │   └── inherit.conf    # 空继承模板，与其他 INI 一同叠加
             │   ├── script/            # 软件步骤后的构建脚本输入
             │   └── subsystem/
-            │       └── config.toml     # 当前子系统授权、启动、会话及导出配置
+            │       ├── config.toml     # 当前子系统授权、启动、会话及导出配置
+            │       └── authorized_keys # 可选 SSH 授权公钥 / Optional authorized SSH public keys
             ├── build.lock              # 每系统构建独占锁
+            ├── config.lock             # 编辑提交与配置冻结互斥 / Edit and configuration freeze exclusion
             ├── build-current.toml      # 当前成功交付产物，失败构建不替换
             ├── identity.toml           # 独立安装时保存的稳定 machine-id
             ├── version-counter         # 最高已分配版本号，清理历史后仍保留
@@ -70,19 +73,24 @@ Btrfs 顶层/
             │       ├── inherit/        # 可选继承阶段，父根及子卷均只读，不复用
             │       └── inherit.toml    # 继承阶段完成与实际清单
             ├── runtime/                # 子系统运行存储和恢复记录，按需创建
-            │   ├── activity.lock       # 应用/启停共享，捕获/迁移排他
+            │   ├── activity.lock       # 应用和启停活动锁 / Application and lifecycle activity lock
             │   ├── current.toml        # 已同步运行代、版本、机器名及启动配置摘要
             │   ├── transaction.toml    # 未完成存储准备时存在
             │   ├── fstab               # 单独注入容器的只读适配配置
             │   ├── exports-users.toml  # 已主动登记用户入口集成的用户
             │   ├── generations/<代>/root/ # 可写父根及全部内部子卷
-            │   └── guest/
-            │       ├── mount-<摘要>.toml # 待迁移/已发布持久卷收据
-            │       ├── build.lock      # guest 异步构建任务锁
-            │       ├── build-current.toml # 当前 guest 构建任务状态
-            │       └── build-*.log     # guest 构建输出
+            │   ├── jobs/               # 持久管理任务 / Durable management jobs
+            │   │   ├── build.lock      # 构建任务互斥 / Build job exclusion
+            │   │   ├── lifecycle.lock  # 启停任务互斥 / Lifecycle job exclusion
+            │   │   ├── <任务>.toml     # 任务状态与退出结果 / Job state and exit result
+            │   │   ├── <任务>.lock     # 工作进程存活锁 / Worker liveness lock
+            │   │   └── <任务>.log      # 管理任务输出 / Management job output
+            │   └── console/            # 持久机器控制台 / Durable machine console
+            │       ├── capture.lock    # 控制台记录器锁 / Console recorder lock
+            │       ├── console.log     # 原始 PTY 追加日志 / Raw append-only PTY log
+            │       ├── current.toml    # 当前启动及关机偏移 / Current boot and shutdown offsets
+            │       └── boot-*.toml     # 启动记录与退出结果 / Boot records and exit results
             └── persistent/             # Mount 跨版本共享数据，如 -home-alice
-                └── guest/<摘要>/data   # guest migrate 发布的持久对象
 ```
 
 初始化管理器时创建 `@RStarSleep` 子卷、`config/`、`systems/`、`plugins/`、`predownload/`、`persistent/` 和全局配置，
@@ -94,6 +102,8 @@ Btrfs 顶层/
 版本、缓存和持久化目录及默认配置。
 这些系统目录目前是普通目录；具体版本根、阶段缓存是否使用子卷由对应功能实现。
 初始化不会生成系统版本、配置留档或修改主/子系统角色，也不会覆盖已有配置。
+`ssh.toml` 和每系统 `authorized_keys` 由管理员按需创建，初始化不会自动开放 SSH；
+启用后，缺失的默认主机私钥由 daemon 首次启动生成，已有私钥保留。
 子卷创建失败时返回错误，不使用普通目录代替；既有 `@RStarSleep` 必须为真实子卷。
 
 ## 系统归属与角色
@@ -491,8 +501,23 @@ pending-inheritance 产物；失败构建保持上一引用。冷启动/重启�
 
 `runtime/current.toml` 表示可写根已同步，机器就绪另存于
 `/run/rstarsleep/<规范管理根SHA-256>/<系统>.origin.toml`；同目录保存 daemon 锁、
-`manager.sock` 和按系统隔离的 guest socket。daemon 恢复时核对实际 leader/根身份，
-并修复 guest socket 绑定。新机器就绪后回收旧代，挂载或待办来源仍引用的根保留。
+`manager.sock`。daemon 恢复时核对实际 leader/根身份及残留应用服务。
+新机器就绪后回收旧代，挂载或待办来源仍引用的根保留。
+
+子系统配置管理通过 daemon 的 SSH 服务提供，管理根可选 `config/ssh.toml` 设置
+`schema_version = 1`、`listen` 和 `host_key`。默认监听 `127.0.0.1:2222`，主机私钥
+默认位于 `config/ssh_host_ed25519_key`，相对密钥路径基于管理根。
+以系统名称登录，公钥从该系统 `config/subsystem/authorized_keys` 逐行加载；
+公钥授权与本地 `allowed_uids` 分别配置。监听配置在 daemon 启动时读取，角色和公钥
+在每次认证时重读，已有连接不会因删除公钥而主动断开。
+
+SSH CLI、内置类 Vim 编辑器、TUI 与 SFTP 使用同一配置工作区，虚拟 `/` 仅列出
+`build/`、`script/`，不开放 `subsystem/`、其他系统或宿主路径。编辑提交、SFTP 写入
+与构建输入冻结共用 `config.lock`，上传在成功关闭时原子提交；保存后显式检查、构建和重启。
+`runtime/jobs/` 保存独立后台管理任务的状态、锁及日志，`runtime/console/` 保存原始
+机器控制台与启动／关机记录，SSH 断连不取消已提交任务。
+原 guest 子命令、专属 socket、包请求文件和捕获／持久迁移附加机制已经移除。
+具体配置及操作见[子系统使用说明](../../docs/subsystem-usage.md)。
 
 声明可选 `query_package_files` 的插件在构建 script 阶段后提供包所属文件清单，
 保存为版本外层 `application-files.tsv`。该文件只是候选索引，继承可能改变实际文件；

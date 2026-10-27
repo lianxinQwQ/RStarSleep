@@ -6,7 +6,8 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 [子系统使用说明](subsystem-usage.md)。
 
 当前已实现构建发布、启动前继承收尾、常驻/按需运行、终端、图形会话接入、用户入口
-导出和子系统内管理。自动化验证覆盖主要逻辑及部分真实进程/Unix socket 行为；
+导出和基于 SSH 的子系统管理（CLI、编辑器、TUI、SFTP 与 root shell）。自动化验证覆盖
+主要逻辑及部分真实进程/Unix socket、SSH/SFTP 行为；
 特权 Btrfs+nspawn 和真实桌面链路仍需在隔离环境验收。
 
 版本切换不依赖运行内容的变更程度，不比较运行根与基线，也不要求确认丢弃修改。
@@ -28,7 +29,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | 清理 | 当前构建/运行/事务引用保护；旧代回收核对 pending 来源、运行根及挂载命名空间 |
 | 发行版能力 | 可选 `query_package_files`；Arch 已实现；构建生成候选索引，运行时再验证文件 |
 | 用户集成 | 系统前缀命令/desktop/图标；显式登记用户，降权写入并按内容所有权同步 |
-| guest 管理 | 实例绑定接口、捕获脚本、持久迁移、受控包配置与异步构建/重启 |
+| SSH 管理 | 公钥绑定子系统身份；build/script 共享视图、类 Vim 编辑、TUI、SFTP、持久任务和 root shell |
 
 主要依据：[`runtime.rs`](../src/config/runtime.rs)、
 [`layout.md`](../src/config/layout.md)、[`container.rs`](../src/controller/container.rs)、
@@ -49,11 +50,11 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | 终端与执行 | `cmd_shell.go`、`server.go` 的 `bridgeShell` | 普通用户通过 daemon 进入；终端流、退出码、信号和尺寸变化分别处理 |
 | 图形直通 | `internal/graphical/graphical.go`、`bootbind.go` | 接入调用者 Wayland/X11、音频、用户总线；请求时检测会话资源更换 |
 | 应用索引与入口 | `internal/builder/bake.go`、`daemon/{exports,desktop}.go` | 插件查询包文件，核心生成命令/desktop/图标；维护所有权和期望状态 |
-| 容器内管理 | `internal/daemon/guest.go`、`internal/persistence/` | 专属 socket 绑定系统身份；登记配置、迁移数据、发起构建任务 |
+| 子系统管理 | `internal/daemon/guest.go`、`internal/persistence/` | 以 SSH 公钥绑定系统身份，直接编辑声明式构建配置并提交任务；不采用 guest 附加接口 |
 | 配置更新 | `server.go` 的 `reloadCfg` | 每请求读取并校验当前配置；区分立即生效项和下次启动项；无效配置报错 |
 
-参考仓库的部署中断测试、会话重登录测试、占用矩阵测试、入口清扫测试和 guest
-迁移重试测试适合转化为本项目的行为验收用例。Go 代码作为协议与行为参考，Rust
+参考仓库的部署中断测试、会话重登录测试、占用矩阵测试和入口清扫测试
+适合转化为本项目的行为验收用例。Go 代码作为协议与行为参考，Rust
 实现仍按本项目的小模块、可注入后端和双语接口注释约定组织。
 
 需要调整的具体实现：
@@ -145,7 +146,13 @@ daemon 必须取得待办清单对应文件系统的 `subvolid=5` 顶层视图�
 
 ```text
 systems/<系统>/
-├── config/subsystem/config.toml
+├── config/
+│   ├── build/                          # 可编辑构建配置 / Editable build configuration
+│   ├── script/                         # 可编辑脚本资源 / Editable scripts and resources
+│   └── subsystem/
+│       ├── config.toml                 # 管理员运行策略 / Administrator runtime policy
+│       └── authorized_keys             # 可选 SSH 公钥 / Optional SSH public keys
+├── config.lock                         # 编辑提交与冻结互斥 / Edit and freeze exclusion
 ├── build-current.toml                  # 构建成功发布的当前产物引用
 ├── versions/<版本>/
 │   ├── application-files.tsv           # 可选，包文件候选索引
@@ -154,12 +161,13 @@ systems/<系统>/
 │   ├── inheritance-commit.toml          # 已有最终根提交记录
 │   └── root/                           # 收尾完成后发布的可写版本根
 ├── runtime/
-│   ├── activity.lock                   # 应用/启停共享，捕获/迁移排他
+│   ├── activity.lock                   # 应用和启停活动锁 / Application and lifecycle activity lock
 │   ├── current.toml                    # 已同步存储代及启动配置摘要
 │   ├── transaction.toml                # 未完成的存储准备
 │   ├── fstab                           # 注入客体的独立只读配置
 │   ├── exports-users.toml              # 主动集成入口的用户
-│   ├── guest/                          # 迁移收据及构建任务/日志
+│   ├── jobs/                           # 管理任务状态、锁和日志 / Management jobs, locks and logs
+│   ├── console/                        # 原始 PTY 日志及启动记录 / Raw PTY log and boot records
 │   └── generations/<代>/root/          # 可写运行根；不建立比较基线
 └── persistent/
 ```
@@ -167,7 +175,7 @@ systems/<系统>/
 运行存储事务独立于版本继承提交记录。候选运行根完整同步后提交 `runtime/current.toml`，
 这个记录只表示存储已准备，不声称机器已运行。machined 注册和实际客体执行探针通过后，
 才在 `/run/rstarsleep/<管理根摘要>/<系统>.origin.toml` 提交机器就绪来源。
-daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并重新绑定 guest socket。
+daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并检查残留应用服务。
 旧运行代保留到新机器就绪后再回收；仍被挂载或待办来源引用的根继续保留。
 
 收尾失败时不发布半成品根、不引导该产物，保留待办及错误，修复后重试或重新构建。
@@ -182,7 +190,8 @@ daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并重新绑�
 
 以独立只读 fstab 覆盖移除主系统用的管理器挂载块，由 nspawn 注入 bind；
 保留支持的 tmpfs/bind 条目，其他宿主依赖条目明确报错。共享 `/etc` 和持久 fstab 不改写。
-容器不读取整个管理根，管理器二进制和 guest socket 单独提供。
+容器不读取整个管理根，也不注入 guest 管理 socket 或管理器程序。SSH/SFTP 在宿主
+daemon 内服务，只向已认证系统开放 build/script 配置视图。
 
 finalize/clean 均先取系统锁，再取管理器级继承锁。子系统沿用同一锁协议，
 通过已持系统锁的内部收尾入口避免重复 flock。当前产物读取、来源固定、收尾及运行引用提交
@@ -194,8 +203,9 @@ finalize/clean 均先取系统锁，再取管理器级继承锁。子系统沿�
 引用记录损坏时报错，实际机器发现补充检查 daemon 停止时的运行状态。删除运行代前
 还需检查容器命名空间挂载和后代子卷；不能因不比较变更而跳过这些结构检查。
 
-捕获/迁移通过 activity 排他锁拒绝并发管理器应用和启停；其他 guest 服务及宿主写者
-仍需管理员停止。CoW 来源也要有稳定读取时机，停止旧机器不会自动停止其他写入者。
+应用租约和启停保留 activity 锁。配置编辑提交、SFTP 上传与构建输入冻结通过独立的
+`config.lock` 互斥；活动上传结束后才能冻结构建输入，后续编辑不改变本次冻结配置。
+CoW 来源也要有稳定读取时机，停止旧机器不会自动停止其他写入者。
 全局插件下载缓存继续使用现有持久事务，不作为应用卷。
 
 退出子系统名单时阻止新会话，后台协调停止机器并撤销未修改的自有入口，
@@ -211,6 +221,11 @@ finalize/clean 均先取系统锁，再取管理器级继承锁。子系统沿�
 Unix socket 使用版本化结构协议；连接层用 `SO_PEERCRED` 读取 UID/GID/PID，
 获取失败直接拒绝，客户端不能提交可信身份。管理动作仅管理员执行；普通用户
 按每系统访问规则执行应用。配置、部署日志和特权程序要求宿主管理员控制。
+
+SSH 是同一 daemon 的公钥管理入口，以登录用户名选择已登记子系统，并使用该系统
+`config/subsystem/authorized_keys` 验证公钥。每次认证重载角色及公钥；撤销公钥不
+主动关闭既有会话。SSH 管理权限包含该系统的构建、启停和 root shell，与本地
+`allowed_uids` 的调用者应用授权分别配置。主机身份和监听配置位于管理根，不向 SFTP 开放。
 
 第一版每个系统一个机器，名字从管理根身份和系统标识确定，长度与冲突规则固定。
 保留现有每系统 machine-id。用户进入前准备匹配 UID/GID 的容器账户和明确 home；
@@ -299,7 +314,7 @@ desktop_files = []
 初期网络沿用 nspawn 宿主网络模式，记录其共享边界；私有网络后续扩展。
 孤立图形模式的 D-Bus、原生模式的代理及容器启动依赖要在操作前检查。
 
-统一使用 `subsystem` 命令组，减少占用插件顶层命令名：
+宿主本地操作使用 `subsystem` 命令组：
 
 ```text
 RStarSleep daemon install|run
@@ -313,14 +328,42 @@ RStarSleep subsystem run-desktop <系统> <desktop路径> [参数...]
 RStarSleep subsystem sync-exports [<系统>]
 ```
 
-相关命令接受 `--root`（应用 `--` 之后不再解析）；`subsystem`、`daemon`、`guest`
-已加入内置命令及插件命令冲突校验。guest 固定使用容器内专属端点，不能选择管理根。启动统一读取当前构建产物并完成运行根
+相关命令接受 `--root`（应用 `--` 之后不再解析）；`subsystem`、`daemon`
+加入内置命令及插件命令冲突校验。`guest` 子命令及专属接口已经移除。
+启动统一读取当前构建产物并完成运行根
 准备，不提供指定版本、历史回退、独立 deploy/diff 或丢弃修改确认参数；重启不删除 persistent。
+
+管理根的可选 `config/ssh.toml` 启用 SSH，最小配置为 `schema_version = 1`；默认
+`listen = "127.0.0.1:2222"`、`host_key = "config/ssh_host_ed25519_key"`。
+相对密钥路径基于管理根，首次启动生成缺失的 Ed25519 私钥，之后复用。
+远程监听可设置 `0.0.0.0:2222`，客户端连接宿主实际地址，例如：
+
+```sh
+ssh -p 2222 apps@host.example
+ssh -p 2222 apps@host.example 'status'
+ssh -t -p 2222 apps@host.example shell
+sftp -P 2222 apps@host.example
+```
+
+交互 SSH 默认进入类 shell 管理 CLI，支持历史、补全、文件导航、内置类 Vim 编辑器、
+配置检查、构建、任务、状态、启停和日志；输入 `tui` 打开全屏快捷键面板。
+CLI 参数按字面解析，不执行宿主 shell，不支持管道、重定向和展开。
+CLI／编辑器／SFTP 共用仅含 `/build`、`/script` 的文件视图，禁止访问 subsystem 配置、
+其他系统及宿主路径。写入暂存到成功关闭时原子发布，保存冲突报错。
+
+`shell` 进入已认证子系统 root 账户配置的登录 shell，关闭桌面会话继承并桥接终端流、
+窗口变化及退出状态。宿主本地 `subsystem shell` 则按调用者 UID/GID 执行 `/bin/sh -l`。
+两种入口分别服务远程管理和本地调用者会话。
+
+保存配置后显式 `check`、`build`，成功后 `restart` 消费新产物；任务状态和日志持久保存于
+`runtime/jobs`，原始机器控制台及启动／关机偏移保存在 `runtime/console`。
+SSH 断连不取消已提交任务，重新登录可继续查询；取消日志订阅也不会取消任务。
+完整配置、编辑器和命令说明见[子系统使用说明](subsystem-usage.md)。
 
 ## 5. 实施顺序与验收
 
 P0–P6 的代码均已落地；下表保留功能验收目标。自动化已覆盖主要逻辑和部分真实
-进程/Unix socket 行为，真实特权和图形验收仍未完成。
+进程/Unix socket、SSH/SFTP 行为，真实特权和图形验收仍未完成。
 
 | 阶段 | 交付内容 | 完成标准 |
 | --- | --- | --- |
@@ -330,14 +373,14 @@ P0–P6 的代码均已落地；下表保留功能验收目标。自动化已覆
 | P3：终端与按需生命周期 | PTY shell；窗口/信号处理；自启、显式、按需三来源；lease 与回收 | 两个并发会话复用一次启动；一个会话退出不误停；后台任务受跟踪；显式实例不闲置回收；断连能收尾 |
 | P4：图形与用户会话 | Wayland/X11/音频；isolated/native；登录后接入与重新登录修复 | 真实 GUI 出窗、有声音、文件路径可达；native 输入法可用；重登录后恢复；不带入其他用户会话；缺依赖明确失败 |
 | P5：应用集成 | 显式入口、插件包文件查询、desktop/图标、所有权同步 | 系统前缀避免同名冲突；只读宿主可用户级集成；重复同步不改写；移出角色只撤销自有未修改入口 |
-| P6：子系统内管理 | 专属 guest 接口；保存配置文件；持久迁移；包请求和异步重建 | guest 不能指定其他系统/宿主路径；迁移失败可重试不覆盖卷；构建失败不影响当前机器；成功后在下次启动/重启完成剩余任务 |
+| P6：SSH 子系统管理 | 公钥认证；CLI／编辑器／TUI；build/script 的 SFTP 视图；持久构建及启停任务；root shell 和控制台日志 | 身份绑定单个子系统；配置视图统一且不开放 subsystem；保存和冻结互斥；断连保留后台任务；构建失败不影响当前机器；成功后显式重启生效 |
 
-P6 将 meowSub 的 `guest add-copy` 映射为保存构建资源/脚本，`guest install` 映射为
-修改本系统声明式 Packages 并提交构建任务；任务成功发布完整或待启动完成的当前产物，
-通过 `guest restart` 走同一启动完成流程，不加入运行修改确认。
-持久迁移从本子系统运行根取数据，不能套用目前“从宿主当前运行系统继承”的源语义。
-迁移前停止相关应用写入，完整发布数据后再绑定；绑定失败时保留数据供重试。
-保留 Packages 所在配置文件的赋值边界，提供受控写入入口，不用文本追加猜测 INI。
+P6 已改用 SSH 配置管理，移除原 guest install/rebuild/restart/add-copy/add-mount/migrate
+及其专属 socket、受控包请求、捕获、持久迁移和热绑定机制。
+软件包直接编辑 build 中的声明式 Packages，系统修改通过构建脚本及资源保存，
+继承和持久化继续使用现有 `[Inheritance]` 配置及来源语义。
+任务成功发布完整或待启动完成的当前产物，通过管理 CLI 的 `restart` 走同一启动完成
+流程，不加入运行修改确认。
 
 当前 P0–P6 覆盖本轮功能目标，真实环境尚需验证完整闭环。同一系统并行多个实例、
 私有网络、整目录 `rw` 会话、portal、短名别名及持久数据快照/回滚留作后续扩展。
@@ -345,8 +388,9 @@ P6 将 meowSub 的 `guest add-copy` 映射为保存构建资源/脚本，`guest 
 ## 6. 代码组织与验证方式
 
 实现位于 `src/subsystem/`：config/model、preparation、commands/identity、
-protocol/client/terminal、execution、session、desktop、exports、guest、daemon 和
-共享 filesystem/trust。复杂 daemon/session/guest 模块按职责拆为子目录；CLI 位于
+protocol/client/terminal、execution、session、desktop、exports、admin、console、
+management、ssh、daemon 和共享 filesystem/trust。复杂 daemon/session/management/ssh
+模块按职责拆为子目录；CLI 位于
 `src/cli/subsystem.rs`。复用 `controller::deferred` 收尾、递归快照和持锁内部接口；
 没有为子系统另建一套版本继承状态。
 
@@ -359,10 +403,13 @@ protocol/client/terminal、execution、session、desktop、exports、guest、dae
 [`deferred 测试`](../tests/build_workflow/deferred.rs) 可作为首次读取、幂等、失败重试、
 提交状态修复与来源清理保护的基础，再覆盖子系统入口与并发启停。
 
-自动化还覆盖真实双流、PTY、信号、数值退出状态、固定 socket inode，以及所有权协调
-和迁移发布重试。测试结果以本次命令输出为准，不在此维护易过期的数量。
+自动化还覆盖真实双流、PTY、信号、数值退出状态、固定 socket inode 和所有权协调。
+[`管理工作区及终端测试`](../src/subsystem/management/tests.rs) 覆盖视图边界、事务上传、
+保存冲突、UTF-8 编辑与 TUI 返回；[`SSH/SFTP 测试`](../src/subsystem/ssh/tests.rs)
+覆盖真实回环握手、公钥认证与撤销、管理命令和二进制上传。
+测试结果以实际命令输出为准，不在此维护易过期的数量。
 
 剩余环境验收包括真实 Btrfs/nspawn 启停、daemon 中断恢复、并发/长寿命图形应用的
-闲置回收、音频、native 输入法、重登录、持久文件/目录热绑定及 guest 重建重启闭环。
-当前开发环境没有免密 sudo，尚未安装或启动宿主服务，这些特权验收仍待完成。
+闲置回收、音频、native 输入法、重登录、声明式持久挂载，以及 SSH root shell、
+配置编辑、重建重启和断连后任务查询闭环。这些特权验收需要隔离环境完成。
 无需安排基线、运行变更程度扫描、修改确认或版本选择/历史回退的实现工作。
