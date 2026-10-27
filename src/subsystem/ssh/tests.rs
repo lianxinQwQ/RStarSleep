@@ -212,6 +212,140 @@ async fn ssh_exec_sftp_and_revocation() {
         }
         assert_eq!(exit, Some(7));
         assert_eq!(output, b"FINAL-WIRE\n");
+
+        // Live pages stay in the dashboard and observe the same durable build.
+        // 实时页保留在面板中，并观察同一个持久构建任务。
+        let build_lock = fs::File::create(jobs.join("build-wire.lock")).unwrap();
+        let supervisor_lock = fs::File::create(jobs.join("build-wire.supervisor")).unwrap();
+        use std::os::fd::AsRawFd;
+        for lock in [&build_lock, &supervisor_lock] {
+            assert_eq!(
+                unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                0
+            );
+        }
+        let mut job = job;
+        job.state = "running".into();
+        job.finished = None;
+        job.exit_code = None;
+        super::super::write_record(&jobs.join("build-wire.toml"), &job).unwrap();
+        fs::write(jobs.join("build-wire.log"), b"BUILD-FIRST\n").unwrap();
+        let mut watching = connection.channel_open_session().await.unwrap();
+        watching.exec(true, "build status").await.unwrap();
+        watching.eof().await.unwrap();
+        rendered(&mut watching, "BUILD-FIRST").await;
+        fs::write(jobs.join("build-wire.log"), b"BUILD-FIRST\nBUILD-LATER\n").unwrap();
+        rendered(&mut watching, "BUILD-LATER").await;
+
+        let mut panel = connection.channel_open_session().await.unwrap();
+        panel
+            .request_pty(true, "xterm-256color", 100, 30, 0, 0, &[])
+            .await
+            .unwrap();
+        panel.request_shell(true).await.unwrap();
+        rendered(&mut panel, "apps:/>").await;
+        panel.data(b"tui\rb".as_slice()).await.unwrap();
+        let page = rendered(&mut panel, "BUILD-LATER").await;
+        assert!(page.contains("Management workspace"));
+        assert!(!page.contains("\x1b[?1049l"));
+        panel.data(b"\x03".as_slice()).await.unwrap();
+        rendered(&mut panel, "Stopping build").await;
+        assert!(jobs.join("build-wire.cancel").exists());
+        let mut stopper = connection.channel_open_session().await.unwrap();
+        stopper.exec(true, "build stop").await.unwrap();
+        stopper.eof().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), async {
+                loop {
+                    match stopper.wait().await {
+                        Some(ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. } | ChannelMsg::ExitStatus { .. } | ChannelMsg::Close) | None => break,
+                        _ => {}
+                    }
+                }
+            })
+                .await
+                .is_err()
+        );
+        fs::write(
+            jobs.join("build-wire.log"),
+            b"BUILD-FIRST\nBUILD-LATER\nBUILD-STOPPED\n",
+        )
+        .unwrap();
+        job.state = "cancelled".into();
+        job.finished = Some(3);
+        job.exit_code = Some(130);
+        super::super::write_record(&jobs.join("build-wire.toml"), &job).unwrap();
+        let page = rendered(&mut panel, "This system is not building").await;
+        assert!(page.contains("BUILD-STOPPED"));
+        let mut output = Vec::new();
+        let mut code = None;
+        while let Some(message) = watching.wait().await {
+            match message {
+                ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+                _ => {}
+            }
+        }
+        assert_eq!(code, Some(130));
+        assert!(String::from_utf8(output).unwrap().contains("BUILD-STOPPED"));
+        let mut output = Vec::new();
+        while let Some(message) = stopper.wait().await {
+            if let ChannelMsg::Data { data } = message {
+                output.extend_from_slice(&data);
+            }
+        }
+        assert!(String::from_utf8(output).unwrap().contains("build stopped"));
+        let mut idle = connection.channel_open_session().await.unwrap();
+        idle.exec(true, "build status").await.unwrap();
+        let output = rendered(&mut idle, "this system is not building").await;
+        assert!(!output.contains("BUILD-FIRST"));
+        while idle.wait().await.is_some() {}
+
+        let console = super::super::console::directory(&workspace.store, "apps").unwrap();
+        fs::create_dir_all(&console).unwrap();
+        let capture_lock = fs::File::create(console.join("capture.lock")).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(capture_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        super::super::write_record(
+            &console.join("current.toml"),
+            &super::super::console::Run {
+                task: "boot-test".into(),
+                machine: "test".into(),
+                offset: 0,
+                shutdown_offset: None,
+                finished: false,
+                exit_code: None,
+                error: None,
+            },
+        )
+        .unwrap();
+        fs::write(
+            console.join("console.log"),
+            b"\x1b[?1049l\x1b[HCONSOLE-FIRST\r\n",
+        )
+        .unwrap();
+        panel.data(b"c".as_slice()).await.unwrap();
+        let page = rendered(&mut panel, "CONSOLE-FIRST").await;
+        assert!(page.contains("Management workspace"));
+        assert!(page.contains("read-only"));
+        assert!(!page.contains("\x1b[?1049l"));
+        fs::write(
+            console.join("console.log"),
+            b"\x1b[?1049l\x1b[HCONSOLE-FIRST\r\nCONSOLE-LATER\r\n",
+        )
+        .unwrap();
+        let page = rendered(&mut panel, "CONSOLE-LATER").await;
+        assert!(page.contains("Management workspace"));
+        panel.window_change(65, 20, 0, 0).await.unwrap();
+        rendered(&mut panel, "\x1b[20;1H").await;
+        panel.data(b"b".as_slice()).await.unwrap();
+        rendered(&mut panel, "BUILD-STOPPED").await;
+        panel.data(b"qexit\r".as_slice()).await.unwrap();
+        while panel.wait().await.is_some() {}
+        drop((capture_lock, build_lock, supervisor_lock));
+
         let channel = connection.channel_open_session().await.unwrap();
         channel.request_subsystem(true, "sftp").await.unwrap();
         let sftp = SftpSession::new(channel.into_stream()).await.unwrap();

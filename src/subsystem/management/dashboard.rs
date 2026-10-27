@@ -1,7 +1,15 @@
 //! Responsive management dashboard with real actions, a file browser and scrollable results.
 //! 自适应管理面板，提供实际操作、文件浏览及可滚动结果。
+use super::log_view::LogView;
 use super::terminal::{clean, clip};
 use super::{Result, Workspace, input::Key};
+use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveView {
+    Build,
+    Console,
+}
 
 pub(super) enum Selection {
     Command(Vec<String>),
@@ -21,23 +29,61 @@ pub(super) struct Dashboard {
     result_rows: usize,
     wrapped: Vec<String>,
     wrapped_width: usize,
+    live: Option<LiveView>,
+    log: Option<LogView>,
+    status: String,
+    notice: String,
+    tail: bool,
 }
 
 const ACTIONS: &[(&str, &str)] = &[
     ("status", "状态 / Status"),
     ("check", "检查配置 / Check configuration"),
     ("jobs", "后台任务 / Jobs"),
-    ("build", "构建 / Build"),
+    ("build status", "构建 / Build"),
     ("start", "启动 / Start"),
     ("stop", "停止 / Stop"),
     ("restart", "重启 / Restart"),
-    ("logs build", "构建日志 / Build log"),
     ("console", "实时控制台 / Live console"),
     ("shell", "Root shell"),
 ];
 
 impl Dashboard {
+    pub fn live_view(&self) -> Option<LiveView> {
+        if self.files { None } else { self.live }
+    }
+
+    pub fn update_live(
+        &mut self,
+        source: Option<(PathBuf, u64)>,
+        status: &str,
+        width: usize,
+    ) -> Result<bool> {
+        let mut changed = self.status != status;
+        self.status = status.into();
+        if self
+            .log
+            .as_ref()
+            .map(|l| l.source())
+            .map(|(p, o)| (p.clone(), o))
+            != source
+        {
+            self.log = source.map(|(path, base)| LogView::new(path, base));
+            self.scroll = 0;
+            self.tail = true;
+            changed = true;
+        }
+        if let Some(log) = &mut self.log {
+            changed |= log.refresh(width)?;
+        }
+        Ok(changed)
+    }
+
     pub fn finish(&mut self, text: &str) {
+        if self.live.is_some() {
+            self.notice = clean(text);
+            return;
+        }
         self.result = if text.is_empty() {
             "操作完成 / Operation completed".into()
         } else {
@@ -79,6 +125,17 @@ impl Dashboard {
             return Ok(None);
         }
         match key {
+            Key::Control(3) if self.live_view() == Some(LiveView::Build) => {
+                return Ok(Some(Selection::Command(vec![
+                    "build".into(),
+                    "stop".into(),
+                ])));
+            }
+            Key::Control(3) if self.live_view().is_some() => {
+                self.live = None;
+                self.log = None;
+                self.finish("已关闭实时视图 / Live view closed");
+            }
             Key::Escape | Key::Control(3) => return Ok(Some(Selection::Cli)),
             Key::Text(ref s) if s == "q" => return Ok(Some(Selection::Cli)),
             Key::Tab => {
@@ -98,6 +155,10 @@ impl Dashboard {
                     self.refresh(workspace)?;
                 }
             }
+            Key::Text(ref s) if s == "n" && self.live_view() == Some(LiveView::Build) => {
+                self.notice.clear();
+                return Ok(Some(Selection::Command(vec!["build".into()])));
+            }
             Key::Up => self.selected = self.selected.saturating_sub(1),
             Key::Down => {
                 self.selected = (self.selected + 1).min(
@@ -109,12 +170,22 @@ impl Dashboard {
                     .saturating_sub(1),
                 )
             }
-            Key::PageUp => self.scroll = self.scroll.saturating_sub(8),
-            Key::PageDown => {
-                self.scroll = (self.scroll + 8).min(self.result_rows.saturating_sub(1))
+            Key::PageUp => {
+                self.tail = false;
+                self.scroll = self.scroll.saturating_sub(8);
             }
-            Key::Home => self.scroll = 0,
-            Key::End => self.scroll = self.result_rows.saturating_sub(1),
+            Key::PageDown => {
+                self.scroll = (self.scroll + 8).min(self.result_rows.saturating_sub(1));
+                self.tail = false;
+            }
+            Key::Home => {
+                self.scroll = 0;
+                self.tail = false;
+            }
+            Key::End => {
+                self.scroll = self.result_rows.saturating_sub(1);
+                self.tail = true;
+            }
             Key::Backspace if self.files => {
                 if self.directory != "/" {
                     self.directory = Workspace::normalize(&self.directory, "..")?;
@@ -140,11 +211,10 @@ impl Dashboard {
                     "s" => "status",
                     "v" => "check",
                     "j" => "jobs",
-                    "b" => "build",
+                    "b" | "l" => "build status",
                     "u" => "start",
                     "d" => "stop",
                     "r" => "restart",
-                    "l" => "logs build",
                     "c" => "console",
                     "h" => "shell",
                     _ => return Ok(None),
@@ -157,6 +227,20 @@ impl Dashboard {
     }
 
     fn select(&mut self, command: &str) -> Option<Selection> {
+        let live = match command {
+            "build status" => Some(LiveView::Build),
+            "console" => Some(LiveView::Console),
+            _ => None,
+        };
+        if self.live != live {
+            self.log = None;
+            self.status.clear();
+            self.scroll = 0;
+            self.tail = true;
+        }
+        self.live = live;
+        self.files = false;
+        self.notice.clear();
         if matches!(command, "stop" | "restart") {
             self.confirm = Some(command.into());
             None
@@ -215,25 +299,58 @@ impl Dashboard {
                 lines.push((" 空目录 / Empty directory".into(), "\x1b[90m"));
             }
             lines.push((
-                " ── 结果 / Result ──  PgUp/PgDn 滚动 / Scroll".into(),
+                match self.live {
+                    Some(LiveView::Build) => " ── 构建 / Build ──  PgUp/PgDn  Home/End".into(),
+                    Some(LiveView::Console) => {
+                        " ── 实时控制台 / Live console ──  PgUp/PgDn  Home/End".into()
+                    }
+                    None => " ── 结果 / Result ──  PgUp/PgDn 滚动 / Scroll".into(),
+                },
                 "\x1b[36m",
             ));
-            let available = rows.saturating_sub(lines.len() + 2);
-            let result = if self.result.is_empty() {
-                "选择操作并按 Enter / Select an action and press Enter"
-            } else {
-                &self.result
-            };
-            if self.wrapped_width != width {
-                self.wrapped = result.lines().flat_map(|line| wrap(line, width)).collect();
-                self.wrapped_width = width;
+            if self.live.is_some() {
+                lines.push((format!(" {}", clean(&self.status)), "\x1b[33m"));
+                if !self.notice.is_empty() {
+                    lines.push((format!(" {}", self.notice), "\x1b[33m"));
+                }
             }
-            self.result_rows = self.wrapped.len();
-            let top = self
-                .scroll
-                .min(self.wrapped.len().saturating_sub(available.max(1)));
-            for line in self.wrapped.iter().skip(top).take(available) {
-                lines.push((line.clone(), ""));
+            let available = rows.saturating_sub(lines.len() + 2);
+            if self.live.is_some() {
+                if let Some(log) = &self.log {
+                    self.result_rows = log.rows();
+                    let last = self.result_rows.saturating_sub(available.max(1));
+                    self.scroll = if self.tail {
+                        last
+                    } else {
+                        self.scroll.min(last)
+                    };
+                    match log.page(self.scroll, available) {
+                        Ok(page) => lines.extend(page.into_iter().map(|line| (line, ""))),
+                        Err(error) => lines.push((
+                            format!("读取日志失败 / Failed to read log: {error}"),
+                            "\x1b[31m",
+                        )),
+                    }
+                } else {
+                    lines.push((" 暂无日志 / No log yet".into(), "\x1b[90m"));
+                }
+            } else {
+                let result = if self.result.is_empty() {
+                    "选择操作并按 Enter / Select an action and press Enter"
+                } else {
+                    &self.result
+                };
+                if self.wrapped_width != width {
+                    self.wrapped = result.lines().flat_map(|line| wrap(line, width)).collect();
+                    self.wrapped_width = width;
+                }
+                self.result_rows = self.wrapped.len();
+                let top = self
+                    .scroll
+                    .min(self.wrapped.len().saturating_sub(available.max(1)));
+                for line in self.wrapped.iter().skip(top).take(available) {
+                    lines.push((line.clone(), ""));
+                }
             }
         }
         let mut output = String::from("\x1b[?25l\x1b[2J\x1b[H");
@@ -248,7 +365,17 @@ impl Dashboard {
         let footer = if let Some(command) = &self.confirm {
             format!(" 确认 {command}？y 确认，其他键取消 / Confirm {command}? y / cancel")
         } else {
-            " ↑↓ 选择 / Select  Enter 打开 / Open  e 文件 / Files  q CLI".into()
+            match self.live {
+                Some(LiveView::Build) => {
+                    " b 构建页 / Build  n 开始 / Start  Ctrl+C 停止 / Stop  c Console  q CLI".into()
+                }
+                Some(LiveView::Console) => {
+                    " b 构建 / Build  c 控制台 / Console  Ctrl+C 关闭视图 / Close view  q CLI"
+                        .into()
+                }
+                None => " ↑↓ 选择 / Select  Enter 打开 / Open  b Build  c Console  e Files  q CLI"
+                    .into(),
+            }
         };
         output.push_str(&format!(
             "\x1b[{rows};1H\x1b[7m{}\x1b[0m",

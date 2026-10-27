@@ -227,3 +227,39 @@ fn dashboard_actions_file_browser_results_and_confirmation_work() {
     t.input(b"q", &w).unwrap();
     assert!(!t.is_tui());
 }
+
+#[test]
+fn build_and_console_pages_keep_the_menu_and_do_not_start_a_build_on_entry() {
+    use super::terminal::LiveView;
+    let (_dir, w) = fixture();
+    let mut t = Terminal::new("apps");
+    t.input(b"tui\r", &w).unwrap();
+    command(t.input(b"b", &w).unwrap().action, &["build", "status"]);
+    assert_eq!(t.live_view(), Some(LiveView::Build));
+    let out = String::from_utf8(
+        t.update_live(None, "当前系统不在构建 / This system is not building")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(out.contains("Management workspace"));
+    assert!(out.contains("This system is not building"));
+    command(t.input(b"n", &w).unwrap().action, &["build"]);
+    command(t.input(b"\x03", &w).unwrap().action, &["build", "stop"]);
+    assert!(t.is_tui());
+    command(t.input(b"c", &w).unwrap().action, &["console"]);
+    let path = w
+        .store
+        .system_layout("apps")
+        .unwrap()
+        .root
+        .join("console-test.log");
+    std::fs::write(&path, b"FIRST\n\x1b[2J\x1b[HSECOND\n").unwrap();
+    let out = String::from_utf8(t.update_live(Some((path, 0)), "Live output").unwrap()).unwrap();
+    assert!(out.contains("Management workspace"));
+    assert!(out.contains("SECOND"));
+    assert!(!out.contains("\x1b[?1049l"));
+    assert_eq!(t.live_view(), Some(LiveView::Console));
+    assert!(t.input(b"\x03", &w).unwrap().action.is_none());
+    assert!(t.is_tui());
+    assert_eq!(t.live_view(), None);
+}

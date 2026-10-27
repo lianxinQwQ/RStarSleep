@@ -1,5 +1,6 @@
 //! Management terminal with literal text, bounded rendering and explicit view ownership.
 //! 管理终端，保留文本原义，限制绘制开销，并明确界面所有权。
+pub use super::dashboard::LiveView;
 use super::{
     Error, Result, Workspace, completion,
     dashboard::{Dashboard, Selection},
@@ -45,7 +46,7 @@ pub struct Terminal {
     editor_return: bool,
     skip_lf: bool,
 }
-pub const HELP: &str = "help | clear (Ctrl+L) | history | pwd | cd [path] | ls [path] | cat path\nmkdir path | rm path | rmdir path | mv source target\nedit path (vi/vim) | check | build [--follow] | jobs | status\nstart [--follow] | stop [--follow] | restart [--follow]\nlogs [boot|shutdown|build] [--follow] [--lines N] [--task ID] | console\nshell | tui | exit\n仅访问 build/script；保存后显式构建；不支持管道、重定向或展开。\nOnly build/script are accessible; build explicitly after saving. No pipes, redirection or expansion.\n方向键、Home/End、Delete、Ctrl+A/E/B/F/U/K/W 编辑；Tab 补全。\nArrows, Home/End, Delete and Ctrl+A/E/B/F/U/K/W edit; Tab completes.\n编辑 / Edit: i/a/o 插入 / insert, Esc 普通 / normal, h/j/k/l 移动 / move, x 删除 / delete, u 撤销 / undo, / 搜索 / search, n 下一处 / next, :w :q :wq :q!\n粘贴按文本处理；CLI 拒绝多行粘贴。 / Paste is literal; CLI rejects multiline paste.";
+pub const HELP: &str = "help | clear (Ctrl+L) | history | pwd | cd [path] | ls [path] | cat path\nmkdir path | rm path | rmdir path | mv source target\nedit path (vi/vim) | check | build [status|stop] | jobs | status\nstart [--follow] | stop [--follow] | restart [--follow]\nlogs [boot|shutdown|build] [--follow] [--lines N] [--task ID] | console\nshell | tui | exit\n仅访问 build/script；保存后显式构建；不支持管道、重定向或展开。\nOnly build/script are accessible; build explicitly after saving. No pipes, redirection or expansion.\n方向键、Home/End、Delete、Ctrl+A/E/B/F/U/K/W 编辑；Tab 补全。\nArrows, Home/End, Delete and Ctrl+A/E/B/F/U/K/W edit; Tab completes.\n编辑 / Edit: i/a/o 插入 / insert, Esc 普通 / normal, h/j/k/l 移动 / move, x 删除 / delete, u 撤销 / undo, / 搜索 / search, n 下一处 / next, :w :q :wq :q!\n粘贴按文本处理；CLI 拒绝多行粘贴。 / Paste is literal; CLI rejects multiline paste.";
 
 /// Parse literal arguments, rejecting shell operators and incomplete quoting.
 /// 解析字面参数，拒绝 shell 操作符及未闭合引号。
@@ -156,6 +157,27 @@ impl Terminal {
     }
     pub fn is_tui(&self) -> bool {
         matches!(self.mode, Mode::Tui)
+    }
+    pub fn live_view(&self) -> Option<LiveView> {
+        if self.is_tui() {
+            self.dashboard.live_view()
+        } else {
+            None
+        }
+    }
+    pub fn update_live(
+        &mut self,
+        source: Option<(std::path::PathBuf, u64)>,
+        status: &str,
+    ) -> Result<Vec<u8>> {
+        if self
+            .dashboard
+            .update_live(source, status, self.cols.saturating_sub(1))?
+        {
+            Ok(self.draw())
+        } else {
+            Ok(Vec::new())
+        }
     }
     pub fn take_pending(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pending)
@@ -425,8 +447,10 @@ impl Terminal {
                     result
                 }
                 Some(Selection::Command(words)) => {
-                    self.dashboard
-                        .finish(&format!("正在执行 / Running: {}", words.join(" ")));
+                    if self.dashboard.live_view().is_none() {
+                        self.dashboard
+                            .finish(&format!("正在执行 / Running: {}", words.join(" ")));
+                    }
                     let output = self.draw();
                     Ok(Update {
                         output,

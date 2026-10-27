@@ -63,34 +63,57 @@ executed. History retains up to 200 commands for the current connection only.
 
 ## 管理面板 / Dashboard
 
+`build` 默认启动构建并实时输出。构建中只能有一个任务；`build status` 从头补齐
+该任务的全部日志后继续跟随，结束后再执行则显示“当前系统不在构建”。`build stop`
+请求停止并等待确认，CLI 构建输出中的 Ctrl+C 也会停止构建。关闭 SSH 连接只断开
+查看，不终止构建；重新连接可用 `build status` 接回当前任务。
+
+`build` starts a build and streams its output by default. Only one build may run per
+system. While it is active, `build status` replays the entire task log and follows new
+output; after completion it reports that the system is not building. `build stop`
+requests cancellation and waits for confirmation. Ctrl+C during CLI build output
+also stops the build. Disconnecting SSH only detaches the viewer; reconnect with
+`build status` to observe the active task again.
+
 输入 `tui` 打开全屏面板。方向键选择，Enter 执行；`Tab` 切换操作与文件浏览。
-停止和重启需按 `y` 确认，其他键取消。操作成功和失败的输出都显示在结果区，
+子系统停止和重启需按 `y` 确认，其他键取消。操作成功和失败的输出都显示在结果区，
 `PgUp/PgDn` 滚动，`Home/End` 跳到结果开头或结尾。
 
 Enter `tui` to open the dashboard. Use arrows to select, Enter to execute and Tab to
-switch between actions and files. Stop and restart require `y` confirmation; any
+switch between actions and files. Subsystem stop and restart require `y` confirmation; any
 other key cancels. Successful output and errors appear in the results panel.
 PgUp/PgDn scroll; Home/End jump to the beginning or end.
 
 | 快捷键 / Shortcut | 操作 / Action |
 | --- | --- |
 | `s`、`v`、`j` | 状态、配置检查、任务 / Status, configuration check, jobs |
-| `b`、`u`、`d`、`r` | 构建、启动、停止、重启 / Build, start, stop, restart |
-| `l`、`c`、`h` | 构建日志、实时控制台、root shell / Build log, live console, root shell |
+| `b`（或 `l`） | 打开构建页（不会创建任务） / Open build page without starting a task |
+| 构建页 `n` / `n` on build page | 开始构建 / Start build |
+| 构建页 `Ctrl+C` / `Ctrl+C` on build page | 停止构建 / Stop build |
+| `u`、`d`、`r` | 启动、停止、重启子系统 / Start, stop, restart subsystem |
+| `c`、`h` | 只读实时控制台、root shell / Read-only live console, root shell |
 | `e` | 文件浏览 / File browser |
 | `f` | 刷新文件列表 / Refresh files |
-| `q`、`Esc`、`Ctrl+C` | 返回 CLI / Return to CLI |
+| `q`、`Esc` | 返回 CLI / Return to CLI |
+| 控制台页 `Ctrl+C` / `Ctrl+C` on console page | 关闭视图，保留菜单 / Close view and keep menu |
 
 文件浏览中 Enter 打开目录或编辑文件，Backspace 返回父目录。退出从面板打开的
-编辑器后返回面板。普通操作的结果最多收集 4 MiB，超限明确报错；实时控制台和
-root shell 使用真实终端，结束后回到面板并保留明确标注的最后 64 KiB 输出。
+编辑器后返回面板。构建和控制台均在面板内实时更新，菜单始终保留。日志按磁盘
+偏移分页，不截取尾部；`Home` 回看开头，`PgUp/PgDn` 翻页，`End` 恢复跟随。
+构建结束后保留本次日志并显示空闲状态，切换页面不会停止任务。普通操作的结果
+最多收集 4 MiB，超限明确报错；只有 root shell 接管真实终端，结束后回到面板并
+保留明确标注的最后 64 KiB 输出。
 面板中的粘贴不会触发操作快捷键。
 
 In the file browser, Enter opens a directory or edits a file; Backspace goes to the
 parent. Leaving an editor opened from the dashboard returns to the dashboard.
-Ordinary command output is limited to 4 MiB with an explicit error on overflow.
-Live console and root shell use the real terminal, then return to the dashboard
-with an explicitly labelled last 64 KiB of output. Pasting does not trigger actions.
+Build and console output update inside the dashboard while its menu remains visible.
+Logs are paged by disk offsets without discarding history: Home visits the beginning,
+PgUp/PgDn scroll, and End resumes following. Completed builds retain their log with
+an idle status. Switching pages does not stop tasks. Ordinary command output is
+limited to 4 MiB with an explicit error on overflow. Only the root shell takes over
+the terminal, then returns with an explicitly labelled last 64 KiB of output.
+Pasting does not trigger actions.
 
 ## 编辑器与日志 / Editor and logs
 
@@ -105,11 +128,13 @@ that mode, with one undo entry per paste. Arrow characters, newlines and tabs re
 unchanged. The limit is 1 MiB; oversized insertions are rejected atomically. Save
 conflicts and other errors stay in the editor status area without discarding text.
 
-`Ctrl+C` 仅取消日志跟随，不取消后台任务；跟随期间的预输入保留给 CLI。
+传统 `logs --follow` 和 CLI 控制台中的 `Ctrl+C` 只取消查看；构建输出中的
+`Ctrl+C` 会停止构建。跟随期间的预输入保留给 CLI。
 非交互 `--follow` 遇到标准输入 EOF 仍等待实际任务结束并返回任务退出码。
 关闭 SSH 通道会释放会话，已提交的后台任务继续运行。
 
-Ctrl+C cancels log following without cancelling the background job. Type-ahead is
+Ctrl+C in legacy `logs --follow` and the CLI console only detaches the viewer;
+Ctrl+C during build output stops the build. Type-ahead is
 preserved for the CLI. Noninteractive `--follow` continues waiting after stdin EOF
 and returns the actual job exit code. Closing the SSH channel releases the session;
 already submitted jobs continue running.

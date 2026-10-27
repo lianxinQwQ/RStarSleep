@@ -158,7 +158,9 @@ pub(super) fn complete(
                 directory,
             ));
         }
-    } else if matches!(command, "start" | "stop" | "restart" | "build") && index == 1 {
+    } else if command == "build" && index == 1 {
+        candidates.extend(["status", "stop"].map(|s| (s.into(), false)));
+    } else if matches!(command, "start" | "stop" | "restart") && index == 1 {
         candidates.push(("--follow".into(), false));
     } else if command == "logs" {
         let mut needs_value = false;

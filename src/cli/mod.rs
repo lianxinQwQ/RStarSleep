@@ -26,6 +26,7 @@ pub(crate) const BUILTIN_COMMANDS: &[&str] = &[
     "__session-mount",
     "__console-recorder",
     "__management-job",
+    "__management-build",
 ];
 
 use std::ffi::OsString;
@@ -108,6 +109,9 @@ fn dispatch(arguments: &[OsString]) -> Result<()> {
         }
         [command, rest @ ..] if command == "__management-job" => {
             crate::subsystem::admin::job_entry(rest)?
+        }
+        [command, rest @ ..] if command == "__management-build" => {
+            crate::subsystem::admin::build_entry(rest)?
         }
         [command, rest @ ..] if command == "__session-mount" => {
             crate::subsystem::session::mount_entry(rest)?

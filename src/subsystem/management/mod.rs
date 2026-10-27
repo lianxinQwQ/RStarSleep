@@ -4,6 +4,7 @@ mod completion;
 mod dashboard;
 mod editor;
 mod input;
+mod log_view;
 pub mod terminal;
 mod workspace;
 pub use super::{Error, Result};
