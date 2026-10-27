@@ -87,6 +87,7 @@ async fn ssh_exec_sftp_and_revocation() {
     });
     let mut server = SshServer {
         store: workspace.store.clone(),
+        builds: workspace.builds.clone(),
         authorize: fixture_authorized,
     };
     let running = server.run_on_socket(config, &listener);
@@ -224,12 +225,24 @@ async fn ssh_exec_sftp_and_revocation() {
                 0
             );
         }
+        let registration = workspace.builds.begin("apps", &job.task).unwrap();
         let mut job = job;
         job.state = "running".into();
         job.finished = None;
         job.exit_code = None;
         super::super::write_record(&jobs.join("build-wire.toml"), &job).unwrap();
+        registration.recorded().unwrap();
         fs::write(jobs.join("build-wire.log"), b"BUILD-FIRST\n").unwrap();
+        // A new SSH connection reads the same daemon-owned build registration.
+        // 新的 SSH 连接读取同一份 daemon 所属构建登记。
+        let mut observer = connect().await.unwrap();
+        assert!(observer.authenticate_publickey("apps", PrivateKeyWithHashAlg::new(identity.clone(), None)).await.unwrap().success());
+        let mut observing = observer.channel_open_session().await.unwrap();
+        observing.exec(true, "build status").await.unwrap();
+        rendered(&mut observing, "BUILD-FIRST").await;
+        observing.close().await.unwrap();
+        drop(observer);
+        assert!(workspace.builds.active("apps").unwrap().is_some());
         let mut watching = connection.channel_open_session().await.unwrap();
         watching.exec(true, "build status").await.unwrap();
         watching.eof().await.unwrap();
@@ -275,6 +288,7 @@ async fn ssh_exec_sftp_and_revocation() {
         job.finished = Some(3);
         job.exit_code = Some(130);
         super::super::write_record(&jobs.join("build-wire.toml"), &job).unwrap();
+        drop(registration);
         let page = rendered(&mut panel, "This system is not building").await;
         assert!(page.contains("BUILD-STOPPED"));
         let mut output = Vec::new();
@@ -460,6 +474,7 @@ async fn rsa_sha2_login_and_revocation() {
     });
     let mut server = SshServer {
         store: workspace.store.clone(),
+        builds: workspace.builds.clone(),
         authorize: fixture_authorized,
     };
     let running = server.run_on_socket(config, &listener);

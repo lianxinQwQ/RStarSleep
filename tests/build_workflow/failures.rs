@@ -379,14 +379,14 @@ fn batch_semantic_config_errors_exit_before_warning_or_build() {
     }
 }
 
-/// Verify lock contention allocates no version and executes no plugin.
-/// 验证锁争用不分配版本且不执行插件。
+/// A legacy per-system lock no longer controls standalone builds.
+/// 遗留的每系统锁不再控制独立构建。
 /// # Arguments
 ///
 /// No parameters.
 /// 无参数。
 #[test]
-fn per_system_lock_conflict_prevents_build_start() {
+fn legacy_per_system_lock_does_not_prevent_build_start() {
     let fixture = Fixture::new();
     fixture.system("desktop", &[]);
     let layout = fixture.store.system_layout("desktop").unwrap();
@@ -399,10 +399,21 @@ fn per_system_lock_conflict_prevents_build_start() {
         .unwrap();
     lock.try_lock().unwrap();
     let backend = SimulatedBackend::default();
-    let error = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap_err();
-    assert!(error.to_string().contains("构建锁"));
-    assert!(backend.events.borrow().is_empty());
-    assert_eq!(fs::read_dir(layout.versions).unwrap().count(), 0);
+    let outcome = build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    assert_eq!(outcome[0].version, "v00000001");
+    assert!(!backend.events.borrow().is_empty());
+    assert_eq!(fs::read_dir(layout.versions).unwrap().count(), 1);
+}
+
+/// Standalone builds do not create a system lock file or require a daemon.
+/// 独立构建不创建系统锁文件，也不要求 daemon。
+#[test]
+fn build_does_not_create_a_per_system_lock() {
+    let fixture = Fixture::new();
+    fixture.system("desktop", &[]);
+    let layout = fixture.store.system_layout("desktop").unwrap();
+    build_with_backend(&fixture.store, Some("desktop"), &SimulatedBackend::default()).unwrap();
+    assert!(!layout.root.join("build.lock").exists());
 }
 
 /// Verify edits to an archived cache source are detected before maintenance.

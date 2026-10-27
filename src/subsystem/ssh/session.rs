@@ -132,16 +132,19 @@ async fn window(sizes: &mut watch::Receiver<(u32, u32)>) -> (u32, u32) {
 /// 服务一个交互式 shell 或非交互式管理命令通道。
 /// # Arguments
 /// - `channel`, `store`, `id`, `pty`, `sizes`, `command`: SSH channel, fixed identity, terminal metadata, resize events and optional exec. SSH 通道、固定身份、终端元数据、尺寸事件及可选执行命令。
+/// - `builds`: Build state shared across this daemon's SSH connections. 此 daemon 的 SSH 连接共享的构建状态。
 pub(super) async fn run(
     channel: Channel<Msg>,
     store: ConfigStore,
+    builds: std::sync::Arc<super::super::daemon::BuildState>,
     id: String,
     pty: Option<(String, u32, u32)>,
     mut sizes: watch::Receiver<(u32, u32)>,
     command: Option<Vec<u8>>,
     handle: Handle,
 ) -> Result<u32> {
-    let workspace = Workspace::new(store, id.as_str())?;
+    let mut workspace = Workspace::new(store, id.as_str())?;
+    workspace.builds = builds;
     let remote = Remote {
         handle,
         channel: channel.id(),
@@ -287,14 +290,15 @@ async fn dashboard_command(workspace: &Workspace, words: &[String]) -> Result<()
         ["build"] => {
             let store = workspace.store.clone();
             let id = workspace.id.clone();
-            tokio::task::spawn_blocking(move || admin::submit(&store, &id, "build"))
+            let builds = workspace.builds.clone();
+            tokio::task::spawn_blocking(move || admin::submit(&store, &id, "build", &builds))
                 .await
                 .map_err(|e| {
                     Error::Invalid(format!("任务提交失败 / job submission failed: {e}"))
                 })??;
         }
         ["build", "stop"] => {
-            admin::stop_build(&workspace.store, &workspace.id)?;
+            admin::stop_build(&workspace.store, &workspace.id, &workspace.builds)?;
         }
         ["build", "status"] | ["console"] => {}
         _ => {
@@ -351,13 +355,14 @@ fn refresh_dashboard(workspace: &Workspace, terminal: &mut Terminal) -> Result<V
     match terminal.live_view() {
         Some(LiveView::Build) => {
             let jobs = admin::jobs(&workspace.store, &workspace.id)?;
-            let active = jobs.iter().rev().find(|j| {
-                j.operation == "build" && matches!(j.state.as_str(), "queued" | "running")
-            });
+            let current = admin::active_build(&workspace.store, &workspace.id, &workspace.builds)?;
+            let active = current.as_ref();
             let job = active.or_else(|| jobs.iter().rev().find(|j| j.operation == "build"));
             let directory = admin::directory(&workspace.store, &workspace.id)?;
             let status = if let Some(job) = active {
-                if directory
+                if job.state == "preparing" {
+                    format!("正在检查构建配置 / Checking build configuration: {}", job.task)
+                } else if directory
                     .join(format!("{}.cancel", job.task))
                     .try_exists()?
                 {
@@ -380,7 +385,7 @@ fn refresh_dashboard(workspace: &Workspace, terminal: &mut Terminal) -> Result<V
                 status
             };
             terminal.update_live(
-                job.map(|j| (directory.join(format!("{}.log", j.task)), 0)),
+                job.filter(|j| j.state != "preparing").map(|j| (directory.join(format!("{}.log", j.task)), 0)),
                 &status,
             )
         }
@@ -430,26 +435,31 @@ async fn execute<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         ["check"]=>{let store=workspace.store.clone();let id=workspace.id.clone();let warnings=tokio::task::spawn_blocking(move||controller::check_configuration(&store,&id)).await.map_err(|e|Error::Invalid(format!("检查任务失败 / check task failed: {e}")))??;text=format!("配置及已有来源检查通过；软件包解析与脚本执行结果在构建时检查。\nConfiguration and existing-source checks passed; package resolution and script execution are checked during build.\n{}",warnings.join("\n"));},
         ["status"]=>{let store=workspace.store.clone();let id=workspace.id.clone();let statuses=tokio::task::spawn_blocking(move||client::request(&client::socket_for_root(store.root())?,Operation::Status{id})).await.map_err(|e|Error::Invalid(format!("状态任务失败 / status task failed: {e}")))??;text=serde_json::to_string_pretty(&statuses).map_err(|e|Error::Protocol(format!("状态编码失败 / status encoding failed: {e}")))?;let reference=workspace.store.system_layout(&workspace.id)?.root.join("build-current.toml");if reference.try_exists()?{let current=controller::read_current_build(&workspace.store,&workspace.id)?;text.push_str(&format!("\n当前成功产物 / current successful artifact: {}",current.version));}else{text.push_str("\n尚无成功构建产物 / no successful build artifact yet");}},
         ["build", "status"] => {
-            if let Some(job) = admin::active_build(&workspace.store, &workspace.id)? {
-                return follow_build(workspace, input, output, job, pending).await;
+            if let Some(job) = admin::active_build(&workspace.store, &workspace.id, &workspace.builds)? {
+                if job.state == "preparing" {
+                    text = format!("正在检查构建配置 / Checking build configuration: {}", job.task);
+                } else {
+                    return follow_build(workspace, input, output, job, pending).await;
+                }
+            } else {
+                text = "当前系统不在构建 / this system is not building".into();
             }
-            text = "当前系统不在构建 / this system is not building".into();
         },
         ["build", "stop"] => {
-            text = if let Some(job) = admin::stop_build(&workspace.store, &workspace.id)? {
+            text = if let Some(job) = admin::stop_build(&workspace.store, &workspace.id, &workspace.builds)? {
                 wait_build_stop(workspace, &job.task).await?
             } else { "当前系统不在构建 / this system is not building".into() };
         },
         ["build"] | ["build", "--follow"] => {
-            let store=workspace.store.clone(); let id=workspace.id.clone();
-            let job=tokio::task::spawn_blocking(move||admin::submit(&store,&id,"build")).await
+            let store=workspace.store.clone(); let id=workspace.id.clone(); let builds=workspace.builds.clone();
+            let job=tokio::task::spawn_blocking(move||admin::submit(&store,&id,"build",&builds)).await
                 .map_err(|e|Error::Invalid(format!("任务提交失败 / job submission failed: {e}")))??;
             return follow_build(workspace, input, output, job, pending).await;
         },
         [operation@("start"|"stop"|"restart")] | [operation@("start"|"stop"|"restart"),"--follow"]=>{
             let offset=fs::metadata(console::directory(&workspace.store,&workspace.id)?.join("console.log")).map(|m|m.len()).or_else(|e|if e.kind()==std::io::ErrorKind::NotFound{Ok(0)}else{Err(e)})?;
-            let store=workspace.store.clone();let id=workspace.id.clone();let operation=operation.to_string();
-            let job=tokio::task::spawn_blocking(move||admin::submit(&store,&id,&operation)).await.map_err(|e|Error::Invalid(format!("任务提交失败 / job submission failed: {e}")))??;
+            let store=workspace.store.clone();let id=workspace.id.clone();let operation=operation.to_string();let builds=workspace.builds.clone();
+            let job=tokio::task::spawn_blocking(move||admin::submit(&store,&id,&operation,&builds)).await.map_err(|e|Error::Invalid(format!("任务提交失败 / job submission failed: {e}")))??;
             output.write_all(format!("任务已提交 / task submitted: {}\r\n",job.task).as_bytes()).await?;
             if args.len()==2{return follow(workspace,input,output,Some(job.task.clone()),offset,None,pending).await;}
         },
@@ -607,7 +617,7 @@ async fn follow_build<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         true,
     )
     .await?;
-    let status = if admin::active_build(&workspace.store, &workspace.id)?.is_none() {
+    let status = if admin::active_build(&workspace.store, &workspace.id, &workspace.builds)?.is_none() {
         "当前系统不在构建 / this system is not building"
     } else {
         "本次构建已结束 / this build has finished"

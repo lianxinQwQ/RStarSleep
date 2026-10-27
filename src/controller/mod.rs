@@ -43,7 +43,6 @@ pub use backend::SystemBackend;
 pub use clean::{clean, clean_with_backend};
 pub use current::{CurrentBuild, read_current_build};
 pub use dedup::DedupOutcome;
-pub use deferred::finalize_inheritance_locked;
 pub use deferred::{finalize_inheritance, finalize_inheritance_with_backend};
 pub use model::{BuildBackend, BuildContext, BuildOutcome, Error, PersistentMount, Result};
 pub use workflow::{
@@ -51,16 +50,6 @@ pub use workflow::{
     build_with_options_and_backend, build_with_options_and_backend_and_warning,
     check_configuration,
 };
-
-/// Acquire the shared build, startup and cleanup system lock.
-/// 获取构建、启动和清理共用的系统锁。
-/// # Arguments
-/// - `path`: Existing owned system directory. 已有所属系统目录。
-/// # Errors
-/// Returns invalid paths or lock contention. 返回路径无效或锁争用。
-pub fn lock_system_directory(path: &std::path::Path) -> Result<std::fs::File> {
-    records::lock_directory(path)
-}
 
 /// Delete an obsolete runtime root while protecting pending sources and mount namespaces.
 /// 保护待办来源及挂载命名空间期间删除过时运行根。

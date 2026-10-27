@@ -287,7 +287,6 @@ pub fn prepare_with_backend(
 ) -> Result<PreparedRuntime> {
     let config = SubsystemConfig::read(store, id)?;
     let layout = store.system_layout(id)?;
-    let _lock = controller::lock_system_directory(&layout.root)?;
     let artifact = controller::read_current_build(store, id)?;
     let version_directory = layout.versions.join(&artifact.version);
     let manifest = version_directory.join("inheritance-pending.toml");
@@ -307,7 +306,7 @@ pub fn prepare_with_backend(
                     .map_err(|e| Error::Invalid(e.to_string()))?,
             )
             .join("inheritance-pending.toml");
-        controller::finalize_inheritance_locked(&relocated, top, backend)?;
+        controller::finalize_inheritance_with_backend(&relocated, top, backend)?;
     }
     let source = version_directory.join("root");
     checked(&source)?;
@@ -569,7 +568,6 @@ pub fn prune_with_backend(
     backend: &impl BuildBackend,
 ) -> Result<()> {
     let layout = store.system_layout(id)?;
-    let _lock = controller::lock_system_directory(&layout.root)?;
     let runtime = layout.root.join("runtime");
     if exists(&runtime.join("transaction.toml"))? {
         return Ok(());

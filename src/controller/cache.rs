@@ -17,8 +17,8 @@ pub(super) const STAGES: &[&str] = &["base-system", "packages", "script", "inher
 /// # Arguments
 /// - `backend`: Checked recursive subvolume deletion; ordinary directories are never a fallback.
 ///   经检查的递归子卷删除；不回退为普通目录删除。
-/// - `cache_root`: One system's cache root, protected by its build lock.
-///   由系统构建锁保护的单个系统缓存根。
+/// - `cache_root`: One system's cache root.
+///   单个系统的缓存根。
 /// - `stage`: First invalidated stage in STAGES.
 ///   STAGES 中首个失效阶段。
 pub(super) fn clear_from(
@@ -260,7 +260,7 @@ fn validate(record: &Record, version: &str, stage: &str) -> Result<()> {
 /// 倒序查找调用方接受的最新已完成兼容阶段，保留实际错误。
 /// # Arguments
 /// - `backend`: Checked storage backend. 经检查的存储后端。
-/// - `attempt`: Locked attempt with descending prior versions. 带倒序历史版本的已锁定尝试。
+/// - `attempt`: Attempt with descending prior versions. 带倒序历史版本的构建尝试。
 /// - `stage`: Required completed stage. 要求已完成的阶段。
 /// - `identity`: Current compatibility requirements. 当前兼容性要求。
 /// - `accept`: Additional execution-input checks. 额外的执行输入检查。

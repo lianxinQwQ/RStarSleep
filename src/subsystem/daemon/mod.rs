@@ -63,6 +63,7 @@ struct Manager {
     directory: PathBuf,
     slots: Mutex<BTreeMap<String, Arc<Slot>>>,
     connections: Mutex<BTreeMap<u32, usize>>,
+    builds: Arc<BuildState>,
 }
 struct Lease {
     slot: Arc<Slot>,
@@ -152,6 +153,7 @@ fn refresh_exports(
     Ok(())
 }
 
+pub(crate) mod builds;
 mod installation;
 mod lifecycle;
 mod monitor;
@@ -159,5 +161,6 @@ mod requests;
 mod server;
 #[cfg(test)]
 mod tests;
+pub use builds::BuildState;
 pub use installation::install;
 pub use server::run;

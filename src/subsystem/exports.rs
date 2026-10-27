@@ -492,7 +492,6 @@ pub fn sync(store: &ConfigStore, id: &str, uid: u32) -> Result<()> {
         ));
     }
     let layout = store.system_layout(id)?;
-    let _lock = controller::lock_system_directory(&layout.root)?;
     let prepared_path = layout.root.join("runtime/current.toml");
     checked(&prepared_path)?;
     let prepared = if prepared_path.exists() {
@@ -573,7 +572,6 @@ pub fn withdraw_all(store: &ConfigStore, id: &str) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let _lock = controller::lock_system_directory(&layout.root)?;
     let users: Users = read_record(&path)?;
     for uid in users.uids {
         let (home, _) = account(uid)?;
@@ -604,7 +602,6 @@ pub fn withdraw_all(store: &ConfigStore, id: &str) -> Result<()> {
 /// 返回受控记录、配置或用户辅助程序失败。
 pub fn withdraw_disallowed(store: &ConfigStore, id: &str) -> Result<()> {
     let layout = store.system_layout(id)?;
-    let _lock = controller::lock_system_directory(&layout.root)?;
     let path = layout.root.join("runtime/exports-users.toml");
     if !path.exists() {
         return Ok(());

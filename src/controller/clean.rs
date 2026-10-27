@@ -31,8 +31,8 @@ fn number(version: &str) -> Result<u64> {
 /// - `system`: Managed system ID. 被管理系统标识。
 /// - `version`: Inclusive cutoff. 包含在内的截止版本。
 /// # Errors
-/// Returns lock, ownership, running-version or deletion failures.
-/// 返回锁、所有权、运行版本或删除错误。
+/// Returns inheritance transaction, ownership, running-version or deletion failures.
+/// 返回继承事务、所有权、运行版本或删除错误。
 pub fn clean(store: &ConfigStore, system: &str, version: &str) -> Result<Vec<String>> {
     clean_with_backend(store, system, version, &SystemBackend)
 }
@@ -55,7 +55,6 @@ pub fn clean_with_backend(
 ) -> Result<Vec<String>> {
     let cutoff = number(version)?;
     let layout = store.system_layout(system)?;
-    let _lock = records::lock_system(&layout)?;
     let _pins_lock = records::lock_inheritance(store.root())?;
     let selected = layout.versions.join(version);
     disk::checked(&selected)?;

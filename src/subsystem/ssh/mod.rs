@@ -116,6 +116,15 @@ fn authorized(store: &ConfigStore, id: &str, key: &PublicKey) -> Result<bool> {
 /// Missing ssh.toml disables SSH; invalid supplied configuration fails startup.
 /// 缺少 ssh.toml 时禁用 SSH；提供的配置无效时启动失败。
 pub fn start(store: &ConfigStore) -> Result<Option<Service>> {
+    start_with_builds(store, Arc::new(super::daemon::BuildState::default()))
+}
+
+/// Share the daemon's build state across all SSH connections and channels.
+/// 在全部 SSH 连接及通道间共享 daemon 的构建状态。
+pub(crate) fn start_with_builds(
+    store: &ConfigStore,
+    builds: Arc<super::daemon::BuildState>,
+) -> Result<Option<Service>> {
     let path = store.root().join("config/ssh.toml");
     if !path.try_exists()? {
         return Ok(None);
@@ -209,7 +218,7 @@ pub fn start(store: &ConfigStore) -> Result<Option<Service>> {
     let thread = std::thread::Builder::new().name("rstarsleep-ssh".into()).spawn(move || {
         let result = runtime.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener)?;
-            let mut server = SshServer { store, authorize: authorized };
+            let mut server = SshServer { store, builds, authorize: authorized };
             let running = server.run_on_socket(config,&listener); let handle = running.handle();
             tokio::pin!(running);
             tokio::select! { result = &mut running => result, _ = cancelled => { handle.shutdown("管理器退出 / manager shutdown".into()); running.await } }
@@ -224,6 +233,7 @@ pub fn start(store: &ConfigStore) -> Result<Option<Service>> {
 
 struct SshServer {
     store: ConfigStore,
+    builds: Arc<super::daemon::BuildState>,
     authorize: fn(&ConfigStore, &str, &PublicKey) -> Result<bool>,
 }
 impl server::Server for SshServer {
@@ -235,6 +245,7 @@ impl server::Server for SshServer {
     fn new_client(&mut self, _peer: Option<SocketAddr>) -> Connection {
         Connection {
             store: self.store.clone(),
+            builds: self.builds.clone(),
             authorize: self.authorize,
             id: None,
             channels: HashMap::new(),
@@ -258,6 +269,7 @@ struct ChannelState {
 }
 struct Connection {
     store: ConfigStore,
+    builds: Arc<super::daemon::BuildState>,
     authorize: fn(&ConfigStore, &str, &PublicKey) -> Result<bool>,
     id: Option<String>,
     channels: HashMap<ChannelId, ChannelState>,
@@ -289,11 +301,12 @@ impl Connection {
         let sizes = state.sizes.take().unwrap();
         let closed = state.closed.take().unwrap();
         let store = self.store.clone();
+        let builds = self.builds.clone();
         let handle = session.handle();
         session.channel_success(channel)?;
         tokio::spawn(async move {
             let result = tokio::select! {
-                result = session::run(wire, store, id, terminal, sizes, command, handle.clone()) => result,
+                result = session::run(wire, store, builds, id, terminal, sizes, command, handle.clone()) => result,
                 _ = closed => return,
             };
             let code = match result {

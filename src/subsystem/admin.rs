@@ -1,6 +1,6 @@
 //! Durable management jobs which survive SSH and daemon disconnects.
 //! 跨 SSH 及 daemon 断连存活的持久管理任务。
-use super::{Error, Result, client, protocol::Operation};
+use super::{Error, Result, client, daemon::BuildState, protocol::Operation};
 use crate::{config::ConfigStore, controller};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,6 +12,7 @@ use std::{
     },
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
+    sync::{Arc, mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[cfg(test)]
@@ -52,9 +53,28 @@ fn now() -> Result<u64> {
 /// 仅依赖配置的预检完成后提交固定操作。
 /// # Arguments
 /// - `store`, `id`, `operation`: Fixed manager, identity and operation. 固定管理器、身份及操作。
-pub fn submit(store: &ConfigStore, id: &str, operation: &str) -> Result<Job> {
+/// - `builds`: Shared SSH build state owned by this daemon. 此 daemon 所属的共享 SSH 构建状态。
+pub fn submit(
+    store: &ConfigStore,
+    id: &str,
+    operation: &str,
+    builds: &Arc<BuildState>,
+) -> Result<Job> {
     super::trust::store(store, Some(id))?;
     super::SubsystemConfig::read(store, id)?;
+    let task = format!(
+        "{operation}-{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| Error::Invalid(format!("时钟无效 / invalid clock: {e}")))?
+            .as_nanos(),
+        std::process::id()
+    );
+    let registration = if operation == "build" {
+        Some(builds.begin(id, &task)?)
+    } else {
+        None
+    };
     match operation {
         "build" => {
             controller::check_configuration(store, id)?;
@@ -74,35 +94,27 @@ pub fn submit(store: &ConfigStore, id: &str, operation: &str) -> Result<Job> {
     let directory = directory(store, id)?;
     super::checked(&directory)?;
     fs::create_dir_all(&directory)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(directory.join(if operation == "build" {
-            "build.lock"
-        } else {
-            "lifecycle.lock"
-        }))?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    let lock = if operation == "build" {
+        None
+    } else {
+        Some(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(directory.join("lifecycle.lock"))?,
+        )
+    };
+    if lock.as_ref().is_some_and(
+        |lock| unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0,
+    ) {
         return Err(Error::Invalid(
-            if operation == "build" {
-                "当前系统正在构建；使用 build status 查看或 build stop 停止 / this system is already building; use build status to view or build stop to stop"
-            } else {
-                "同类管理任务正在执行 / a management job of this kind is active"
-            }.into(),
+            "同类管理任务正在执行 / a management job of this kind is active".into(),
         ));
     }
-    let task = format!(
-        "{operation}-{}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Invalid(format!("时钟无效 / invalid clock: {e}")))?
-            .as_nanos(),
-        std::process::id()
-    );
     let mut job = Job {
         task: task.clone(),
         operation: operation.into(),
@@ -128,39 +140,65 @@ pub fn submit(store: &ConfigStore, id: &str, operation: &str) -> Result<Job> {
         return Err(Error::Invalid("任务锁冲突 / job lock conflict".into()));
     }
     super::write_record(&directory.join(format!("{task}.toml")), &job)?;
-    let descriptor = lock.as_raw_fd();
-    let live_descriptor = live.as_raw_fd();
+    if let Some(registration) = &registration {
+        registration.recorded()?;
+    }
+    let descriptors = lock
+        .iter()
+        .chain(std::iter::once(&live))
+        .map(AsRawFd::as_raw_fd)
+        .collect::<Vec<_>>();
     let mut command = Command::new(binary);
     command
         .args(["__management-job"])
         .arg(store.root())
         .arg(id)
         .arg(&task)
-        .arg(descriptor.to_string())
-        .arg(live_descriptor.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    for descriptor in &descriptors {
+        command.arg(descriptor.to_string());
+    }
     unsafe {
         command.pre_exec(move || {
-            if libc::setsid() < 0
-                || libc::fcntl(descriptor, libc::F_SETFD, 0) < 0
-                || libc::fcntl(live_descriptor, libc::F_SETFD, 0) < 0
-            {
+            if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            for descriptor in &descriptors {
+                if libc::fcntl(*descriptor, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             Ok(())
         });
     }
-    match command.spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _lock = lock;
-                let _live = live;
+    // Create the waiter before the child so thread failure cannot leave an untracked job.
+    // 先创建等待线程再启动子进程，避免线程创建失败后遗留未跟踪任务。
+    let (sender, receiver) = mpsc::channel::<Child>();
+    let waiter = std::thread::Builder::new()
+        .name(format!("rstarsleep-job-{id}"))
+        .spawn(move || {
+            let _lock = lock;
+            let _live = live;
+            let _registration = registration;
+            if let Ok(mut child) = receiver.recv() {
                 let _ = child.wait();
-            });
+            }
+        })?;
+    match command.spawn() {
+        Ok(child) => {
+            if let Err(mpsc::SendError(mut child)) = sender.send(child) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Invalid(
+                    "任务等待线程已退出 / job waiter exited".into(),
+                ));
+            }
         }
         Err(error) => {
+            drop(sender);
+            let _ = waiter.join();
             job.state = "failed".into();
             job.finished = Some(now()?);
             job.error = Some(format!("任务启动失败 / job launch failed: {error}"));
@@ -176,7 +214,7 @@ pub fn submit(store: &ConfigStore, id: &str, operation: &str) -> Result<Job> {
 /// # Arguments
 /// - `arguments`: Manager root, subsystem and fixed task identifier. 管理根、子系统及固定任务标识。
 pub fn job_entry(arguments: &[std::ffi::OsString]) -> Result<()> {
-    if arguments.len() != 5 {
+    if !matches!(arguments.len(), 4 | 5) {
         return Err(Error::Invalid(
             "内部任务参数无效 / invalid internal job arguments".into(),
         ));
@@ -312,10 +350,10 @@ fn inherited_locks(arguments: &[std::ffi::OsString]) -> Result<Vec<File>> {
     Ok(locks)
 }
 
-/// Execute the build worker while holding locks independently of its supervisor.
-/// 执行构建工作进程，并独立于监督进程持有锁。
+/// Execute the build worker while retaining its liveness independently of its supervisor.
+/// 执行构建工作进程，并独立于监督进程保留存活标记。
 pub fn build_entry(arguments: &[std::ffi::OsString]) -> Result<()> {
-    if arguments.len() != 4 {
+    if arguments.len() != 3 {
         return Err(Error::Invalid(
             "构建工作进程参数无效 / invalid build worker arguments".into(),
         ));
@@ -358,8 +396,8 @@ fn signal_group(child: &Child, signal: i32) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Keep cancellation outside SSH and release locks only after worker cleanup.
-/// 在 SSH 之外处理取消，仅在工作进程清理后释放锁。
+/// Keep cancellation outside SSH and wait for worker cleanup before reporting completion.
+/// 在 SSH 之外处理取消，等待工作进程清理后才报告完成。
 fn supervise(mut child: Child, cancel: &std::path::Path) -> Result<(ExitStatus, bool)> {
     let result = (|| -> Result<bool> {
         loop {
@@ -386,21 +424,44 @@ fn supervise(mut child: Child, cancel: &std::path::Path) -> Result<(ExitStatus, 
     Ok((status, result?))
 }
 
-/// Find an active build using the live lock, never a stale status record alone.
-/// 使用活动锁查找构建，不单独信任过期状态记录。
-pub fn active_build(store: &ConfigStore, id: &str) -> Result<Option<Job>> {
-    Ok(jobs(store, id)?
+/// Find the SSH build tracked by this daemon, with durable worker diagnostics.
+/// 查找此 daemon 跟踪的 SSH 构建，并附带持久工作进程诊断。
+pub fn active_build(store: &ConfigStore, id: &str, builds: &BuildState) -> Result<Option<Job>> {
+    let Some(build) = builds.active(id)? else {
+        return Ok(None);
+    };
+    if !build.recorded {
+        return Ok(Some(Job {
+            task: build.task,
+            operation: "build".into(),
+            state: "preparing".into(),
+            // No durable start timestamp exists until preflight completes.
+            // 预检完成前尚无持久化的开始时间戳。
+            started: 0,
+            finished: None,
+            exit_code: None,
+            error: None,
+        }));
+    }
+    let job = jobs(store, id)?
         .into_iter()
-        .rev()
-        .find(|job| job.operation == "build" && matches!(job.state.as_str(), "queued" | "running")))
+        .find(|job| job.task == build.task)
+        .ok_or_else(|| Error::Invalid("构建任务记录丢失 / build job record was lost".into()))?;
+    Ok(Some(job))
 }
 
 /// Request cancellation of exactly the observed build; never signal a recorded PID.
 /// 只请求取消已观察到的构建，绝不向记录的 PID 发信号。
-pub fn stop_build(store: &ConfigStore, id: &str) -> Result<Option<Job>> {
-    let Some(job) = active_build(store, id)? else {
+pub fn stop_build(store: &ConfigStore, id: &str, builds: &BuildState) -> Result<Option<Job>> {
+    let Some(job) = active_build(store, id, builds)? else {
         return Ok(None);
     };
+    if job.state == "preparing" {
+        return Err(Error::Invalid("正在检查构建配置，请在任务启动后停止 / build configuration is being checked; stop the job after it starts".into()));
+    }
+    if !matches!(job.state.as_str(), "queued" | "running") {
+        return Ok(None);
+    }
     request_stop(store, id, &job)?;
     Ok(Some(job))
 }

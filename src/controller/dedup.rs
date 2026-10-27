@@ -19,8 +19,8 @@ pub(super) use storage::share;
 pub(super) const INDEX: &str = "packages-files.tsv";
 pub(super) type Index = BTreeSet<(String, String)>;
 
-/// One successful, enabled system retained by the batch's existing build lock.
-/// 由批次现有构建锁保护的已成功且开启去重的系统。
+/// One successful system with deduplication enabled in the current batch.
+/// 当前批次中已成功且开启去重的系统。
 pub(super) struct Source {
     root: PathBuf,
     plugin: String,

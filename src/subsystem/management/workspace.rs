@@ -12,6 +12,7 @@ use std::{
 pub struct Workspace {
     pub store: ConfigStore,
     pub id: String,
+    pub(crate) builds: std::sync::Arc<super::super::daemon::BuildState>,
     root: PathBuf,
 }
 pub struct Upload {
@@ -33,6 +34,7 @@ impl Workspace {
         Ok(Self {
             store,
             id: id.into(),
+            builds: std::sync::Arc::new(super::super::daemon::BuildState::default()),
             root,
         })
     }

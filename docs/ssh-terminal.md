@@ -63,17 +63,25 @@ executed. History retains up to 200 commands for the current connection only.
 
 ## 管理面板 / Dashboard
 
-`build` 默认启动构建并实时输出。构建中只能有一个任务；`build status` 从头补齐
+`build` 默认启动构建并实时输出。每系统在同一 daemon 内只能有一个 SSH 构建任务；`build status` 从头补齐
 该任务的全部日志后继续跟随，结束后再执行则显示“当前系统不在构建”。`build stop`
 请求停止并等待确认，CLI 构建输出中的 Ctrl+C 也会停止构建。关闭 SSH 连接只断开
 查看，不终止构建；重新连接可用 `build status` 接回当前任务。
 
-`build` starts a build and streams its output by default. Only one build may run per
+`build` starts a build and streams its output by default. Each daemon tracks one SSH build per
 system. While it is active, `build status` replays the entire task log and follows new
 output; after completion it reports that the system is not building. `build stop`
 requests cancellation and waits for confirmation. Ctrl+C during CLI build output
 also stops the build. Disconnecting SSH only detaches the viewer; reconnect with
 `build status` to observe the active task again.
+
+当前 SSH 构建状态保存在 daemon 的共享内存 map 中，不创建每系统 `build.lock`。
+SSH 断开后任务及登记继续保留，任务结束或提交失败时清除；daemon 重启后此表为空，
+历史任务及日志仍可通过 `jobs`、`logs build` 查看。独立 CLI 构建不纳入此表。
+
+Current SSH build state lives in the daemon's shared in-memory map, without per-system `build.lock` files.
+SSH disconnects retain the task and registration; completion or submission failure clears the registration.
+Daemon restart starts an empty map; `jobs` and `logs build` retain history. Standalone CLI builds are not tracked in this map.
 
 输入 `tui` 打开全屏面板。方向键选择，Enter 执行；`Tab` 切换操作与文件浏览。
 子系统停止和重启需按 `y` 确认，其他键取消。操作成功和失败的输出都显示在结果区，

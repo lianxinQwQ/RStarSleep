@@ -1,5 +1,5 @@
-//! Per-system locks, monotonic attempts, frozen configuration, and build status.
-//! 每系统锁、单调构建尝试、冻结配置和构建状态。
+//! Monotonic attempts, frozen configuration, build status and inheritance transactions.
+//! 单调构建尝试、冻结配置、构建状态和继承事务。
 use super::{Error, Result, fs as disk};
 use crate::config::{ConfigStore, SystemLayout};
 use serde::Serialize;
@@ -18,8 +18,8 @@ impl Drop for Lock {
     }
 }
 
-/// One allocated attempt retaining its exclusive system lock.
-/// 一个已分配构建尝试，保留独占系统锁。
+/// One allocated attempt retaining its frozen inputs and diagnostic archive.
+/// 一个已分配构建尝试，保留冻结输入和诊断归档。
 pub(super) struct Attempt {
     /// Diagnostic archive retained independently of system roots and caches.
     /// 独立于系统根和缓存保留的诊断归档。
@@ -33,8 +33,8 @@ pub(super) struct Attempt {
     /// Latest prior attempt, including failed builds.
     /// 最新过往尝试，包括失败构建。
     pub previous: Option<String>,
-    /// All prior attempts in descending numeric order, captured under the system lock.
-    /// 在系统锁内取得的全部过往尝试，按数字序号倒序排列。
+    /// All prior attempts in descending numeric order, captured before allocation.
+    /// 分配前取得的全部过往尝试，按数字序号倒序排列。
     pub history: Vec<String>,
     /// Current version record directory outside all roots.
     /// 所有根之外的当前版本记录目录。
@@ -42,18 +42,14 @@ pub(super) struct Attempt {
     /// Frozen configuration directory used throughout this build.
     /// 此次构建始终使用的冻结配置目录。
     pub config: PathBuf,
-    /// Exclusive system lock held through status and cleanup.
-    /// 状态记录和清理期间持有的独占系统锁。
-    _lock: Lock,
 }
 
-/// Locked, frozen inputs checked before allocating a build version.
-/// 分配构建版本前用于校验的已锁定、冻结输入。
+/// Frozen inputs checked before allocating a build version.
+/// 分配构建版本前用于校验的冻结输入。
 pub(super) struct Preflight {
     pub layout: SystemLayout,
     pub config: PathBuf,
     pub log: super::logging::BuildLog,
-    lock: Lock,
 }
 
 /// Retain temporary preflight sessions until every build handle has been released.
@@ -114,7 +110,6 @@ impl PreflightSessions {
 impl Preflight {
     pub fn begin(store: &ConfigStore, id: &str, sessions: &mut PreflightSessions) -> Result<Self> {
         let layout = store.system_layout(id)?;
-        let lock = lock_system(&layout)?;
         let _configuration = crate::config::lock_configuration(&layout.root)?;
         let session = sessions.create()?;
         let log = super::logging::BuildLog::new(&session)?;
@@ -125,7 +120,6 @@ impl Preflight {
             layout,
             config,
             log,
-            lock,
         })
     }
 }
@@ -160,53 +154,14 @@ pub(super) struct Status<'a> {
     pub plugin_sha256: Option<&'a str>,
 }
 
-/// Acquire the shared build/cleanup system lock without allocating a version.
-/// 取得构建和清理共用的系统锁，不分配版本。
-/// # Arguments
-/// - `layout`: Existing managed-system layout. 已有被管理系统布局。
-pub(super) fn lock_system(layout: &SystemLayout) -> Result<Lock> {
-    lock_directory_guard(&layout.root)
-}
-
-/// Release the directory lock explicitly even if a concurrent fork inherited it.
-/// 即使并发 fork 继承了锁，也显式释放目录锁。
-pub(super) fn lock_directory_guard(root: &std::path::Path) -> Result<Lock> {
-    lock_directory(root).map(Lock)
-}
-
-pub(super) fn lock_directory(root: &std::path::Path) -> Result<File> {
-    disk::checked(root)?;
-    if !root.is_dir() {
-        return Err(Error::Invalid(
-            "系统未初始化 / System is not initialized".into(),
-        ));
-    }
-    let lock_path = root.join("build.lock");
-    disk::checked(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| disk::io(&lock_path, e))?;
-    lock.try_lock().map_err(|e| {
-        Error::Invalid(format!(
-            "无法取得系统构建锁 / Cannot acquire the system build lock: {e}"
-        ))
-    })?;
-    Ok(lock)
-}
-
 impl Attempt {
-    /// Allocate a version only after checking the frozen inputs under the same lock.
-    /// 在同一个锁内校验冻结输入后才分配版本。
+    /// Allocate a version only after checking the frozen inputs.
+    /// 校验冻结输入后才分配版本。
     pub fn begin(inputs: Preflight) -> Result<Self> {
         let Preflight {
             layout,
             config,
             log,
-            lock,
         } = inputs;
         disk::directory(&layout.versions)?;
         let mut history = Vec::new();
@@ -270,15 +225,14 @@ impl Attempt {
             previous,
             history,
             directory,
-            _lock: lock,
         })
     }
     /// Atomically persist a status transition.
     /// 原子持久化状态迁移。
     /// # Arguments
     ///
-    /// - `self`: Locked allocated attempt.
-    ///   已锁定并分配的构建尝试。
+    /// - `self`: Allocated attempt.
+    ///   已分配的构建尝试。
     /// - `status`: Full replacement status.
     ///   完整替换状态。
     pub fn status(&self, status: &Status<'_>) -> Result<()> {
@@ -287,6 +241,7 @@ impl Attempt {
 }
 
 /// Serialize source pin publication, first-boot finalization and version cleanup.
+/// 串行化来源固定发布、首次启动收尾和版本清理。
 pub(super) fn lock_inheritance(manager: &std::path::Path) -> Result<Lock> {
     let path = manager.join("inheritance.lock");
     disk::checked(&path)?;
@@ -416,7 +371,7 @@ mod tests {
         assert!(!session_path.exists());
         assert!(!layout.versions.exists());
         assert!(!layout.root.join("version-counter").exists());
-        assert!(lock_system(&layout).is_ok());
+        assert!(!layout.root.join("build.lock").exists());
     }
 
     #[test]
@@ -445,14 +400,14 @@ mod tests {
     #[test]
     fn dropping_lock_releases_it_even_when_another_description_survives() {
         let directory = tempfile::tempdir().unwrap();
-        let guard = Lock(lock_directory(directory.path()).unwrap());
+        let guard = lock_inheritance(directory.path()).unwrap();
         let inherited = guard.0.try_clone().unwrap();
-        assert!(lock_directory(directory.path()).is_err());
+        assert!(lock_inheritance(directory.path()).is_err());
         drop(guard);
-        let next = Lock(lock_directory(directory.path()).unwrap());
+        let next = lock_inheritance(directory.path()).unwrap();
         drop(inherited);
-        assert!(lock_directory(directory.path()).is_err());
+        assert!(lock_inheritance(directory.path()).is_err());
         drop(next);
-        assert!(lock_directory(directory.path()).is_ok());
+        assert!(lock_inheritance(directory.path()).is_ok());
     }
 }

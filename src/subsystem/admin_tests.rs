@@ -4,7 +4,9 @@ use super::*;
 use crate::subsystem::management::tests::fixture;
 use std::sync::mpsc;
 
-fn running(workspace: &super::super::management::Workspace) -> (File, File) {
+fn running(
+    workspace: &super::super::management::Workspace,
+) -> (File, File, super::super::daemon::builds::BuildRegistration) {
     let path = directory(&workspace.store, &workspace.id).unwrap();
     fs::create_dir_all(&path).unwrap();
     let job = Job {
@@ -27,13 +29,15 @@ fn running(workspace: &super::super::management::Workspace) -> (File, File) {
         unsafe { libc::flock(supervisor.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
-    (lock, supervisor)
+    let registration = workspace.builds.begin(&workspace.id, "build-test").unwrap();
+    registration.recorded().unwrap();
+    (lock, supervisor, registration)
 }
 
 #[test]
 fn queued_build_does_not_misreport_a_supervisor_still_acquiring_its_lock() {
     let (_dir, workspace) = fixture();
-    let (_worker, supervisor) = running(&workspace);
+    let (_worker, supervisor, _registration) = running(&workspace);
     let path = directory(&workspace.store, &workspace.id)
         .unwrap()
         .join("build-test.toml");
@@ -41,13 +45,13 @@ fn queued_build_does_not_misreport_a_supervisor_still_acquiring_its_lock() {
     job.state = "queued".into();
     super::super::write_record(&path, &job).unwrap();
     drop(supervisor);
-    let job = active_build(&workspace.store, &workspace.id)
+    let job = active_build(&workspace.store, &workspace.id, &workspace.builds)
         .unwrap()
         .unwrap();
     assert_eq!(job.state, "queued");
     assert!(job.error.is_none());
     assert!(
-        stop_build(&workspace.store, &workspace.id)
+        stop_build(&workspace.store, &workspace.id, &workspace.builds)
             .unwrap()
             .is_some()
     );
@@ -56,13 +60,13 @@ fn queued_build_does_not_misreport_a_supervisor_still_acquiring_its_lock() {
 #[test]
 fn missing_supervisor_keeps_build_busy_and_reports_cancellation_failure() {
     let (_dir, workspace) = fixture();
-    let (_worker, supervisor) = running(&workspace);
+    let (_worker, supervisor, _registration) = running(&workspace);
     drop(supervisor);
-    let job = active_build(&workspace.store, &workspace.id)
+    let job = active_build(&workspace.store, &workspace.id, &workspace.builds)
         .unwrap()
         .unwrap();
     assert!(job.error.unwrap().contains("supervisor was lost"));
-    let error = stop_build(&workspace.store, &workspace.id)
+    let error = stop_build(&workspace.store, &workspace.id, &workspace.builds)
         .unwrap_err()
         .to_string();
     assert!(error.contains("无法安全停止"));
@@ -74,14 +78,14 @@ fn active_build_requires_a_live_worker_and_stop_is_task_specific() {
     let (_dir, workspace) = fixture();
     let lock = running(&workspace);
     assert_eq!(
-        active_build(&workspace.store, &workspace.id)
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
             .unwrap()
             .unwrap()
             .task,
         "build-test"
     );
     assert!(
-        stop_build(&workspace.store, &workspace.id)
+        stop_build(&workspace.store, &workspace.id, &workspace.builds)
             .unwrap()
             .is_some()
     );
@@ -93,12 +97,85 @@ fn active_build_requires_a_live_worker_and_stop_is_task_specific() {
     );
     drop(lock);
     assert!(
-        active_build(&workspace.store, &workspace.id)
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
             .unwrap()
             .is_none()
     );
     assert!(
-        stop_build(&workspace.store, &workspace.id)
+        stop_build(&workspace.store, &workspace.id, &workspace.builds)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A restarted daemon does not treat historical running jobs as current SSH builds.
+/// 重启后的 daemon 不把历史运行任务视为当前 SSH 构建。
+#[test]
+fn historical_running_job_is_not_imported_into_new_daemon_state() {
+    let (_dir, workspace) = fixture();
+    let _running = running(&workspace);
+    let restarted = BuildState::default();
+    assert!(
+        active_build(&workspace.store, &workspace.id, &restarted)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        stop_build(&workspace.store, &workspace.id, &restarted)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !directory(&workspace.store, &workspace.id)
+            .unwrap()
+            .join("build-test.cancel")
+            .exists()
+    );
+    assert!(
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The memory registration remains visible before records exist and during final cleanup.
+/// 在记录尚未创建和最终清理期间，内存登记始终可见。
+#[test]
+fn build_registration_is_visible_through_preflight_and_completion() {
+    let (_dir, workspace) = fixture();
+    let registration = workspace.builds.begin(&workspace.id, "build-test").unwrap();
+    let preparing = active_build(&workspace.store, &workspace.id, &workspace.builds)
+        .unwrap()
+        .unwrap();
+    assert_eq!(preparing.state, "preparing");
+    assert!(!directory(&workspace.store, &workspace.id).unwrap().exists());
+    let path = directory(&workspace.store, &workspace.id).unwrap();
+    fs::create_dir_all(&path).unwrap();
+    let completed = Job {
+        state: "complete".into(),
+        finished: Some(2),
+        exit_code: Some(0),
+        ..preparing
+    };
+    super::super::write_record(&path.join("build-test.toml"), &completed).unwrap();
+    registration.recorded().unwrap();
+    assert_eq!(
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
+            .unwrap()
+            .unwrap()
+            .state,
+        "complete"
+    );
+    fs::remove_file(path.join("build-test.toml")).unwrap();
+    assert!(
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
+            .unwrap_err()
+            .to_string()
+            .contains("build job record was lost")
+    );
+    drop(registration);
+    assert!(
+        active_build(&workspace.store, &workspace.id, &workspace.builds)
             .unwrap()
             .is_none()
     );

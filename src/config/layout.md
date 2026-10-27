@@ -44,7 +44,6 @@ Btrfs 顶层/
             │   └── subsystem/
             │       ├── config.toml     # 当前子系统授权、启动、会话及导出配置
             │       └── authorized_keys # 可选 SSH 授权公钥 / Optional authorized SSH public keys
-            ├── build.lock              # 每系统构建独占锁
             ├── config.lock             # 编辑提交与配置冻结互斥 / Edit and configuration freeze exclusion
             ├── build-current.toml      # 当前成功交付产物，失败构建不替换
             ├── identity.toml           # 独立安装时保存的稳定 machine-id
@@ -80,7 +79,6 @@ Btrfs 顶层/
             │   ├── exports-users.toml  # 已主动登记用户入口集成的用户
             │   ├── generations/<代>/root/ # 可写父根及全部内部子卷
             │   ├── jobs/               # 持久管理任务 / Durable management jobs
-            │   │   ├── build.lock      # 构建任务互斥 / Build job exclusion
             │   │   ├── lifecycle.lock  # 启停任务互斥 / Lifecycle job exclusion
             │   │   ├── <任务>.toml     # 任务状态与退出结果 / Job state and exit result
             │   │   ├── <任务>.lock     # 工作进程存活锁 / Worker liveness lock

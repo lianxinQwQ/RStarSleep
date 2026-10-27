@@ -193,10 +193,13 @@ daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并检查残�
 容器不读取整个管理根，也不注入 guest 管理 socket 或管理器程序。SSH/SFTP 在宿主
 daemon 内服务，只向已认证系统开放 build/script 配置视图。
 
-finalize/clean 均先取系统锁，再取管理器级继承锁。子系统沿用同一锁协议，
-通过已持系统锁的内部收尾入口避免重复 flock。当前产物读取、来源固定、收尾及运行引用提交
-之间不能留出 clean 删除候选或来源的空档；全过程统一锁顺序并用并发测试验证。
-机器运行期间不持续持有构建锁，运行请求也不持锁同步等待后台构建。
+不再使用每系统 `build.lock`。finalize/clean 保留管理器级继承事务锁及来源引用检查。
+daemon 内存 map 只跟踪 SSH 提交的当前构建，供 SSH 状态显示及防止重复提交，
+不用于主系统构建或提供跨进程互斥。SSH 断开不清除登记，任务结束或启动失败时清除；
+daemon 重启后不从历史任务恢复此表。
+Per-system build lock files are no longer used; finalize/clean retain inheritance transaction protection.
+The daemon's in-memory map tracks SSH submissions for status and duplicate checks, without cross-process exclusion.
+Registrations survive SSH disconnects, end with the task, and are not restored from history after daemon restart.
 
 `clean` 沿用现有待办来源保护，再增加当前构建产物、当前运行版本、切换中的产物及
 恢复所需旧代引用。当前产物指向的版本在被新构建替换前不能删除。
@@ -391,7 +394,7 @@ P6 已改用 SSH 配置管理，移除原 guest install/rebuild/restart/add-copy
 protocol/client/terminal、execution、session、desktop、exports、admin、console、
 management、ssh、daemon 和共享 filesystem/trust。复杂 daemon/session/management/ssh
 模块按职责拆为子目录；CLI 位于
-`src/cli/subsystem.rs`。复用 `controller::deferred` 收尾、递归快照和持锁内部接口；
+`src/cli/subsystem.rs`。复用 `controller::deferred` 收尾和递归快照接口；
 没有为子系统另建一套版本继承状态。
 
 验证分三层：配置/产物引用/协议/desktop 的纯逻辑测试；可注入后端的收尾与切换故障、

@@ -127,8 +127,8 @@ fn capture(plugin: &LoadedPlugin, source_root: &Path, name: &str) -> Result<()> 
     Ok(())
 }
 
-/// Called under the system lock, before versions, target downloads or cache retirement.
-/// 在系统锁内执行，早于版本分配、目标下载或缓存清理。
+/// Called before versions, target downloads or cache retirement.
+/// 在版本分配、目标下载或缓存清理之前执行。
 pub(super) fn preflight(
     plugin: &LoadedPlugin,
     context: &BuildContext,

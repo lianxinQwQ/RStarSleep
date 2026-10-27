@@ -96,8 +96,8 @@ pub fn read_current_build(store: &ConfigStore, id: &str) -> Result<CurrentBuild>
     Ok(current)
 }
 
-/// Publish a successful artifact while holding the existing build lock.
-/// 持有现有构建锁时发布成功产物。
+/// Atomically publish the current successful artifact.
+/// 原子发布当前成功产物。
 /// # Arguments
 /// - `system`: Owned system directory. 所属系统目录。
 /// - `id`: Expected system identity. 预期系统身份。

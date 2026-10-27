@@ -192,33 +192,6 @@ pub fn finalize_inheritance_with_backend(
     disk::checked(manifest_path.parent().ok_or_else(|| {
         Error::Invalid("清单缺少父目录 / Manifest has no parent directory".into())
     })?)?;
-    let system = manifest_path
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            Error::Invalid(
-                "待继承清单缺少系统目录 / Pending inheritance manifest has no system directory"
-                    .into(),
-            )
-        })?;
-    let _lock = super::records::lock_directory_guard(system)?;
-    finalize_inheritance_locked(manifest_path, filesystem_root, backend)
-}
-
-/// Complete a version while the caller already owns its shared system lock.
-/// 调用者已持有共用系统锁时完成版本。
-/// # Arguments
-/// - `manifest_path`: Exact pending manifest. 精确待办清单。
-/// - `filesystem_root`: Btrfs subvolid=5 view. Btrfs 顶层视图。
-/// - `backend`: Validated storage backend. 经校验存储后端。
-/// # Errors
-/// Returns identity, source or publication failures. 返回身份、来源或发布错误。
-pub fn finalize_inheritance_locked(
-    manifest_path: &Path,
-    filesystem_root: &Path,
-    backend: &impl BuildBackend,
-) -> Result<()> {
     let directory = manifest_path.parent().ok_or_else(|| {
         Error::Invalid("清单缺少父目录 / Manifest has no parent directory".into())
     })?;

@@ -128,6 +128,7 @@ fn concurrent_callers_share_exactly_one_slot() {
         directory: root.path().into(),
         slots: Mutex::new(BTreeMap::new()),
         connections: Mutex::new(BTreeMap::new()),
+        builds: Arc::new(BuildState::default()),
     });
     let barrier = Arc::new(std::sync::Barrier::new(17));
     let workers = (0..16)
@@ -186,6 +187,7 @@ fn unauthorized_lifecycle_request_does_not_prepare() {
         directory: root.path().into(),
         slots: Mutex::new(BTreeMap::new()),
         connections: Mutex::new(BTreeMap::new()),
+        builds: Arc::new(BuildState::default()),
     };
     let (stream, response) = UnixStream::pair().unwrap();
     let wire = Arc::new(Wire {

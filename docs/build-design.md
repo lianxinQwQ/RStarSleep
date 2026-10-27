@@ -512,8 +512,12 @@ Arch 预设提供上述包管理操作及挂载配置；构建控制器完成基
 
 ## 版本与缓存选择
 
-版本使用每个系统独立的递增序号，例如 `v00000001`，在系统构建锁内分配，
-不通过目录修改时间推断先后。取得系统构建锁后，先在临时目录冻结配置并完成插件、参数及按角色选择的启动要求检查。
+版本使用每个系统独立的递增序号，例如 `v00000001`，不通过目录修改时间推断先后。
+先在临时目录冻结配置并完成插件、参数及按角色选择的启动要求检查。
+不再创建或获取 `systems/<系统标识>/build.lock`；独立 CLI 构建与启动继承不依赖 daemon。
+SSH 提交的当前构建由 daemon 的内存 map 跟踪，供状态显示及防止重复提交，不承担跨进程互斥。
+Per-system build lock files are no longer used. Standalone CLI builds and boot inheritance do not require a daemon.
+The daemon tracks its SSH builds in an in-memory map for status and duplicate submission checks, without cross-process exclusion.
 所有系统的输入先冻结，再在独立解析环境中分别收集软件组、基础包及运行依赖，并检查启动要求。
 新版 Arch 在同一次调用内完成计划收集和软件下载，旧插件先收集、校验计划再下载。
 检查通过后才分配目标版本，将同一份冻结输入复制到版本目录内的暂存位置，完整写入后在目标文件系统内重命名为 `config/`；
