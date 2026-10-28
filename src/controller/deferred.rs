@@ -43,6 +43,10 @@ pub struct InheritanceSource {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub subvolume_id: String,
     pub directory: bool,
+    /// Relative built exceptions fixed by this pending task.
+    /// 由本次待办固定的构建相对例外。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preserve: Vec<PathBuf>,
 }
 
 pub(super) fn prepare(
@@ -68,6 +72,11 @@ pub(super) fn prepare(
     let _pins_lock = super::records::lock_inheritance(manager)?;
     // Never inspect configured sources here: missing paths and today's mount overlays
     // do not describe the clean source tree that will be available at first boot.
+    let entries: Vec<_> = config
+        .copy_on_write_boot
+        .iter()
+        .map(|path| (path.clone(), config.preserve_for(path).to_vec()))
+        .collect();
     let sources = config
         .copy_on_write_boot
         .iter()
@@ -76,10 +85,15 @@ pub(super) fn prepare(
             target: source.clone(),
             subvolume_id: String::new(),
             directory: source.as_os_str().as_encoded_bytes().ends_with(b"/"),
+            preserve: config.preserve_for(source).to_vec(),
         })
         .collect();
     let manifest = PendingInheritance {
-        schema_version: 2,
+        schema_version: if entries.iter().any(|(_, paths)| !paths.is_empty()) {
+            3
+        } else {
+            2
+        },
         system_id: context.system_id.clone(),
         version: directory
             .file_name()
@@ -131,7 +145,7 @@ pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
     let text = fs::read_to_string(path).map_err(|e| disk::io(path, e))?;
     let manifest: PendingInheritance =
         toml::from_str(&text).map_err(|e| Error::Invalid(e.to_string()))?;
-    if !matches!(manifest.schema_version, 1 | 2) || manifest.sources.is_empty() {
+    if !matches!(manifest.schema_version, 1..=3) || manifest.sources.is_empty() {
         return Err(Error::Invalid(
             "待继承清单格式或来源无效 / Invalid pending inheritance manifest format or source"
                 .into(),
@@ -143,7 +157,13 @@ pub(super) fn read_manifest(path: &Path) -> Result<PendingInheritance> {
                 .into(),
         ));
     }
-    if manifest.schema_version == 2 {
+    for source in &manifest.sources {
+        crate::config::validate_preserve_paths(&source.preserve)?;
+        if !source.preserve.is_empty() && (manifest.schema_version < 3 || !source.directory) {
+            return Err(Error::Invalid("例外要求 schema 3 的目录继承项 / Preserve entries require directory inheritance with schema 3".into()));
+        }
+    }
+    if manifest.schema_version >= 2 {
         if let Some(root) = &manifest.source_root {
             validate_top_location(&root.path)?;
             if root.filesystem_uuid.is_empty() || root.subvolume_id.is_empty() {
@@ -346,11 +366,14 @@ fn finalize_inheritance_inner(
             "准备根子卷身份已改变 / Preparation root subvolume identity has changed".into(),
         ));
     }
+    let entries: Vec<_> = manifest
+        .sources
+        .iter()
+        .map(|source| (source.target.clone(), source.preserve.clone()))
+        .collect();
+    super::preservation::validate_built(&prepared, &entries)?;
     let staging = directory.join("inheritance-staging");
-    if disk::exists(&staging)? {
-        backend.delete_subvolume_recursive(&staging)?;
-    }
-    let source_root = if manifest.schema_version == 2 {
+    let source_root = if manifest.schema_version >= 2 {
         let root = manifest.source_root.as_ref().ok_or_else(|| {
             Error::Invalid("构建时无法固定启动继承来源根，请在 Btrfs 来源根环境重新构建 / Cannot pin the boot inheritance source root during build; rebuild in the Btrfs source-root environment".into())
         })?;
@@ -392,7 +415,7 @@ fn finalize_inheritance_inner(
         validate_inheritance_type(&source.target, info.is_dir())?;
         // Schema 1 pins each resolved source; schema 2 pins only its root view.
         // Sources (including newly created subvolumes) are discovered at first boot.
-        let identity_valid = manifest.schema_version == 2
+        let identity_valid = manifest.schema_version >= 2
             || if manifest.nocow_handling == NocowHandling::MoveSnapshot && source.directory {
                 super::inheritance_migration::validates_identity(
                     backend,
@@ -414,7 +437,11 @@ fn finalize_inheritance_inner(
             )));
         }
         backend.check_cow_source(&path, directory)?;
+        super::preservation::validate_source(&path, &source.preserve)?;
         sources.push((source, path));
+    }
+    if disk::exists(&staging)? {
+        backend.delete_subvolume_recursive(&staging)?;
     }
     if manifest.nocow_handling == NocowHandling::MoveSnapshot {
         for (source, path) in &sources {
@@ -434,21 +461,31 @@ fn finalize_inheritance_inner(
         "应用启动阶段继承并发布可写系统根",
         "Apply boot-time inheritance and publish the writable system root",
         || {
-            for (source, path) in sources {
-                super::progress::message(
-                    &manifest.system_id,
-                    format!("继承路径：{}", source.target.display()),
-                    format!("Inherit path: {}", source.target.display()),
-                );
-                let target = disk::guest_path(&staging, &source.target)?;
-                super::inheritance::inherit_path(
-                    backend,
-                    &path,
-                    &target,
-                    manifest.directory_subvolume,
-                    manifest.nocow_handling,
-                )?;
-            }
+            super::preservation::with_saved_from(
+                backend,
+                &staging,
+                &prepared,
+                &entries,
+                |saved| {
+                    for (source, path) in sources {
+                        super::progress::message(
+                            &manifest.system_id,
+                            format!("继承路径：{}", source.target.display()),
+                            format!("Inherit path: {}", source.target.display()),
+                        );
+                        let target = disk::guest_path(&staging, &source.target)?;
+                        super::inheritance::inherit_path(
+                            backend,
+                            &path,
+                            &target,
+                            manifest.directory_subvolume,
+                            manifest.nocow_handling,
+                        )?;
+                        saved.restore(backend, &staging, &source.target)?;
+                    }
+                    Ok(())
+                },
+            )?;
             let mut identities = Vec::new();
             for child in backend.nested_subvolumes(&staging)? {
                 identities.push((

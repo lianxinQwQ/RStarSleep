@@ -187,6 +187,22 @@ fn cp(
 
 /// Build a metadata skeleton, copy each inode exactly once, then restore metadata.
 pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Result<()> {
+    copy_inner(source, target, policy, false)
+}
+
+/// Fully copy preserved build output without an implicit reflink fallback.
+/// 完整复制需保留的构建产物，不隐式回退 reflink 策略。
+pub(super) fn copy_full(source: &Path, target: &Path) -> Result<()> {
+    let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
+    if info.file_type().is_symlink() {
+        disk::checked_entry(source)?;
+        disk::checked(target)?;
+        return cp(source, target, false, "never", false);
+    }
+    copy_inner(source, target, NocowHandling::Copy, true)
+}
+
+fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -> Result<()> {
     if !matches!(policy, NocowHandling::Reflink | NocowHandling::Copy) {
         return Err(Error::Invalid(
             "NOCOW 复制策略不允许自动降级 / NOCOW copy policy does not permit automatic fallback"
@@ -247,7 +263,7 @@ pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Resul
             continue;
         }
         set_nocow(&path, entry.nocow)?;
-        let mode = if policy == NocowHandling::Copy && entry.nocow {
+        let mode = if full || (policy == NocowHandling::Copy && entry.nocow) {
             "never"
         } else {
             "always"

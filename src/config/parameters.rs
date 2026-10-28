@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// 生效参数值和显式存在的节。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginParameters {
+    /// Structured controller-owned inheritance sections, without environment-name flattening.
+    /// 控制器所属的结构化继承分节，不压平为环境变量名。
+    pub inheritance_sections: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// Values keyed by the canonical environment name.
     /// 以规范环境名称索引的值。
     pub values: BTreeMap<String, String>,

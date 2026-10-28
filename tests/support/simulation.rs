@@ -46,6 +46,13 @@ pub struct SnapshotEvent {
 
 #[derive(Default)]
 pub struct SimulatedBackend {
+    /// Optional deterministic files installed into each independently built base root.
+    /// 可选确定性文件树，安装到每个独立构建的基础根。
+    pub built_tree: RefCell<Option<PathBuf>>,
+    /// Fail a selected preservation copy, including restore-time copies.
+    /// 使指定次数的例外复制失败，包括还原时的复制。
+    pub fail_preserve_copy_at: Cell<usize>,
+    pub preserve_copies: Cell<usize>,
     pub filesystem_locations: RefCell<BTreeMap<PathBuf, (String, PathBuf)>>,
     pub source_ids: RefCell<BTreeMap<PathBuf, String>>,
     pub filesystem_inspections: RefCell<Vec<PathBuf>>,
@@ -362,6 +369,16 @@ impl BuildBackend for SimulatedBackend {
         }
         Ok(())
     }
+    fn copy_preserved(&self, source: &Path, target: &Path) -> Result<()> {
+        let count = self.preserve_copies.get() + 1;
+        self.preserve_copies.set(count);
+        if self.fail_preserve_copy_at.get() == count {
+            return Err(Error::Invalid(
+                "注入的例外复制失败 / Injected preserve copy failure".into(),
+            ));
+        }
+        rstarsleep::controller::SystemBackend.copy_preserved(source, target)
+    }
     fn copy_inherited_with_policy(
         &self,
         source: &Path,
@@ -647,6 +664,9 @@ impl BuildBackend for SimulatedBackend {
                 assert_eq!(args.len(), 1);
                 fs::create_dir_all(root.join("etc")).unwrap();
                 fs::write(root.join("etc/machine-id"), format!("{}\n", args[0])).unwrap();
+                if let Some(tree) = self.built_tree.borrow().as_ref() {
+                    copy_simulated_snapshot(tree, root);
+                }
             }
             "predownload_install" | "predownload_update" | "prepare_inheritance_initramfs" => {}
             "predownload" => {

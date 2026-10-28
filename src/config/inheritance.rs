@@ -35,6 +35,9 @@ impl std::fmt::Display for NocowHandling {
 /// 当前运行系统的继承请求。
 #[derive(Debug, Clone)]
 pub struct InheritanceConfig {
+    /// Relative exceptions owned by each explicitly configured CoW directory.
+    /// 各显式配置 CoW 目录所属的相对例外路径。
+    pub preserve: BTreeMap<PathBuf, Vec<PathBuf>>,
     /// Absolute paths copied into script-root after package cache commit,
     /// before post-processing and scripts.
     /// 软件缓存提交后、插件后处理及脚本执行前，复制到 script-root 的运行系统绝对路径。
@@ -53,6 +56,7 @@ pub struct InheritanceConfig {
 impl Default for InheritanceConfig {
     fn default() -> Self {
         Self {
+            preserve: BTreeMap::new(),
             copy_on_write_build: Vec::new(),
             copy_on_write_boot: Vec::new(),
             mounts: Vec::new(),
@@ -118,7 +122,47 @@ pub(crate) fn validate_inheritance_type(path: &Path, directory: bool) -> Result<
     Ok(())
 }
 
+/// Validate literal relative exception paths and reject overlapping selections.
+/// 校验字面相对例外路径并拒绝重叠选择。
+pub(crate) fn validate_preserve_paths(paths: &[PathBuf]) -> Result<()> {
+    for (index, path) in paths.iter().enumerate() {
+        let text = path.to_str().ok_or_else(|| {
+            Error::Invalid("例外路径必须为 UTF-8 / Preserve path must be UTF-8".into())
+        })?;
+        let unmarked = text.strip_suffix('/').unwrap_or(text);
+        if unmarked.is_empty()
+            || text.starts_with('/')
+            || text.chars().any(char::is_control)
+            || unmarked
+                .split('/')
+                .any(|part| matches!(part, "" | "." | ".."))
+        {
+            return Err(Error::Invalid(format!(
+                "例外必须为规范相对路径: {text:?} / Preserve entry must be a normalized relative path: {text:?}"
+            )));
+        }
+        for other in &paths[..index] {
+            if path.starts_with(other) || other.starts_with(path) {
+                return Err(Error::Invalid(format!(
+                    "例外路径不能重复或重叠: {0} 与 {1} / Preserve paths must not repeat or overlap: {0} and {1}",
+                    path.display(),
+                    other.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl InheritanceConfig {
+    /// Return the exceptions explicitly attached to this inheritance entry.
+    /// 返回显式绑定到此继承项的例外。
+    pub fn preserve_for(&self, path: &Path) -> &[PathBuf] {
+        self.preserve
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
     /// Extract controller-owned inheritance settings while rejecting overlaps and name collisions.
     /// 提取控制器所属继承设置，拒绝路径重叠及名称冲突。
     /// # Arguments
@@ -203,6 +247,57 @@ impl InheritanceConfig {
                 }
             }
         }
+        for (section, fields) in &parameters.inheritance_sections {
+            let parts: Vec<_> = section.split('.').collect();
+            if parts.len() != 3 || parts[0] != "Inheritance" {
+                return Err(Error::Invalid(format!(
+                    "无效继承分节: {section} / Invalid inheritance section: {section}"
+                )));
+            }
+            super::validate_identifier(parts[2])?;
+            let target = match parts[1] {
+                "CopyOnWriteBuild" => &mut config.copy_on_write_build,
+                "CopyOnWriteBoot" => &mut config.copy_on_write_boot,
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "未知继承类型: {section} / Unknown inheritance type: {section}"
+                    )));
+                }
+            };
+            for key in fields.keys() {
+                if !matches!(key.as_str(), "Path" | "Preserve") {
+                    return Err(Error::Invalid(format!(
+                        "未知继承字段: {section}.{key} / Unknown inheritance field: {section}.{key}"
+                    )));
+                }
+            }
+            let path = PathBuf::from(scalar(
+                "Path",
+                fields.get("Path").map(Vec::as_slice).unwrap_or_default(),
+            )?);
+            let name = inheritance_name(&path)?;
+            if let Some(previous) = names.insert(name, path.clone()) {
+                return Err(Error::Invalid(format!(
+                    "继承路径重复或编码冲突: {0} 与 {1} / Duplicate inheritance paths or encoding collision: {0} and {1}",
+                    previous.display(),
+                    path.display()
+                )));
+            }
+            let preserve: Vec<_> = fields
+                .get("Preserve")
+                .into_iter()
+                .flatten()
+                .flat_map(|value| value.lines())
+                .filter(|line| !line.is_empty())
+                .map(PathBuf::from)
+                .collect();
+            validate_preserve_paths(&preserve)?;
+            if !preserve.is_empty() {
+                validate_inheritance_type(&path, true)?;
+                config.preserve.insert(path.clone(), preserve);
+            }
+            target.push(path);
+        }
         if config.nocow_handling == NocowHandling::MoveSnapshot && !config.directory_subvolume {
             return Err(Error::Invalid(
                 "NocowHandling=move-snapshot 要求 DirectorySubvolume=yes / NocowHandling=move-snapshot requires DirectorySubvolume=yes".into(),
@@ -232,6 +327,84 @@ impl InheritanceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keep named sections structured while combining file and directory exceptions.
+    /// 保持具名分节结构，同时组合文件和目录例外。
+    #[test]
+    fn named_entries_bind_relative_preserves_and_do_not_leak_to_plugins() {
+        let mut document = crate::config::ini::Document::parse(
+            "[Inheritance]\nCopyOnWriteBuild=/etc/hostname\n[Inheritance.CopyOnWriteBuild.app]\nPath=/opt/app/\nPreserve=config\n[Inheritance.CopyOnWriteBoot.data]\nPath=/var/lib/app/\nPreserve=initial/\n", Path::new("first.conf")
+        ).unwrap();
+        document.append(
+            crate::config::ini::Document::parse(
+                "[Inheritance.CopyOnWriteBuild.app]\nPreserve=\nPreserve=generated/\n",
+                Path::new("second.conf"),
+            )
+            .unwrap(),
+        );
+        let parameters = document.plugin_parameters().unwrap();
+        assert_eq!(parameters.inheritance_sections.len(), 2);
+        assert!(
+            !parameters
+                .values
+                .keys()
+                .any(|key| key.contains("APP") || key.contains("PRESERVE"))
+        );
+        let config = InheritanceConfig::read(&parameters).unwrap();
+        assert_eq!(
+            config.preserve_for(Path::new("/opt/app/")),
+            [PathBuf::from("config"), PathBuf::from("generated/")]
+        );
+        assert_eq!(
+            config.preserve_for(Path::new("/var/lib/app/")),
+            [PathBuf::from("initial/")]
+        );
+        assert_eq!(config.copy_on_write_build.len(), 2);
+    }
+
+    /// Reject malformed ownership and literal paths before running build operations.
+    /// 在执行构建操作前拒绝无效归属及字面路径。
+    #[test]
+    fn named_entries_reject_invalid_sections_fields_and_overlaps() {
+        for text in [
+            "[Inheritance.Mount.app]\nPath=/opt/app/\n",
+            "[Inheritance.CopyOnWriteBuild.app.extra]\nPath=/opt/app/\n",
+            "[Inheritance.CopyOnWriteBuild.]\nPath=/opt/app/\n",
+            "[Inheritance.CopyOnWriteBuild.app]\nPreserve=config\n",
+            "[Inheritance.CopyOnWriteBuild.app]\nPath=/opt/app/\nPath=/opt/app/\n",
+            "[Inheritance.CopyOnWriteBuild.app]\nPath=/opt/app/\nUnknown=yes\n",
+            "[Inheritance.CopyOnWriteBuild.app]\nPath=/opt/file\nPreserve=config\n",
+            "[Inheritance]\nCopyOnWriteBuild=/opt/app/\n[Inheritance.CopyOnWriteBoot.app]\nPath=/opt/app/\n",
+        ] {
+            let document =
+                crate::config::ini::Document::parse(text, Path::new("invalid.conf")).unwrap();
+            assert!(
+                InheritanceConfig::read(&document.plugin_parameters().unwrap()).is_err(),
+                "{text}"
+            );
+        }
+        for path in [
+            "/absolute",
+            ".",
+            "..",
+            "a/../b",
+            "a/./b",
+            "a//b",
+            "a//",
+            "a/.",
+            "a\nb",
+        ] {
+            assert!(validate_preserve_paths(&[path.into()]).is_err(), "{path:?}");
+        }
+        for (first, second) in [
+            ("app/", "app/file"),
+            ("app", "app/"),
+            ("app/file", "app/file"),
+        ] {
+            assert!(validate_preserve_paths(&[first.into(), second.into()]).is_err());
+        }
+        assert!(validate_preserve_paths(&["app/".into(), "application/".into()]).is_ok());
+    }
 
     #[test]
     fn nocow_policy_is_one_strict_scalar_and_move_requires_subvolumes() {

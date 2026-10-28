@@ -255,6 +255,13 @@ impl Document {
     pub(super) fn plugin_parameters(&self) -> Result<super::PluginParameters> {
         let mut parameters = super::PluginParameters::default();
         for section in &self.sections {
+            if section.starts_with("Inheritance.") {
+                parameters
+                    .inheritance_sections
+                    .entry(section.clone())
+                    .or_default();
+                continue;
+            }
             if section == "Environment" {
                 continue;
             }
@@ -276,6 +283,14 @@ impl Document {
                 .push(entry.value.clone());
         }
         for ((section, key), values) in values {
+            if section.starts_with("Inheritance.") {
+                parameters
+                    .inheritance_sections
+                    .entry(section.into())
+                    .or_default()
+                    .insert(key.into(), values);
+                continue;
+            }
             parameters.insert_list(section, key, values)?;
         }
         if self.scalar("Content", "Packages").is_some() {

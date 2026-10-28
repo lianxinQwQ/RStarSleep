@@ -49,6 +49,9 @@ impl<B: BuildBackend> BuildBackend for ScopedBackend<'_, B> {
     fn copy_inherited(&self, source: &Path, target: &Path, force_cow: bool) -> Result<()> {
         self.backend.copy_inherited(source, target, force_cow)
     }
+    fn copy_preserved(&self, source: &Path, target: &Path) -> Result<()> {
+        self.backend.copy_preserved(source, target)
+    }
     fn copy_inherited_with_policy(
         &self,
         source: &Path,

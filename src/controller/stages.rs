@@ -483,6 +483,7 @@ impl<B: BuildBackend> Stages<'_, B> {
         }
         let root = self.scratch.join("script-root");
         owned.push(root.clone());
+        owned.push(root.with_file_name("script-root-preserve"));
         self.backend
             .snapshot_recursive(&packages.root, &root, false)?;
         if self.inheritance_root.is_some() {
@@ -676,6 +677,12 @@ impl<B: BuildBackend> Stages<'_, B> {
                 "保存待继承的只读快照和启动阶段任务",
                 "Save the read-only prepared snapshot and boot-time inheritance task",
             );
+            let entries: Vec<_> = config
+                .copy_on_write_boot
+                .iter()
+                .map(|path| (path.clone(), config.preserve_for(path).to_vec()))
+                .collect();
+            super::preservation::validate_built(&root, &entries)?;
             self.backend.snapshot_recursive(&root, &prepared, true)?;
             super::deferred::prepare(
                 self.backend,

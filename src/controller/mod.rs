@@ -31,6 +31,7 @@ mod package_watch;
 mod persistent;
 mod predownload;
 mod preflight;
+mod preservation;
 pub(crate) mod progress;
 mod records;
 mod resources;

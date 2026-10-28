@@ -28,8 +28,8 @@ pub use build::{
 };
 pub use environment::Environment;
 pub use filesystem::with_current_system_top_level;
-pub(crate) use inheritance::validate_inheritance_type;
 pub use inheritance::{InheritanceConfig, NocowHandling, inheritance_name};
+pub(crate) use inheritance::{validate_inheritance_type, validate_preserve_paths};
 pub use init::{current_system_workspace, initialize, initialize_current_system};
 pub use model::{PackageConfig, SystemTypeConfig};
 pub use parameters::PluginParameters;

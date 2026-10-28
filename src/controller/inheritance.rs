@@ -43,28 +43,37 @@ pub(super) fn apply_build(
     } else {
         None
     };
-    for source in &config.copy_on_write_build {
-        progress::message(
-            &context.system_id,
-            format!("继承写时复制路径：{}", source.display()),
-            format!("Inherit copy-on-write path: {}", source.display()),
-        );
-        let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
-        let resolved = disk::inheritance_source_path(source_root, unmarked)?;
-        let directory = check_source(&resolved, system)?;
-        validate_inheritance_type(source, directory)?;
-        if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
-            super::inheritance_migration::prepare(backend, &resolved, manager, "build")?;
+    let entries: Vec<_> = config
+        .copy_on_write_build
+        .iter()
+        .map(|path| (path.clone(), config.preserve_for(path).to_vec()))
+        .collect();
+    super::preservation::with_saved(backend, root, &entries, |saved| {
+        for source in &config.copy_on_write_build {
+            progress::message(
+                &context.system_id,
+                format!("继承写时复制路径：{}", source.display()),
+                format!("Inherit copy-on-write path: {}", source.display()),
+            );
+            let unmarked = Path::new(source.to_str().unwrap().trim_end_matches('/'));
+            let resolved = disk::inheritance_source_path(source_root, unmarked)?;
+            let directory = check_source(&resolved, system)?;
+            validate_inheritance_type(source, directory)?;
+            super::preservation::validate_source(&resolved, config.preserve_for(source))?;
+            if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
+                super::inheritance_migration::prepare(backend, &resolved, manager, "build")?;
+            }
+            inherit_path(
+                backend,
+                &resolved,
+                &disk::guest_path(root, source)?,
+                config.directory_subvolume,
+                config.nocow_handling,
+            )?;
+            saved.restore(backend, root, source)?;
         }
-        inherit_path(
-            backend,
-            &resolved,
-            &disk::guest_path(root, source)?,
-            config.directory_subvolume,
-            config.nocow_handling,
-        )?;
-    }
-    Ok(!config.copy_on_write_build.is_empty())
+        Ok(!config.copy_on_write_build.is_empty())
+    })
 }
 
 /// Prepare persistent mount declarations on the completed script output.

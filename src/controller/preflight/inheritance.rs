@@ -48,6 +48,7 @@ pub(in crate::controller) fn inspect(
         let resolved = disk::inheritance_source_path(source_root, unmarked)?;
         let directory = inheritance::check_source(&resolved, system)?;
         validate_inheritance_type(source, directory)?;
+        super::super::preservation::validate_source(&resolved, config.preserve_for(source))?;
         backend.check_cow_source(&resolved, destination)?;
     }
     if config.copy_on_write_boot.is_empty() {
@@ -62,6 +63,7 @@ pub(in crate::controller) fn inspect(
             let resolved = disk::inheritance_source_path(source_root, unmarked)?;
             let info = fs::symlink_metadata(&resolved).map_err(|e| disk::io(source, e))?;
             validate_inheritance_type(source, info.is_dir())?;
+            super::super::preservation::validate_source(&resolved, config.preserve_for(source))?;
             let container = if info.file_type().is_symlink() {
                 resolved.parent().unwrap()
             } else {

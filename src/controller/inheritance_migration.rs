@@ -804,6 +804,7 @@ mod tests {
             directory_subvolume: true,
             nocow_handling: NocowHandling::MoveSnapshot,
             sources: vec![InheritanceSource {
+                preserve: Vec::new(),
                 path: fixture.source.clone(),
                 target: "/var/".into(),
                 subvolume_id: backend.source_subvolume_id(&fixture.source).unwrap(),

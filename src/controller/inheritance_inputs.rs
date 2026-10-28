@@ -21,6 +21,9 @@ pub(super) struct FrozenBuild {
     /// Frozen source and declared guest destination pairs.
     /// 冻结来源与声明容器目标的配对。
     entries: Vec<(PathBuf, PathBuf)>,
+    /// Exceptions remain bound to their configured target when sources are frozen.
+    /// 冻结来源后例外仍绑定其配置目标。
+    preserve: BTreeMap<PathBuf, Vec<PathBuf>>,
     /// Preserve the configured outer-directory subvolume policy.
     /// 保留配置中的外层目录子卷策略。
     directory_subvolume: bool,
@@ -38,16 +41,36 @@ impl FrozenBuild {
     /// - `backend`: Required CoW copy and snapshot operations. 必需的 CoW 复制与快照操作。
     /// - `root`: Writable script-stage root. 可写脚本阶段根。
     pub(super) fn apply(&self, backend: &impl BuildBackend, root: &Path) -> Result<bool> {
-        for (source, target) in &self.entries {
-            inheritance::inherit_path(
-                backend,
-                source,
-                &disk::guest_path(root, target)?,
-                self.directory_subvolume,
-                self.nocow_handling,
-            )?;
-        }
-        Ok(!self.entries.is_empty())
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|(_, target)| {
+                (
+                    target.clone(),
+                    self.preserve.get(target).cloned().unwrap_or_default(),
+                )
+            })
+            .collect();
+        super::preservation::with_saved(backend, root, &entries, |saved| {
+            for (source, target) in &self.entries {
+                super::preservation::validate_source(
+                    source,
+                    self.preserve
+                        .get(target)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )?;
+                inheritance::inherit_path(
+                    backend,
+                    source,
+                    &disk::guest_path(root, target)?,
+                    self.directory_subvolume,
+                    self.nocow_handling,
+                )?;
+                saved.restore(backend, root, target)?;
+            }
+            Ok(!self.entries.is_empty())
+        })
     }
 }
 
@@ -76,6 +99,7 @@ pub(super) fn freeze(
         field(&mut digest, b"no-inheritance-source");
         return Ok(FrozenBuild {
             entries: Vec::new(),
+            preserve: config.preserve,
             directory_subvolume: config.directory_subvolume,
             nocow_handling: config.nocow_handling,
             sha256: format!("{:x}", digest.finalize()),
@@ -105,6 +129,7 @@ pub(super) fn freeze(
             let source = disk::inheritance_source_path(source_root, unmarked)?;
             let directory = inheritance::check_source(&source, system)?;
             validate_inheritance_type(target, directory)?;
+            super::preservation::validate_source(&source, config.preserve_for(target))?;
             if directory && config.nocow_handling == NocowHandling::MoveSnapshot {
                 super::inheritance_migration::prepare(backend, &source, manager, "build")?;
             }
@@ -135,6 +160,7 @@ pub(super) fn freeze(
     }
     Ok(FrozenBuild {
         entries,
+        preserve: config.preserve,
         directory_subvolume: config.directory_subvolume,
         nocow_handling: config.nocow_handling,
         sha256: format!("{:x}", digest.finalize()),

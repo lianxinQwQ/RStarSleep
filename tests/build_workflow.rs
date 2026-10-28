@@ -320,6 +320,8 @@ fn bounded_clean_preserves_running_roots_data_and_monotonic_versions() {
 mod deferred;
 #[path = "build_workflow/inheritance.rs"]
 mod inheritance;
+#[path = "build_workflow/preservation.rs"]
+mod preservation;
 
 /// A failed scratch cleanup never publishes a main-system boot entry.
 /// 临时根清理失败时绝不发布主系统启动项。
