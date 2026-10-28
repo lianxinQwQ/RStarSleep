@@ -432,6 +432,55 @@ pub(crate) fn task(store: &ConfigStore, id: &str, task: &str) -> Result<Run> {
     )
 }
 
+/// Spawn on a PTY and close every parent-side slave handle before capturing output.
+/// 在 PTY 上启动，并在采集输出前关闭父进程中的所有从端句柄。
+fn spawn_console(mut command: Command) -> Result<(std::process::Child, File)> {
+    let (mut master, mut slave) = (-1, -1);
+    let size = libc::winsize {
+        ws_row: 40,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &size,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let master = unsafe { File::from_raw_fd(master) };
+    let slave = unsafe { File::from_raw_fd(slave) };
+    for descriptor in [master.as_raw_fd(), slave.as_raw_fd()] {
+        if unsafe { libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    command
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave.try_clone()?));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    // Command retains its Stdio handles after spawn; keeping them open prevents PTY EOF.
+    // Command 在 spawn 后仍持有 Stdio 句柄；保持打开会阻止 PTY 输出结束。
+    drop(command);
+    drop(slave);
+    Ok((child, master))
+}
+
 /// Own the PTY and raw append-only log in a process surviving daemon restarts.
 /// 在跨 daemon 重启存活的进程中持有 PTY 和原始追加日志。
 /// # Arguments
@@ -483,50 +532,12 @@ pub fn recorder_entry(path: &Path) -> Result<()> {
         if cancelled {
             return Ok(0);
         }
-        let (mut master, mut slave) = (-1, -1);
-        let size = libc::winsize {
-            ws_row: 40,
-            ws_col: 120,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        if unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
-            )
-        } != 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut master = unsafe { File::from_raw_fd(master) };
-        let slave = unsafe { File::from_raw_fd(slave) };
-        for descriptor in [master.as_raw_fd(), slave.as_raw_fd()] {
-            if unsafe { libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-        }
         let mut command = Command::new(spec.program);
         command
             .args(spec.arguments)
             .arg("--console=interactive")
-            .env("TERM", "xterm-256color")
-            .stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave.try_clone()?))
-            .stderr(Stdio::from(slave.try_clone()?));
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command.spawn()?;
-        drop(slave);
+            .env("TERM", "xterm-256color");
+        let (mut child, mut master) = spawn_console(command)?;
         let mut bytes = [0; 8192];
         let capture = loop {
             match master.read(&mut bytes) {

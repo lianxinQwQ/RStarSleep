@@ -4,6 +4,54 @@ use super::*;
 use crate::subsystem::{SubsystemConfig, supervision::Phase};
 use std::sync::atomic::AtomicUsize;
 
+/// Child exit must end PTY capture after every final stdout/stderr byte is read.
+/// 子进程退出后，必须在读完标准输出和错误输出的所有末尾字节后结束 PTY 采集。
+#[test]
+fn exited_console_drains_final_output_without_hanging() {
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "i=0; while [ \"$i\" -lt 1024 ]; do printf 'last bytes\\n'; i=$((i+1)); done; printf 'Powering off.\\n' >&2; exit 7",
+    ]);
+    let (mut child, mut master) = spawn_console(command).unwrap();
+    let captured = (|| -> std::io::Result<Vec<u8>> {
+        let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0
+            || unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                < 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        let mut bytes = [0; 8192];
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::other(
+                    "子进程退出后控制台未结束 / console did not finish after child exit",
+                ));
+            }
+            match master.read(&mut bytes) {
+                Ok(0) => return Ok(output),
+                Ok(n) => output.extend_from_slice(&bytes[..n]),
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => return Ok(output),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })();
+    if captured.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    let expected = "last bytes\r\n".repeat(1024) + "Powering off.\r\n";
+    assert_eq!(captured.unwrap(), expected.as_bytes());
+    assert_eq!(status.code(), Some(7));
+}
+
 struct Existing {
     status: Status,
     starts: AtomicUsize,
