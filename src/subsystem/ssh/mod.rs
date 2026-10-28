@@ -77,9 +77,36 @@ fn parse_keys(text: &str) -> Result<Vec<PublicKey>> {
             continue;
         }
         let key = PublicKey::from_openssh(value).map_err(|e| Error::Invalid(format!("authorized_keys 第 {} 行公钥无效或包含不支持的选项 / invalid public key or unsupported options on authorized_keys line {}: {e}",line+1,line+1)))?;
+        validate_rsa_size(&key).map_err(|error| {
+            Error::Invalid(format!(
+                "authorized_keys 第 {} 行 / authorized_keys line {}: {error}",
+                line + 1,
+                line + 1
+            ))
+        })?;
         keys.push(key);
     }
     Ok(keys)
+}
+
+/// Reject RSA moduli above the verifier's limit before accepting a key probe.
+/// 接受候选公钥前，拒绝超过验签上限的 RSA 模数。
+fn validate_rsa_size(key: &PublicKey) -> std::result::Result<(), String> {
+    if let Some(rsa) = key.key_data().rsa() {
+        let modulus = rsa
+            .n()
+            .as_positive_bytes()
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or_else(|| "RSA 模数无效 / invalid RSA modulus".to_string())?;
+        let bits = (modulus.len() - 1) * 8 + 8 - modulus[0].leading_zeros() as usize;
+        let maximum = rsa::RsaPublicKey::MAX_SIZE;
+        if bits > maximum {
+            return Err(format!(
+                "RSA 密钥位数 {bits} 超出上限 {maximum} 位 / RSA key size {bits} bits exceeds the limit of {maximum} bits"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Reload roles and public keys on every authentication attempt.
@@ -165,11 +192,13 @@ pub(crate) fn start_with_builds(
         if fs::metadata(&key_path)?.permissions().mode() & 0o077 != 0 {
             return Err(Error::Invalid("SSH 主机私钥必须仅管理员可读写 / SSH host private key must be accessible only to its owner".into()));
         }
-        Some(PrivateKey::from_openssh(fs::read(&key_path)?).map_err(|e| {
+        let key = PrivateKey::from_openssh(fs::read(&key_path)?).map_err(|e| {
             Error::Invalid(format!(
                 "SSH 主机私钥无效 / invalid SSH host private key: {e}"
             ))
-        })?)
+        })?;
+        validate_rsa_size(key.public_key()).map_err(Error::Invalid)?;
+        Some(key)
     } else {
         None
     };
@@ -247,6 +276,7 @@ impl server::Server for SshServer {
             store: self.store.clone(),
             builds: self.builds.clone(),
             authorize: self.authorize,
+            auth_rejection_message: None,
             id: None,
             channels: HashMap::new(),
         }
@@ -271,6 +301,7 @@ struct Connection {
     store: ConfigStore,
     builds: Arc<super::daemon::BuildState>,
     authorize: fn(&ConfigStore, &str, &PublicKey) -> Result<bool>,
+    auth_rejection_message: Option<String>,
     id: Option<String>,
     channels: HashMap<ChannelId, ChannelState>,
 }
@@ -336,6 +367,11 @@ impl server::Handler for Connection {
     /// # Arguments
     /// - `self`, `user`, `key`: Connection, subsystem and offered key. 连接、子系统及候选公钥。
     async fn auth_publickey_offered(&mut self, user: &str, key: &PublicKey) -> Result<Auth> {
+        self.auth_rejection_message = None;
+        if let Err(error) = validate_rsa_size(key) {
+            self.auth_rejection_message = Some(format!("{error}\r\n"));
+            return Ok(Auth::reject());
+        }
         Ok(
             if (self.authorize)(&self.store, user, key).unwrap_or_else(|error| {
                 eprintln!("SSH 认证失败 / SSH authentication failed: {error}");
@@ -346,6 +382,11 @@ impl server::Handler for Connection {
                 Auth::reject()
             },
         )
+    }
+    /// Deliver the specific size error to the client before authentication fails.
+    /// 在认证失败之前，将具体的位数错误发送给客户端。
+    async fn auth_publickey_rejection_message(&mut self) -> Result<Option<String>> {
+        Ok(self.auth_rejection_message.take())
     }
     /// Bind proved credentials to one subsystem for this connection.
     /// 将已证明凭据绑定到本连接的唯一子系统。

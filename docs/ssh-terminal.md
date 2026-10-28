@@ -12,13 +12,32 @@ pipes, redirection and expansion are unsupported.
 本机连接示例：`ssh -t -p 2222 lin@localhost`。用户名是子系统 ID，端口取自
 `config/ssh.toml`。如需指定客户端私钥，使用 `-i ~/.ssh/id_rsa`；对应的公钥应写入
 `systems/lin/config/subsystem/authorized_keys`。支持 Ed25519、ECDSA 和 RSA SHA-2
-公钥认证。本机连接同样需要认证。
+公钥认证，包括 RSA-2048、RSA-4096 和 RSA-8196；RSA 模数最大为 65536 位。
+本机连接同样需要认证。
 
 Local connection example: `ssh -t -p 2222 lin@localhost`. The username is the
 subsystem ID; the port comes from `config/ssh.toml`. To select a client private key,
 add `-i ~/.ssh/id_rsa` and place its public key in
 `systems/lin/config/subsystem/authorized_keys`. Ed25519, ECDSA and RSA SHA-2 public-key
-authentication are supported. Local connections also require authentication.
+authentication are supported, including RSA-2048, RSA-4096 and RSA-8196; RSA moduli
+are limited to 65536 bits. Local connections also require authentication.
+
+RSA 公钥行中的 `ssh-rsa` 是密钥格式名称；登录时同一把密钥可使用
+`rsa-sha2-256` 或 `rsa-sha2-512` 签名，无需修改公钥行的前缀。
+
+The `ssh-rsa` prefix on an RSA public-key line names its key format. The same key
+can authenticate with `rsa-sha2-256` or `rsa-sha2-512` signatures; keep the public-key
+line's prefix unchanged.
+
+加载授权公钥或已有主机密钥时提前检查 RSA 位数，超限配置明确报错。
+客户端提交超限公钥时，在认证失败前显示中英文提示，包含实际位数和 65536 位上限；
+随后仍可尝试其他密钥。
+
+RSA sizes are checked when loading authorized keys or an existing host key;
+oversized configured keys produce an explicit error. If a client offers an
+oversized public key, an authentication banner reports the actual size and the
+65536-bit limit in Chinese and English before authentication fails. The client
+can still try other keys.
 
 服务端的 `early eof` 表示客户端在 SSH 数据包尚未读完时断开，单凭这条日志无法
 判断是否为公钥问题。用 `ssh -vvv -p 2222 lin@localhost` 查看客户端失败阶段。

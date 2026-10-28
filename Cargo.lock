@@ -9,6 +9,7 @@ dependencies = [
  "flate2",
  "libc",
  "rand",
+ "rsa",
  "russh",
  "russh-sftp",
  "serde",
@@ -1380,8 +1381,6 @@ dependencies = [
 [[package]]
 name = "rsa"
 version = "0.10.0-rc.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
 dependencies = [
  "const-oid",
  "crypto-bigint",
@@ -1399,8 +1398,6 @@ dependencies = [
 [[package]]
 name = "russh"
 version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbf893f64684e58da8a68d56a5e84d1cf0440226274c515770fe267707a7d0b0"
 dependencies = [
  "aes",
  "bitflags",

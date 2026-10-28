@@ -478,15 +478,228 @@ fn key_file_validation_is_strict() {
     assert!(parse_keys("\n# empty\n").unwrap().is_empty());
 }
 
+/// Build public-only boundary inputs without generating enormous RSA prime factors.
+/// 构造只有公钥的边界输入，避免生成巨大的 RSA 素因子。
+fn rsa_public_at_bits(bits: usize) -> PublicKey {
+    use russh::keys::ssh_key::{Mpint, public::RsaPublicKey};
+    let mut modulus = vec![0; bits.div_ceil(8)];
+    modulus[0] = 1 << ((bits - 1) % 8);
+    *modulus.last_mut().unwrap() |= 1;
+    let key = RsaPublicKey::new(
+        Mpint::from_positive_bytes(&[1, 0, 1]),
+        Mpint::from_positive_bytes(&modulus),
+    )
+    .unwrap();
+    PublicKey::new(
+        key.into(),
+        "public-only boundary input / 仅用于公钥边界输入",
+    )
+}
+
+/// Accept the exact limit through both configuration parsing and the actual RSA backend.
+/// 配置解析和实际 RSA 后端都必须接受恰好等于上限的密钥。
+#[test]
+fn rsa_size_limit_matches_verifier() {
+    assert_eq!(rsa::RsaPublicKey::MAX_SIZE, 65536);
+    let key = rsa_public_at_bits(65536);
+    assert_eq!(parse_keys(&key.to_openssh().unwrap()).unwrap().len(), 1);
+    assert!(rsa::RsaPublicKey::try_from(key.key_data().rsa().unwrap()).is_ok());
+
+    let oversized = rsa_public_at_bits(65537);
+    let error = parse_keys(&format!("# admin\n{}", oversized.to_openssh().unwrap()))
+        .unwrap_err()
+        .to_string();
+    for expected in [
+        "第 2 行",
+        "line 2",
+        "65537",
+        "65536",
+        "超出上限",
+        "exceeds the limit",
+    ] {
+        assert!(
+            error.contains(expected),
+            "错误信息缺少 {expected} / error message lacks {expected}: {error}"
+        );
+    }
+    assert!(rsa::RsaPublicKey::try_from(oversized.key_data().rsa().unwrap()).is_err());
+}
+
+struct RejectionClient {
+    host: PublicKey,
+    banners: tokio::sync::mpsc::UnboundedSender<String>,
+}
+impl client::Handler for RejectionClient {
+    type Error = russh::Error;
+
+    /// Pin the host identity while testing unauthenticated error delivery.
+    /// 测试未认证错误传递时固定主机身份。
+    async fn check_server_key(
+        &mut self,
+        key: &PublicKey,
+    ) -> std::result::Result<bool, Self::Error> {
+        Ok(key.key_data() == self.host.key_data())
+    }
+
+    /// Capture the same banner that OpenSSH displays before authentication failure.
+    /// 捕获 OpenSSH 在认证失败前显示的同一条提示。
+    async fn auth_banner(
+        &mut self,
+        banner: &str,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        self.banners.send(banner.into()).unwrap();
+        Ok(())
+    }
+}
+
+struct NoSigning;
+impl russh::Signer for NoSigning {
+    type Error = russh::AgentAuthError;
+
+    /// Oversized probes must fail before any private-key operation is requested.
+    /// 超限候选公钥必须在请求任何私钥操作之前失败。
+    async fn auth_sign(
+        &mut self,
+        _key: &russh::keys::agent::AgentIdentity,
+        _hash_alg: Option<russh::keys::ssh_key::HashAlg>,
+        _to_sign: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Self::Error> {
+        panic!("超限公钥不应进入签名阶段 / oversized public key must not reach signing")
+    }
+}
+
+/// Deliver the size error over SSH and allow a later valid key on the same connection.
+/// 通过 SSH 传递位数错误，并允许同一连接随后使用有效密钥登录。
+#[tokio::test]
+async fn rsa_oversize_error_is_visible_to_client() {
+    use russh::keys::ssh_key::HashAlg;
+    let (_directory, workspace) = fixture();
+    let identity = Arc::new(PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap());
+    let host = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let host_public = host.public_key().clone();
+    fs::write(
+        workspace
+            .store
+            .system_layout("apps")
+            .unwrap()
+            .config
+            .join("subsystem/authorized_keys"),
+        identity.public_key().to_openssh().unwrap(),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = Arc::new(server::Config {
+        methods: (&[russh::MethodKind::PublicKey][..]).into(),
+        keys: vec![host],
+        auth_rejection_time: Duration::ZERO,
+        auth_rejection_time_initial: Some(Duration::ZERO),
+        ..Default::default()
+    });
+    let mut server = SshServer {
+        store: workspace.store.clone(),
+        builds: workspace.builds.clone(),
+        authorize: fixture_authorized,
+    };
+    let running = server.run_on_socket(config, &listener);
+    let shutdown = running.handle();
+    let test = async {
+        let (banners, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut connection = client::connect(
+            Arc::new(client::Config::default()),
+            address,
+            RejectionClient {
+                host: host_public,
+                banners,
+            },
+        )
+        .await
+        .unwrap();
+        for hash in [HashAlg::Sha256, HashAlg::Sha512] {
+            assert!(
+                !connection
+                    .authenticate_publickey_with(
+                        "apps",
+                        rsa_public_at_bits(65537),
+                        Some(hash),
+                        &mut NoSigning,
+                    )
+                    .await
+                    .unwrap()
+                    .success()
+            );
+            let message = received.recv().await.unwrap();
+            for expected in ["65537", "65536", "超出上限", "exceeds the limit"] {
+                assert!(
+                    message.contains(expected),
+                    "客户端提示缺少 {expected} / client message lacks {expected}: {message}"
+                );
+            }
+        }
+        assert!(
+            connection
+                .authenticate_publickey("apps", PrivateKeyWithHashAlg::new(identity, None))
+                .await
+                .unwrap()
+                .success()
+        );
+        assert!(received.try_recv().is_err());
+        connection
+            .disconnect(
+                russh::Disconnect::ByApplication,
+                "测试完成 / test complete",
+                "",
+            )
+            .await
+            .unwrap();
+        shutdown.shutdown("测试完成 / test complete".into());
+    };
+    let (result, ()) = tokio::join!(running, async {
+        tokio::time::timeout(Duration::from_secs(20), test)
+            .await
+            .expect("超限提示测试超时 / size-limit message test timed out")
+    });
+    result.unwrap();
+}
+
 /// RSA authorization must verify signatures with both modern SHA-2 algorithms.
 /// RSA 授权必须能验证两种现代 SHA-2 算法的签名。
 #[tokio::test]
 async fn rsa_sha2_login_and_revocation() {
-    use russh::keys::ssh_key::{HashAlg, private::RsaKeypair};
+    rsa_login_and_revocation(2048).await;
+}
 
-    let (_directory, workspace) = fixture();
-    let key = RsaKeypair::random(&mut rand::rng(), 2048).unwrap();
+/// RSA-4096 must support both SHA-2 signatures and immediate key revocation.
+/// RSA-4096 必须支持两种 SHA-2 签名及即时公钥撤销。
+#[tokio::test]
+async fn rsa_4096_sha2_login_and_revocation() {
+    rsa_login_and_revocation(4096).await;
+}
+
+/// Exercise the non-byte-aligned size that previously failed after key acceptance.
+/// 验证曾在接受公钥后失败的非整字节密钥位数。
+#[tokio::test]
+async fn rsa_8196_sha2_login_and_revocation() {
+    let identity = Arc::new(PrivateKey::from_openssh(include_bytes!("fixtures/rsa_8196")).unwrap());
+    rsa_identity_login_and_revocation(identity, 8196).await;
+}
+
+/// Exercise signed RSA login, command execution and revocation at the requested size.
+/// 按指定位数验证 RSA 签名登录、命令执行及公钥撤销。
+async fn rsa_login_and_revocation(bits: usize) {
+    use russh::keys::ssh_key::private::RsaKeypair;
+
+    let key = RsaKeypair::random(&mut rand::rng(), bits).unwrap();
     let identity = Arc::new(PrivateKey::new(key.into(), "test RSA / 测试 RSA").unwrap());
+    rsa_identity_login_and_revocation(identity, bits).await;
+}
+
+/// Verify real login, command execution and revocation using an existing test identity.
+/// 使用已有测试身份验证真实登录、命令执行及公钥撤销。
+async fn rsa_identity_login_and_revocation(identity: Arc<PrivateKey>, bits: usize) {
+    use russh::keys::ssh_key::HashAlg;
+    let (_directory, workspace) = fixture();
     let host = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let host_public = host.public_key().clone();
     let authorization = workspace
@@ -532,7 +745,7 @@ async fn rsa_sha2_login_and_revocation() {
                     .await
                     .unwrap()
                     .success(),
-                "RSA SHA-2 登录失败 / RSA SHA-2 login failed: {hash:?}"
+                "RSA-{bits} SHA-2 登录失败 / RSA-{bits} SHA-2 login failed: {hash:?}"
             );
             let mut channel = connection.channel_open_session().await.unwrap();
             channel.exec(true, "pwd").await.unwrap();
