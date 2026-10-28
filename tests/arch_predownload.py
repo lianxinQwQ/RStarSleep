@@ -806,20 +806,25 @@ class Protocol(unittest.TestCase):
         p.states["sample"] = "built"
         p.build({"name": "sample"})
 
-    def test_explicit_provider_disambiguates_virtual_name(self):
+    def test_loaded_provider_does_not_hide_ambiguity(self):
         p = arch.Preparer.__new__(arch.Preparer)
-        candidate = dict(name="chosen", provides={"chosen": ["virtual=2"]})
+        def recipe(name):
+            return arch.srcinfo(f"pkgbase = {name}\npkgver = 1\npkgrel = 1\npkgname = {name}\nprovides = virtual=2\n", "x86_64")
+        candidate = recipe("chosen")
         p.bases = {"chosen": candidate}
-        p.rpc = Mock(return_value=[])
-        p.load_base = Mock(return_value=candidate)
-        self.assertEqual(p.aur("virtual"), candidate)
-        p.rpc.assert_called_once_with("info", "virtual")
+        p.rpc = Mock(side_effect=[[], [{"PackageBase": "chosen"}, {"PackageBase": "other"}]])
+        p.load_base = Mock(side_effect=recipe)
+        with self.assertRaisesRegex(arch.PreparationError, "ambiguous AUR provider"):
+            p.aur("virtual")
+        self.assertEqual(p.rpc.call_args_list[1].args, ("search", "virtual"))
 
     def test_virtual_provider_search_filters_nonmatching_results(self):
         p = arch.Preparer.__new__(arch.Preparer)
         p.bases = {}
         p.rpc = Mock(side_effect=[[], [{"PackageBase": "wrong"}, {"PackageBase": "right"}]])
-        p.load_base = lambda n: dict(name=n, provides={n: ["other"] if n == "wrong" else ["virtual"]})
+        p.load_base = lambda n: arch.srcinfo(
+            f"pkgbase = {n}\npkgver = 1\npkgrel = 1\npkgname = {n}\nprovides = {'other' if n == 'wrong' else 'virtual'}\n",
+            "x86_64")
         self.assertEqual(p.aur("virtual")["name"], "right")
 
     def test_every_recipe_command_uses_unprivileged_account(self):

@@ -25,6 +25,7 @@ from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdo
 NAME = re.compile(r"^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$")
 SPEC = re.compile(r"^([A-Za-z0-9@_+][A-Za-z0-9@._+-]*)(?:(>=|<=|=|>|<)([^\s]+))?$")
 REPO = "rstarsleep"
+AUR_GIT_URL = "https://github.com/archlinux/aur.git"
 QUERY_MODE = False
 CACHE_FORMAT = 1
 # Also support importing this entrypoint by filename in protocol tests.
@@ -369,6 +370,7 @@ class Preparer:
         self.makepkg_conf.chmod(0o644)
         self.bases, self.states, self.artifacts = {}, {}, {}
         self.stack, self.files, self.resolutions = [], set(), {}
+        self.aur_queries = {}
         self.official_metadata = {}
         self.verification = official_cache.OfficialPackageCache(self.repo, self.arch, self.official_conf, run, self.cached_digest)
         self.planned_transactions = {}
@@ -442,7 +444,7 @@ class Preparer:
                     if fields.get("FILENAME"):
                         fields["RSTAR_REPOSITORY"] = [database.name.removesuffix(".db")]
                         self.official_metadata.setdefault(fields["FILENAME"][0], fields)
-        self.metadata = package_metadata.MetadataIndex(self.official_metadata, self.root / "state/sources", report=log)
+        self.metadata = package_metadata.MetadataIndex(self.official_metadata)
         self.refresh_repo()
         if planning:
             return
@@ -691,13 +693,33 @@ class Preparer:
         return aur
 
     def rpc(self, method, name):
+        if method not in ("info", "search") or not isinstance(name, str) or not NAME.fullmatch(name):
+            raise PreparationError('AUR 查询参数无效 / invalid AUR query parameters')
+        if not hasattr(self, "aur_queries"):
+            self.aur_queries = {}
+        key = (method, name)
+        if key in self.aur_queries:
+            return self.aur_queries[key]
+        log(f"按需查询 AUR 软件包定位：{name}（{method}）", f"Query requested AUR package location: {name} ({method})")
         query = {"v": "5", "type": method}
         query.update({"arg[]": name} if method == "info" else {"by": "provides", "arg": name})
         request = urllib.request.Request("https://aur.archlinux.org/rpc/?" + urllib.parse.urlencode(query), headers={"User-Agent": "RStarSleep"})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = json.load(response)
-        if "error" in data or not isinstance(data.get("results"), list):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = json.load(response)
+        except (OSError, ValueError) as error:
+            raise PreparationError(f'针对 {name} 的 AUR RPC 请求失败 / AUR RPC failed for {name}: {error}') from error
+        if not isinstance(data, dict) or "error" in data or not isinstance(data.get("results"), list):
             raise PreparationError(f'针对 {name} 的 AUR RPC 请求失败：{data} / AUR RPC failed for {name}: {data}')
+        for item in data["results"]:
+            if (not isinstance(item, dict)
+                    or any(not isinstance(item.get(field), str) or not NAME.fullmatch(item[field])
+                           for field in ("Name", "PackageBase"))
+                    or (method == "info" and item["Name"] != name)):
+                raise PreparationError(f'AUR 查询返回无效软件包标识：{name} / invalid package identity in AUR response: {name}')
+        if method == "info" and len(data["results"]) > 1:
+            raise PreparationError(f'AUR 查询返回重复软件包：{name} / duplicate package in AUR response: {name}')
+        self.aur_queries[key] = data["results"]
         return data["results"]
 
     def load_base(self, name):
@@ -705,16 +727,27 @@ class Preparer:
             return self.bases[name]
         if not NAME.fullmatch(name):
             raise PreparationError(f'AUR pkgbase 无效：{name} / invalid AUR pkgbase: {name}')
-        log(f"获取并解析 AUR 构建配方：{name}", f"Fetch and inspect the AUR build recipe: {name}")
+        log(f"按需同步并解析 AUR 配方分支：{name}", f"Fetch and inspect the requested AUR recipe branch: {name}")
         checkout = self.checkouts / name
+        if checkout.is_symlink() or (checkout / ".git").is_symlink():
+            raise PreparationError(f'AUR 检出目录不能是符号链接：{checkout} / AUR checkout must not be a symlink: {checkout}')
+        self.user(["git", "check-ref-format", f"refs/heads/{name}"], capture=True)
         if checkout.exists():
             if not (checkout / ".git").is_dir():
                 raise PreparationError(f'不是 AUR 检出目录：{checkout} / not an AUR checkout: {checkout}')
-            self.user(["git", "-C", str(checkout), "fetch", "--force", "origin", "HEAD"])
-            self.user(["git", "-C", str(checkout), "reset", "--hard", "FETCH_HEAD"])
-            self.user(["git", "-C", str(checkout), "clean", "-fdx"])
         else:
-            self.user(["git", "clone", "--", f"https://aur.archlinux.org/{name}.git", str(checkout)])
+            self.user(["git", "init", "--quiet", "--", str(checkout)])
+        # Restrict both new and legacy checkouts to the requested mirror branch.
+        # 新旧检出目录都只跟踪所需镜像分支，不继承全量获取规则。
+        reference = f"refs/remotes/origin/{name}"
+        refspec = f"+refs/heads/{name}:{reference}"
+        git = ["git", "-C", str(checkout)]
+        self.user([*git, "config", "--replace-all", "remote.origin.url", AUR_GIT_URL])
+        self.user([*git, "config", "--replace-all", "remote.origin.fetch", refspec])
+        self.user([*git, "config", "--replace-all", "remote.origin.tagOpt", "--no-tags"])
+        self.user([*git, "fetch", "--depth=1", "--no-tags", "--recurse-submodules=no", "origin", refspec])
+        self.user([*git, "reset", "--hard", reference])
+        self.user([*git, "clean", "-fdx"])
         commit = self.user(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture=True).stdout.strip()
         base = srcinfo(self.makepkg(checkout, ["--printsrcinfo"], capture=True).stdout, self.arch)
         if base["name"] != name:
@@ -725,31 +758,18 @@ class Preparer:
 
     def aur(self, requirement):
         name = spec(requirement)[0]
-        if hasattr(self, "metadata"):
-            candidates = self.metadata.aur_candidates(name)
-            if candidates is not None:
-                matches = set()
-                for candidate in candidates:
-                    base = self.load_base(candidate)
-                    if any(self.artifact_satisfies(dict(name=package, version=base["version"],
-                                                       provides=base["provides"][package]), requirement)
-                           for package in base["packages"]):
-                        matches.add(base["name"])
-                if len(matches) != 1:
-                    raise PreparationError(f'满足 {requirement} 的 AUR 提供者缺失或不唯一：{sorted(matches)} / missing or ambiguous AUR provider for {requirement}: {sorted(matches)}')
-                return self.load_base(matches.pop())
+        def satisfies(base):
+            return any(self.artifact_satisfies(dict(name=package, version=base["version"],
+                                                    provides=base["provides"][package]), requirement)
+                       for package in base["packages"])
+
         info = self.rpc("info", name)
-        if info:
-            return self.load_base(info[0]["PackageBase"])
-        providers = {base["name"] for base in self.bases.values()
-                     if any(spec(p)[0] == name for values in base["provides"].values() for p in values)}
-        if not providers:
-            providers = {item["PackageBase"] for item in self.rpc("search", name)}
-        providers = {candidate for candidate in providers
-                     if any(spec(p)[0] == name for values in self.load_base(candidate)["provides"].values() for p in values)}
-        if len(providers) != 1:
-            raise PreparationError(f'满足 {requirement} 的 AUR 提供者缺失或不唯一：{sorted(providers)} / missing or ambiguous AUR provider for {requirement}: {sorted(providers)}')
-        return self.load_base(providers.pop())
+        entries = info if info else self.rpc("search", name)
+        candidates = {item["PackageBase"] for item in entries}
+        matches = {candidate for candidate in sorted(candidates) if satisfies(self.load_base(candidate))}
+        if len(matches) != 1:
+            raise PreparationError(f'满足 {requirement} 的 AUR 提供者缺失或不唯一：{sorted(matches)} / missing or ambiguous AUR provider for {requirement}: {sorted(matches)}')
+        return self.load_base(matches.pop())
 
     def artifact_satisfies(self, artifact, requirement):
         name, operator, expected = spec(requirement)
@@ -1387,10 +1407,6 @@ def main():
         aur_targets = preparer.prefetch(requested)
         if aur_targets:
             log(f"解析并构建 AUR 软件：{len(aur_targets)} 项需求", f"Resolve and build AUR packages (requirements: {len(aur_targets)})")
-        for package in aur_targets:
-            info = preparer.rpc("info", package)
-            if info:
-                preparer.load_base(info[0]["PackageBase"])
         for package in aur_targets:
             preparer.aur(package)
         for package in aur_targets:
