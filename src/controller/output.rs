@@ -2,6 +2,7 @@
 //! 在保留进程结果的同时，即时转发并存档构建诊断。
 use super::logging;
 use std::{
+    cell::Cell,
     fs::File,
     io::{self, IsTerminal, Read, Write},
     os::fd::{AsRawFd, FromRawFd, RawFd},
@@ -9,12 +10,39 @@ use std::{
     thread,
 };
 
+thread_local! {
+    static TERMINAL_PROGRESS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Preserve terminal progress for detached builds whose diagnostics go to a log.
+/// 为诊断写入日志的后台构建保留终端进度。
+pub(crate) fn with_terminal_progress<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TERMINAL_PROGRESS.set(self.0);
+        }
+    }
+    let _reset = Reset(TERMINAL_PROGRESS.replace(true));
+    run()
+}
+
+fn diagnostic_terminal() -> Option<RawFd> {
+    if io::stderr().is_terminal() {
+        Some(libc::STDERR_FILENO)
+    } else {
+        // Detached viewers have no source terminal; use the default PTY dimensions.
+        // 后台查看器没有来源终端，使用默认 PTY 尺寸。
+        TERMINAL_PROGRESS.get().then_some(-1)
+    }
+}
+
 /// Stream diagnostics to stderr, keeping query stdout private for protocol parsing.
 /// 向 stderr 即时输出诊断，将查询 stdout 保留给协议解析。
 pub(super) fn stream(command: &mut Command, query: bool) -> io::Result<Output> {
     // Diagnostics are displayed on stderr, including the child's stdout.
     // 诊断显示在 stderr，包括子进程的 stdout。
-    let terminal = io::stderr().is_terminal().then_some(libc::STDERR_FILENO);
+    let terminal = diagnostic_terminal();
     stream_to(command, (!query).then(io::stderr), io::stderr(), terminal)
 }
 
@@ -24,7 +52,7 @@ pub(super) fn stream_with_control(
     query: bool,
     poll: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Output> {
-    let terminal = io::stderr().is_terminal().then_some(libc::STDERR_FILENO);
+    let terminal = diagnostic_terminal();
     stream_to_with_control(
         command,
         (!query).then(io::stderr),
@@ -272,6 +300,28 @@ fn stream_to_with_control(
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn detached_build_streams_progress_and_restores_output_mode() {
+        let before = super::diagnostic_terminal();
+        super::with_terminal_progress(|| {
+            let mut command = std::process::Command::new("bash");
+            command.args([
+                "-c",
+                "[[ ! -t 0 && -t 1 && -t 2 ]] || exit 98; printf '50%%\\r100%%\\n'",
+            ]);
+            let output = super::stream_to(
+                &mut command,
+                Some(std::io::sink()),
+                std::io::sink(),
+                super::diagnostic_terminal(),
+            )
+            .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"50%\r100%\n");
+        });
+        assert_eq!(super::diagnostic_terminal(), before);
+    }
+
     use super::*;
     use std::{
         fs,

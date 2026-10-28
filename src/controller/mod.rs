@@ -26,6 +26,7 @@ mod model;
 mod mounts;
 mod nocow;
 mod output;
+pub(crate) use output::with_terminal_progress;
 mod package_watch;
 mod persistent;
 mod predownload;

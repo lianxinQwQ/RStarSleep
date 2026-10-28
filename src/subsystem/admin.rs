@@ -364,7 +364,7 @@ pub fn build_entry(arguments: &[std::ffi::OsString]) -> Result<()> {
         .ok_or_else(|| Error::Invalid("系统标识无效 / invalid system identity".into()))?;
     super::trust::store(&store, Some(id))?;
     let _locks = inherited_locks(&arguments[2..])?;
-    controller::build(&store, Some(id))?;
+    controller::with_terminal_progress(|| controller::build(&store, Some(id)))?;
     Ok(())
 }
 
