@@ -77,8 +77,8 @@ fn current_artifact_is_atomic_and_failure_preserves_it() {
     );
 }
 
-/// Finish a pending artifact at startup once, then replace modified runtime roots automatically.
-/// 启动时只完成一次待办产物，之后自动替换已修改运行根。
+/// Finalize once, retain edits in the version root, and switch to the next version on restart.
+/// 仅收尾一次，在版本根保留修改，并在重启时切换下一版本。
 /// # Arguments
 /// No parameters. 无参数。
 #[test]
@@ -114,7 +114,13 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
         "at-startup"
     );
     b.check_subvolume(&runtime.root, false).unwrap();
+    let version_root = layout.versions.join(&first.version).join("root");
+    assert_eq!(runtime.root, version_root);
     fs::write(runtime.root.join("unsaved"), "runtime change").unwrap();
+    assert_eq!(
+        fs::read_to_string(version_root.join("unsaved")).unwrap(),
+        "runtime change"
+    );
     fs::write(source.join("value"), "later").unwrap();
     let repeat =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
@@ -136,6 +142,11 @@ fn deferred_startup_is_once_per_artifact_and_switch_has_no_diff_gate() {
     let new =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
     assert_eq!(new.version, second.version);
+    assert_eq!(new.root, layout.versions.join(&second.version).join("root"));
+    assert_eq!(
+        fs::read_to_string(version_root.join("unsaved")).unwrap(),
+        "runtime change"
+    );
     assert_ne!(new.root, repeat.root);
     assert!(!new.root.join("unsaved").exists());
     assert_eq!(
@@ -214,8 +225,8 @@ fn package_index_is_part_of_successful_publication() {
     );
 }
 
-/// Rebuilding runtime storage never rewrites a shared persistent fstab.
-/// 重建运行存储绝不改写共享持久 fstab。
+/// Preparing version roots never rewrites a shared persistent fstab.
+/// 准备版本根绝不改写共享持久 fstab。
 /// # Arguments
 /// No parameters. 无参数。
 #[test]
@@ -253,32 +264,76 @@ fn persistent_fstab_is_overlaid_without_modifying_source() {
     );
 }
 
-/// Obsolete generations are retired only on explicit readiness acknowledgement.
-/// 只在显式确认就绪后退役过时运行代。
-/// # Arguments
-/// No parameters. 无参数。
+/// Launch-policy changes preserve edits and nested subvolumes in the same version root.
+/// 启动策略变化保留同一版本根内的修改及内部子卷。
 #[test]
-fn obsolete_runtime_roots_wait_for_successful_boot() {
+fn direct_version_root_survives_policy_changes_without_snapshots() {
     let f = Fixture::new();
     f.system("desktop", &[]);
     enable(&f);
     let b = SimulatedBackend::default();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let build = build_with_backend(&f.store, Some("desktop"), &b)
+        .unwrap()
+        .remove(0);
+    let layout = f.store.system_layout("desktop").unwrap();
+    let snapshots = b.snapshots.borrow().len();
     let first =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    assert_eq!(first.root, build.root);
+    fs::write(first.root.join("edited"), "version edit").unwrap();
+    b.create_subvolume(&first.root.join("nested")).unwrap();
+    fs::write(first.root.join("nested/value"), "nested edit").unwrap();
+    let bind_source = f.store.root().parent().unwrap().join("bind-source");
+    fs::create_dir(&bind_source).unwrap();
+    fs::write(
+        layout.config.join("subsystem/config.toml"),
+        format!(
+            "schema_version=1\ntmp_size_bytes=4096\n[[mounts]]\nsource={:?}\ntarget='/mnt/data'\n",
+            bind_source.to_str().unwrap()
+        ),
+    )
+    .unwrap();
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    assert!(first.root.exists());
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
-    assert!(!first.root.exists());
-    assert!(second.root.exists());
+    assert_eq!(second.root, first.root);
+    assert_eq!(
+        fs::read_to_string(second.root.join("edited")).unwrap(),
+        "version edit"
+    );
+    assert_eq!(
+        fs::read_to_string(second.root.join("nested/value")).unwrap(),
+        "nested edit"
+    );
+    assert!(
+        second
+            .boot_args
+            .iter()
+            .any(|v| v == "--tmpfs=/tmp:mode=1777,size=4096")
+    );
+    assert!(
+        second
+            .boot_args
+            .iter()
+            .any(|v| v.to_string_lossy().ends_with(":/mnt/data"))
+    );
+    assert_eq!(b.snapshots.borrow().len(), snapshots);
+    assert!(!layout.root.join("runtime/generations").exists());
+    assert!(!layout.root.join("runtime/transaction.toml").exists());
+    let record: toml::Value =
+        toml::from_str(&fs::read_to_string(layout.root.join("runtime/current.toml")).unwrap())
+            .unwrap();
+    assert_eq!(record["schema_version"].as_integer(), Some(2));
+    assert!(record.get("generation").is_none());
+    assert_eq!(
+        subsystem::load_prepared(&f.store, "desktop").unwrap().root,
+        build.root
+    );
 }
 
-/// A backend's success cannot hide an intact obsolete runtime root.
-/// 后端返回成功不能掩盖仍然完整存在的旧运行根。
+/// A new build leaves the recorded running version protected until the next preparation.
+/// 新构建保留已登记运行版本的清理保护，直到下一次启动准备。
 #[test]
-fn runtime_pruning_verifies_root_deletion_before_removing_generation() {
+fn version_switch_preserves_old_edits_until_explicit_clean() {
     let f = Fixture::new();
     f.system("desktop", &[]);
     enable(&f);
@@ -286,27 +341,76 @@ fn runtime_pruning_verifies_root_deletion_before_removing_generation() {
     build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let first =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    fs::write(first.root.join("retained-data"), "keep runtime contents").unwrap();
+    fs::write(first.root.join("edited"), "old version edit").unwrap();
     build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    assert_eq!(
+        subsystem::load_prepared(&f.store, "desktop").unwrap().root,
+        first.root
+    );
+    assert!(controller::clean_with_backend(&f.store, "desktop", &first.version, &b).is_err());
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    *b.retain_deleted_root.borrow_mut() = Some(first.root.clone());
-
-    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("旧运行根删除后仍然存在"));
-    assert!(message.contains("obsolete runtime root still exists after deletion"));
-    assert!(message.contains(first.root.to_str().unwrap()));
+    assert_ne!(second.root, first.root);
     assert_eq!(
-        fs::read_to_string(first.root.join("retained-data")).unwrap(),
-        "keep runtime contents"
+        fs::read_to_string(first.root.join("edited")).unwrap(),
+        "old version edit"
     );
+    assert!(!second.root.join("edited").exists());
+    *b.running_root.borrow_mut() = Some(first.root.clone());
+    assert!(controller::clean_with_backend(&f.store, "desktop", &first.version, &b).is_err());
+    *b.running_root.borrow_mut() = None;
+    controller::clean_with_backend(&f.store, "desktop", &first.version, &b).unwrap();
+    assert!(!first.root.exists());
     assert!(second.root.exists());
+    assert!(controller::clean_with_backend(&f.store, "desktop", &second.version, &b).is_err());
+}
 
-    *b.retain_deleted_root.borrow_mut() = None;
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
-    assert!(!first.root.parent().unwrap().exists());
-    assert!(second.root.exists());
+/// Legacy machines can be drained; their modified roots survive switching to direct version use.
+/// 旧机器可被排空；切换为直接使用版本根时保留其已修改的旧根。
+#[test]
+fn legacy_runtime_is_readable_and_retained_when_switching_to_version_root() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    let build = build_with_backend(&f.store, Some("desktop"), &b)
+        .unwrap()
+        .remove(0);
+    let layout = f.store.system_layout("desktop").unwrap();
+    let legacy_root = layout.root.join("runtime/generations/g-legacy/root");
+    fs::create_dir_all(legacy_root.parent().unwrap()).unwrap();
+    b.snapshot_recursive(&build.root, &legacy_root, false)
+        .unwrap();
+    fs::write(legacy_root.join("edited"), "legacy edit").unwrap();
+    let record = subsystem::RuntimeRecord {
+        schema_version: 1,
+        system_id: "desktop".into(),
+        version: build.version.clone(),
+        generation: "g-legacy".into(),
+        config_sha256: "a".repeat(64),
+        machine: subsystem::machine_name(&f.store, "desktop"),
+    };
+    fs::write(
+        layout.root.join("runtime/current.toml"),
+        toml::to_string(&record).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        subsystem::load_prepared(&f.store, "desktop").unwrap().root,
+        legacy_root
+    );
+    let runtime =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    assert_eq!(runtime.root, build.root);
+    assert_eq!(
+        subsystem::load_prepared(&f.store, "desktop").unwrap().root,
+        build.root
+    );
+    assert_eq!(
+        fs::read_to_string(legacy_root.join("edited")).unwrap(),
+        "legacy edit"
+    );
+    assert!(!build.root.join("edited").exists());
 }
 
 /// Recovery retains its transaction when a failed deletion leaves an uncommitted root intact.
@@ -320,7 +424,13 @@ fn runtime_recovery_preserves_transaction_until_root_deletion_is_verified() {
     build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let current =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    let generations = current.root.parent().unwrap().parent().unwrap();
+    let generations = f
+        .store
+        .system_layout("desktop")
+        .unwrap()
+        .root
+        .join("runtime/generations");
+    fs::create_dir_all(&generations).unwrap();
     let generation = generations.join("g-interrupted");
     let root = generation.join("root");
     fs::create_dir(&generation).unwrap();
@@ -352,78 +462,101 @@ fn runtime_recovery_preserves_transaction_until_root_deletion_is_verified() {
     assert!(!transaction.exists());
 }
 
-/// Leftover siblings identify the exact failed generation without deleting arbitrary entries.
-/// 同级残留应指出失败的具体运行代，且不任意删除条目。
+/// Invalid runtime references fail before deferred inheritance can mutate the version.
+/// 无效运行引用在延后继承修改版本前失败。
 #[test]
-fn runtime_pruning_reports_nonempty_generation_path() {
+fn corrupt_runtime_record_is_rejected_before_finalization() {
     let f = Fixture::new();
     f.system("desktop", &[]);
     enable(&f);
     let b = SimulatedBackend::default();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
-    let first =
-        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    let generation = first.root.parent().unwrap();
-    let leftover = generation.join("leftover");
-    fs::write(&leftover, "retain unknown entry").unwrap();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
-    let second =
-        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-
-    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
-    assert!(matches!(
-        error,
-        subsystem::Error::Io { path, source }
-            if path == generation && source.kind() == std::io::ErrorKind::DirectoryNotEmpty
-    ));
-    assert!(!first.root.exists());
-    assert_eq!(
-        fs::read_to_string(leftover).unwrap(),
-        "retain unknown entry"
-    );
-    assert!(second.root.exists());
-}
-
-/// A dangling root must be rejected explicitly instead of being mistaken for an absent root.
-/// 悬空运行根链接必须明确报错，不能误判为运行根不存在。
-#[test]
-fn runtime_pruning_rejects_dangling_root_without_removing_generation() {
-    let f = Fixture::new();
-    f.system("desktop", &[]);
-    enable(&f);
-    let b = SimulatedBackend::default();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
-    let current =
-        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    let generation = current
-        .root
-        .parent()
+    let source = f.store.root().parent().unwrap().join("source");
+    fs::create_dir(&source).unwrap();
+    let layout = f.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
+    )
+    .unwrap();
+    let build = build_with_backend(&f.store, Some("desktop"), &b)
         .unwrap()
-        .parent()
-        .unwrap()
-        .join("g-dangling");
-    fs::create_dir(&generation).unwrap();
-    let root = generation.join("root");
-    std::os::unix::fs::symlink(generation.join("missing"), &root).unwrap();
-
-    let error = subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap_err();
-    assert!(error.to_string().contains(root.to_str().unwrap()));
-    assert!(matches!(error, subsystem::Error::Invalid(_)));
+        .remove(0);
+    fs::create_dir_all(layout.root.join("runtime")).unwrap();
+    let record = subsystem::RuntimeRecord {
+        schema_version: 2,
+        system_id: "other".into(),
+        version: build.version.clone(),
+        generation: String::new(),
+        config_sha256: String::new(),
+        machine: subsystem::machine_name(&f.store, "desktop"),
+    };
+    fs::write(
+        layout.root.join("runtime/current.toml"),
+        toml::to_string(&record).unwrap(),
+    )
+    .unwrap();
+    let snapshots = b.snapshots.borrow().len();
+    let error =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap_err();
+    assert!(error.to_string().contains("运行记录身份或格式不匹配"));
     assert!(
-        fs::symlink_metadata(&root)
-            .unwrap()
-            .file_type()
-            .is_symlink()
+        error
+            .to_string()
+            .contains("runtime record identity or format mismatch")
     );
-    assert!(current.root.exists());
+    assert_eq!(b.snapshots.borrow().len(), snapshots);
+    assert!(!layout.versions.join(&build.version).join("root").exists());
+    assert!(build.root.exists());
 }
 
-/// Another system's deferred inheritance pins an obsolete runtime source until completion.
-/// 其他系统的延后继承在完成前固定过时运行来源。
-/// # Arguments
-/// No parameters. 无参数。
+/// Missing mount sources fail before finalization and can be corrected without rebuilding.
+/// 挂载来源缺失在版本收尾前失败，修正后无需重新构建即可重试。
 #[test]
-fn runtime_pruning_preserves_cross_system_pending_sources() {
+fn mount_source_preflight_precedes_finalization() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    let source = f.store.root().parent().unwrap().join("source");
+    let mount_source = f.store.root().parent().unwrap().join("mount-source");
+    fs::create_dir(&source).unwrap();
+    let layout = f.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("build/inherit.conf"),
+        format!("[Inheritance]\nCopyOnWriteBoot={}/\n", source.display()),
+    )
+    .unwrap();
+    fs::write(
+        layout.config.join("subsystem/config.toml"),
+        format!(
+            "schema_version=1\n[[mounts]]\nsource={:?}\ntarget='/mnt/data'\n",
+            mount_source.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let build = build_with_backend(&f.store, Some("desktop"), &b)
+        .unwrap()
+        .remove(0);
+    let root = layout.versions.join(&build.version).join("root");
+    let snapshots = b.snapshots.borrow().len();
+    let error =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap_err();
+    assert!(
+        matches!(error, subsystem::Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert!(!root.exists());
+    assert_eq!(b.snapshots.borrow().len(), snapshots);
+    assert!(!layout.root.join("runtime/current.toml").exists());
+    fs::create_dir(&mount_source).unwrap();
+    let runtime =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    assert_eq!(runtime.root, root);
+}
+
+/// Pending inheritance protects old version roots until its source has been consumed.
+/// 待办继承在读取完成前保护旧版本来源根。
+#[test]
+fn version_clean_preserves_cross_system_pending_sources() {
     let f = Fixture::new();
     f.system("desktop", &[]);
     f.system("consumer", &[]);
@@ -447,9 +580,7 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
     build_with_backend(&f.store, Some("desktop"), &b).unwrap();
     let second =
         subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
-    assert!(first.root.exists());
+    assert!(controller::clean_with_backend(&f.store, "desktop", &first.version, &b).is_err());
     assert_eq!(
         fs::read_to_string(source.join("value")).unwrap(),
         "retained source"
@@ -471,32 +602,7 @@ fn runtime_pruning_preserves_cross_system_pending_sources() {
         .unwrap(),
         "retained source"
     );
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
-    assert!(!first.root.exists());
-    assert!(second.root.exists());
-}
-
-/// A root still reported as running survives cleanup even after the storage current changes.
-/// 存储当前引用切换后，仍报告运行中的根也不会被清理。
-/// # Arguments
-/// No parameters. 无参数。
-#[test]
-fn runtime_pruning_preserves_running_roots() {
-    let f = Fixture::new();
-    f.system("desktop", &[]);
-    enable(&f);
-    let b = SimulatedBackend::default();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
-    let first =
-        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
-    let second =
-        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
-    *b.running_root.borrow_mut() = Some(first.root.clone());
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
-    assert!(first.root.exists());
-    *b.running_root.borrow_mut() = None;
-    subsystem::prune_with_backend(&f.store, "desktop", &b).unwrap();
+    controller::clean_with_backend(&f.store, "desktop", &first.version, &b).unwrap();
     assert!(!first.root.exists());
     assert!(second.root.exists());
 }

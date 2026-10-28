@@ -57,15 +57,21 @@ pub struct PreparedRuntime {
     pub boot_args: Vec<OsString>,
 }
 
-/// Durable references to one owned runtime generation.
-/// 指向一个所属运行代的持久引用。
+/// Durable reference to the version root, with legacy fields for recovery.
+/// 指向版本根的持久引用，保留旧字段用于恢复。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRecord {
     pub schema_version: u32,
     pub system_id: String,
     pub version: String,
+    /// Legacy snapshot identity; absent for direct version roots (schema 2).
+    /// 旧快照身份；直接版本根（格式 2）不含此字段。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generation: String,
+    /// Legacy launch-policy digest; absent for direct version roots.
+    /// 旧启动策略摘要；直接版本根不含此字段。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_sha256: String,
     pub machine: String,
 }

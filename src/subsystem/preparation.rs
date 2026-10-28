@@ -1,5 +1,5 @@
-//! Complete deferred version tasks before creating a writable runtime generation.
-//! 创建可写运行代前完成延后的版本任务。
+//! Complete deferred version tasks and boot directly from the writable version root.
+//! 完成延后版本任务，并直接从可写版本根启动。
 use super::{
     Error, PreparedRuntime, Result, RuntimeMount, RuntimeRecord, SubsystemConfig, checked,
     filesystem::exists, guest_path, read_record, write_record,
@@ -10,16 +10,10 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    ffi::OsString,
-    fs,
-    path::Path,
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{ffi::OsString, fs, path::Path, process::Command};
 
-/// Pending runtime creation retained until the new root is durably recorded.
-/// 新根持久登记前保留的运行创建待办。
+/// Legacy snapshot transaction retained solely for interrupted-upgrade recovery.
+/// 仅为升级后恢复旧中断操作而保留的快照事务。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Transaction {
@@ -54,19 +48,22 @@ pub fn machine_name(store: &ConfigStore, id: &str) -> String {
 /// Validate a current runtime record before deriving any owned path.
 /// 推导所属路径前校验当前运行记录。
 /// # Arguments
-/// - `record`: Persisted generation reference. 持久运行代引用。
+/// - `record`: Persisted version or legacy generation reference. 持久版本或旧运行代引用。
 /// - `store`: Owning manager. 所属管理器。
 /// - `id`: Expected system. 预期系统。
 fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Result<()> {
     crate::config::validate_identifier(&record.version)?;
-    crate::config::validate_identifier(&record.generation)?;
-    if record.schema_version != 1
-        || record.system_id != id
-        || record.machine != machine_name(store, id)
-        || !record.generation.starts_with("g-")
-        || record.config_sha256.len() != 64
-        || !record.config_sha256.bytes().all(|v| v.is_ascii_hexdigit())
-    {
+    let valid_storage = match record.schema_version {
+        1 => {
+            crate::config::validate_identifier(&record.generation)?;
+            record.generation.starts_with("g-")
+                && record.config_sha256.len() == 64
+                && record.config_sha256.bytes().all(|v| v.is_ascii_hexdigit())
+        }
+        2 => record.generation.is_empty() && record.config_sha256.is_empty(),
+        _ => false,
+    };
+    if !valid_storage || record.system_id != id || record.machine != machine_name(store, id) {
         return Err(Error::Invalid(
             "运行记录身份或格式不匹配 / runtime record identity or format mismatch".into(),
         ));
@@ -77,7 +74,7 @@ fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Res
 /// Remove a generation only after its runtime root has actually disappeared.
 /// 仅在运行根确实消失后删除运行代目录。
 /// # Arguments
-/// - `directory`: Owned obsolete or uncommitted generation. 所属旧代或未提交运行代。
+/// - `directory`: Owned uncommitted legacy generation. 所属未提交旧运行代。
 fn remove_generation(directory: &Path) -> Result<()> {
     let root = directory.join("root");
     if exists(&root)? {
@@ -92,8 +89,8 @@ fn remove_generation(directory: &Path) -> Result<()> {
     })
 }
 
-/// Recover an interrupted preparation without deleting a committed current root.
-/// 恢复中断的准备，不删除已提交的当前根。
+/// Recover an interrupted legacy preparation without deleting a committed current root.
+/// 恢复旧中断准备，不删除已提交的当前根。
 /// # Arguments
 /// - `store`: Owning manager. 所属管理器。
 /// - `id`: Registered system. 已登记系统。
@@ -116,7 +113,7 @@ fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result
     let committed = if exists(&current_path)? {
         let current: RuntimeRecord = read_record(&current_path)?;
         validate_record(&current, store, id)?;
-        current.generation == tx.generation
+        current.schema_version == 1 && current.generation == tx.generation
     } else {
         false
     };
@@ -179,11 +176,17 @@ fn load_with_config(
     let layout = store.system_layout(id)?;
     let record: RuntimeRecord = read_record(&layout.root.join("runtime/current.toml"))?;
     validate_record(&record, store, id)?;
-    let root = layout
-        .root
-        .join("runtime/generations")
-        .join(&record.generation)
-        .join("root");
+    // Legacy roots are resolved only to recover and drain machines created before the upgrade.
+    // 旧根仅用于恢复并排空升级前创建的机器。
+    let root = if record.schema_version == 1 {
+        layout
+            .root
+            .join("runtime/generations")
+            .join(&record.generation)
+            .join("root")
+    } else {
+        layout.versions.join(&record.version).join("root")
+    };
     checked(&root)?;
     if !root.is_dir() {
         return Err(Error::Invalid(
@@ -258,8 +261,8 @@ impl Drop for TopLevel {
     }
 }
 
-/// Prepare the current artifact using production CoW storage.
-/// 使用生产 CoW 存储准备当前产物。
+/// Prepare the current version root using production storage.
+/// 使用生产存储准备当前版本根。
 /// # Arguments
 /// - `store`: Initialized manager. 已初始化管理器。
 /// - `id`: Registered subsystem; the old machine must be stopped. 已登记且旧机器已停止的子系统。
@@ -269,8 +272,8 @@ pub fn prepare(store: &ConfigStore, id: &str) -> Result<PreparedRuntime> {
     prepare_with_backend(store, id, &SystemBackend, None)
 }
 
-/// Prepare with injectable CoW operations and an optional known top-level view.
-/// 使用可注入 CoW 操作及可选已知顶层视图准备。
+/// Prepare the version root with injectable storage and an optional top-level view.
+/// 使用可注入存储及可选顶层视图准备版本根。
 /// # Arguments
 /// - `store`: Initialized manager. 已初始化管理器。
 /// - `id`: Registered subsystem. 已登记子系统。
@@ -288,6 +291,15 @@ pub fn prepare_with_backend(
     let config = SubsystemConfig::read(store, id)?;
     let layout = store.system_layout(id)?;
     let artifact = controller::read_current_build(store, id)?;
+    let runtime = layout.root.join("runtime");
+    checked(&runtime)?;
+    let current_path = runtime.join("current.toml");
+    if exists(&current_path)? {
+        let record: RuntimeRecord = read_record(&current_path)?;
+        validate_record(&record, store, id)?;
+    }
+    let mounts = runtime_mounts(store, id, &artifact.version, &config)?;
+    recover(store, id, backend)?;
     let version_directory = layout.versions.join(&artifact.version);
     let manifest = version_directory.join("inheritance-pending.toml");
     checked(&manifest)?;
@@ -308,84 +320,21 @@ pub fn prepare_with_backend(
             .join("inheritance-pending.toml");
         controller::finalize_inheritance_with_backend(&relocated, top, backend)?;
     }
-    let source = version_directory.join("root");
-    checked(&source)?;
-    backend.check_subvolume(&source, false)?;
-    #[derive(Serialize)]
-    struct BootPolicy<'a> {
-        mounts: &'a [RuntimeMount],
-        tmp_size_bytes: u64,
-        gpu: bool,
-    }
-    let serialized = toml::to_string(&BootPolicy {
-        mounts: &config.mounts,
-        tmp_size_bytes: config.tmp_size_bytes,
-        gpu: config.gpu,
-    })
-    .map_err(|e| Error::Invalid(e.to_string()))?;
-    let digest = format!("{:x}", Sha256::digest(serialized.as_bytes()));
-    let runtime = layout.root.join("runtime");
-    checked(&runtime)?;
-    fs::create_dir_all(runtime.join("generations"))?;
-    recover(store, id, backend)?;
-    let current_path = runtime.join("current.toml");
-    let previous = if current_path.exists() {
-        let record: RuntimeRecord = read_record(&current_path)?;
-        validate_record(&record, store, id)?;
-        Some(record)
-    } else {
-        None
-    };
-    if let Some(current) = &previous {
-        let root = runtime
-            .join("generations")
-            .join(&current.generation)
-            .join("root");
-        checked(&root)?;
-        if current.version == artifact.version && current.config_sha256 == digest {
-            backend.check_subvolume(&root, false)?;
-            let boot_args = mount_arguments(store, id, &artifact.version, &root, &config)?;
-            return Ok(PreparedRuntime {
-                system_id: id.into(),
-                version: artifact.version,
-                root,
-                machine: current.machine.clone(),
-                config,
-                boot_args,
-            });
-        }
-    }
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::Invalid(e.to_string()))?
-        .as_nanos();
-    let generation = format!("g-{nanos}-{}", std::process::id());
-    let directory = runtime.join("generations").join(&generation);
-    checked(&directory)?;
-    fs::create_dir(&directory)?;
-    let tx = Transaction {
-        schema_version: 1,
-        system_id: id.into(),
-        version: artifact.version.clone(),
-        generation: generation.clone(),
-        previous_version: previous.as_ref().map(|v| v.version.clone()),
-    };
-    write_record(&runtime.join("transaction.toml"), &tx)?;
-    let root = directory.join("root");
-    backend.snapshot_recursive(&source, &root, false)?;
-    let boot_args = mount_arguments(store, id, &artifact.version, &root, &config)?;
+    let root = version_directory.join("root");
+    checked(&root)?;
+    backend.check_subvolume(&root, false)?;
+    fs::create_dir_all(&runtime)?;
+    let boot_args = mount_arguments(store, id, &root, &config, &mounts)?;
     backend.sync_filesystem(&root)?;
     let record = RuntimeRecord {
-        schema_version: 1,
+        schema_version: 2,
         system_id: id.into(),
         version: artifact.version.clone(),
-        generation,
-        config_sha256: digest,
+        generation: String::new(),
+        config_sha256: String::new(),
         machine: machine_name(store, id),
     };
     write_record(&current_path, &record)?;
-    fs::remove_file(runtime.join("transaction.toml"))?;
-    fs::File::open(&runtime)?.sync_all()?;
     Ok(PreparedRuntime {
         system_id: id.into(),
         version: artifact.version,
@@ -414,21 +363,16 @@ pub(crate) fn bind_argument(mount: &RuntimeMount) -> Result<OsString> {
     Ok(result)
 }
 
-/// Assemble persistent and administrator-approved runtime bindings.
-/// 组装持久及管理员批准的运行绑定。
+/// Validate configured mounts and their sources before finalizing the version.
+/// 版本收尾前校验配置挂载及其来源。
 /// # Arguments
-/// - `store`: Owning manager. 所属管理器。
-/// - `id`: System identity. 系统身份。
-/// - `version`: Internal artifact identity. 内部产物身份。
-/// - `root`: Writable runtime root. 可写运行根。
-/// - `config`: Current validated policy. 当前经校验策略。
-fn mount_arguments(
+/// - `store`, `id`, `version`, `config`: Fixed manager, artifact and launch policy. 固定管理器、产物及启动策略。
+fn runtime_mounts(
     store: &ConfigStore,
     id: &str,
     version: &str,
-    root: &Path,
     config: &SubsystemConfig,
-) -> Result<Vec<OsString>> {
+) -> Result<Vec<RuntimeMount>> {
     let layout = store.system_layout(id)?;
     let parameters = read_plugin_parameters_at(&layout.versions.join(version).join("config"))?;
     let inheritance = InheritanceConfig::read(&parameters)?;
@@ -454,16 +398,36 @@ fn mount_arguments(
         ..config.clone()
     }
     .validate()?;
+    for mount in &mounts {
+        checked(&mount.source)?;
+        let meta = fs::metadata(&mount.source)?;
+        if !meta.is_dir() && !meta.is_file() {
+            return Err(Error::Invalid(
+                "挂载来源必须是文件或目录 / mount source must be a file or directory".into(),
+            ));
+        }
+    }
+    Ok(mounts)
+}
+
+/// Prepare mount targets and launch arguments in the finalized version root.
+/// 在已收尾版本根内准备挂载目标及启动参数。
+/// # Arguments
+/// - `store`, `id`, `root`, `config`, `mounts`: Fixed manager, version root and checked launch inputs.
+///   固定管理器、版本根及已检查的启动输入。
+fn mount_arguments(
+    store: &ConfigStore,
+    id: &str,
+    root: &Path,
+    config: &SubsystemConfig,
+    mounts: &[RuntimeMount],
+) -> Result<Vec<OsString>> {
+    let layout = store.system_layout(id)?;
     let mut args = vec![
         OsString::from("--settings=no"),
         OsString::from("--link-journal=auto"),
     ];
-    for (i, mount) in mounts.iter().enumerate() {
-        for other in &mounts[..i] {
-            if mount.target.starts_with(&other.target) || other.target.starts_with(&mount.target) {
-                return Err(Error::Invalid("持久挂载与运行挂载目标冲突 / persistent mount conflicts with a runtime mount target".into()));
-            }
-        }
+    for mount in mounts {
         checked(&mount.source)?;
         let meta = fs::metadata(&mount.source)?;
         let target = guest_path(root, &mount.target)?;
@@ -553,69 +517,6 @@ fn mount_arguments(
         args.push("--bind=/dev/dri".into());
     }
     Ok(args)
-}
-
-/// Retire old generations only after machine readiness has been committed.
-/// 只在机器就绪提交后退役旧运行代。
-/// # Arguments
-/// - `store`, `id`, `backend`: Owning manager, target and recursive storage backend. 所属管理器、目标及递归存储后端。
-/// # Errors
-/// Preserves protected roots and reports failed deletions with their actual paths.
-/// 保留受保护的根，并携带实际路径报告删除失败。
-pub fn prune_with_backend(
-    store: &ConfigStore,
-    id: &str,
-    backend: &impl BuildBackend,
-) -> Result<()> {
-    let layout = store.system_layout(id)?;
-    let runtime = layout.root.join("runtime");
-    if exists(&runtime.join("transaction.toml"))? {
-        return Ok(());
-    }
-    let current: RuntimeRecord = read_record(&runtime.join("current.toml"))?;
-    validate_record(&current, store, id)?;
-    let directory = runtime.join("generations");
-    checked(&directory)?;
-    let entries = fs::read_dir(&directory).map_err(|source| Error::Io {
-        path: directory.clone(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::Io {
-            path: directory.clone(),
-            source,
-        })?;
-        let name = entry
-            .file_name()
-            .to_str()
-            .ok_or_else(|| {
-                Error::Invalid("代次名称必须为 UTF-8 / generation name must be UTF-8".into())
-            })?
-            .to_owned();
-        crate::config::validate_identifier(&name)?;
-        if !name.starts_with("g-") {
-            return Err(Error::Invalid(
-                "代次目录不符合预期 / unexpected generation directory".into(),
-            ));
-        }
-        if name == current.generation {
-            continue;
-        }
-        let path = entry.path();
-        checked(&path)?;
-        let root = path.join("root");
-        if exists(&root)? && !controller::retire_runtime_root(store, &root, backend)? {
-            continue;
-        }
-        remove_generation(&path)?;
-    }
-    fs::File::open(&directory)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| Error::Io {
-            path: directory,
-            source,
-        })?;
-    Ok(())
 }
 
 /// Remove managed host mounts and diagnose unsupported host-dependent guest rows.

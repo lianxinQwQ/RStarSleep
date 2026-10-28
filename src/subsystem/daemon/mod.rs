@@ -8,7 +8,7 @@ use super::{
     identity::{self, Peer},
     preparation, prepare,
     protocol::{self, ClientMessage, Event, Operation, StartOrigin, Status},
-    prune_with_backend, read_record, session,
+    read_record, session,
     supervision::{Phase, Supervisor, systemd::Systemd},
     trust, write_record,
 };

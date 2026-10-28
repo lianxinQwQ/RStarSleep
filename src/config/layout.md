@@ -73,11 +73,9 @@ Btrfs 顶层/
             │       └── inherit.toml    # 继承阶段完成与实际清单
             ├── runtime/                # 子系统运行存储和恢复记录，按需创建
             │   ├── activity.lock       # 应用和启停活动锁 / Application and lifecycle activity lock
-            │   ├── current.toml        # 已同步运行代、版本、机器名及启动配置摘要
-            │   ├── transaction.toml    # 未完成存储准备时存在
+            │   ├── current.toml        # 格式 2：已准备版本与机器身份 / Schema 2: prepared version and machine identity
             │   ├── fstab               # 单独注入容器的只读适配配置
             │   ├── exports-users.toml  # 已主动登记用户入口集成的用户
-            │   ├── generations/<代>/root/ # 可写父根及全部内部子卷
             │   ├── jobs/               # 持久管理任务 / Durable management jobs
             │   │   ├── lifecycle.lock  # 启停任务互斥 / Lifecycle job exclusion
             │   │   ├── <任务>.toml     # 任务状态与退出结果 / Job state and exit result
@@ -489,18 +487,20 @@ Arch 用专用标记块保存生成行，重复调用替换该块并保留其他
 缺少启动文件、UUID 或启动目标冲突均报错，不标记构建完成。
 各版本的 `boot.toml` 保存启动文件所有权，清理不依赖之后的主系统角色变更。
 
-## 子系统产物、运行代与用户入口
+## 子系统产物、版本根与用户入口
 
 构建最后原子发布 `systems/<系统>/build-current.toml`，指向完整 root 或有效的
 pending-inheritance 产物；失败构建保持上一引用。冷启动/重启只读取这个引用，
 不扫描历史版本，也没有版本选择入口。子系统在 nspawn 引导前完成延后继承，
-再递归生成可写运行代。同产物和启动配置复用现有根，换产物或挂载/tmpfs/GPU 配置时
-生成新代，不比较运行修改。授权和入口配置变化不触发根重建。
+直接使用 `versions/<版本>/root`，运行修改随该版本保存。相同版本重启或变更挂载、
+tmpfs、GPU 配置均不重建根；切换版本使用新版本根，旧版本由显式 `clean` 清理。
 
-`runtime/current.toml` 表示可写根已同步，机器就绪另存于
+`runtime/current.toml` 的格式 2 表示对应版本根已准备，机器就绪另存于
 `/run/rstarsleep/<规范管理根SHA-256>/<系统>.origin.toml`；同目录保存 daemon 锁、
 `manager.sock`。daemon 恢复时核对实际 leader/根身份及残留应用服务。
-新机器就绪后回收旧代，挂载或待办来源仍引用的根保留。
+当前构建、运行记录、实际运行根、挂载及待办来源均受版本清理保护。
+旧格式运行记录仍可用于恢复和停止机器；下次启动改用版本根，已提交的旧
+`runtime/generations/<代>/root` 保留原处，不自动合并或回收。旧存储事务继续按原恢复规则收尾。
 
 子系统配置管理通过 daemon 的 SSH 服务提供，管理根可选 `config/ssh.toml` 设置
 `schema_version = 1`、`listen` 和 `host_key`。默认监听 `127.0.0.1:2222`，主机私钥

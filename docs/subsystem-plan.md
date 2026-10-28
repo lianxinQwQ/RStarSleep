@@ -24,9 +24,9 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | 构建与版本 | `build-current.toml` 原子发布；失败保持上一引用；异常引用拒绝历史兜底 |
 | 配置 | 运行字段、默认值和边界校验；授权对新请求生效，启动配置下次启动生效 |
 | nspawn | `--boot` 常驻机器、machined 注册、客体执行就绪探针、会话执行 |
-| 存储 | 完整子卷树可写运行代、存储准备事务和恢复；独立机器就绪来源记录 |
+| 存储 | 直接使用完整可写版本根；兼容旧运行记录恢复；独立机器就绪来源记录 |
 | 继承 | 共用启动前收尾；子系统构建不安装主系统 initramfs 集成；持久数据运行期 bind |
-| 清理 | 当前构建/运行/事务引用保护；旧代回收核对 pending 来源、运行根及挂载命名空间 |
+| 清理 | 当前构建/运行/旧事务引用保护；显式 clean 核对 pending 来源、运行根及挂载命名空间 |
 | 发行版能力 | 可选 `query_package_files`；Arch 已实现；构建生成候选索引，运行时再验证文件 |
 | 用户集成 | 系统前缀命令/desktop/图标；显式登记用户，降权写入并按内容所有权同步 |
 | SSH 管理 | 公钥绑定子系统身份；build/script 共享视图、类 Vim 编辑、TUI、SFTP、持久任务和 root shell |
@@ -44,8 +44,8 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | --- | --- | --- |
 | 特权助手 | `internal/daemon/{proto,client,server,install}.go` | 同一 Rust 二进制提供 daemon 子命令；Unix socket 协议；内核对端身份认证 |
 | 三种启动来源 | `proto.go`、`occupancy.go` | 区分自启、显式启动、按需启动；只有按需启动实例参与闲置回收 |
-| 实例部署 | `internal/runner/{run,deploy_linux}.go` | 借鉴版本来源与独立运行快照的边界；使用本项目版本，不引入 meowSub 的基线及变更比较 |
-| 启动切换 | `run.go` 的部署入口 | 改为启动/重启时完成待办构建、生成运行根并切换版本，无差异门禁 |
+| 实例部署 | `internal/runner/{run,deploy_linux}.go` | 借鉴版本来源记录；直接使用本项目版本根，不引入 meowSub 的基线及变更比较 |
+| 启动切换 | `run.go` 的部署入口 | 改为启动/重启时完成待办构建、直接使用版本根并切换版本，无差异门禁 |
 | 中断恢复 | `deploy_linux.go` 的 journal、`RecoverPending` | 借鉴持久日志；版本收尾复用已有提交恢复，运行根切换单独记录 |
 | 终端与执行 | `cmd_shell.go`、`server.go` 的 `bridgeShell` | 普通用户通过 daemon 进入；终端流、退出码、信号和尺寸变化分别处理 |
 | 图形直通 | `internal/graphical/graphical.go`、`bootbind.go` | 接入调用者 Wayland/X11、音频、用户总线；请求时检测会话资源更换 |
@@ -62,7 +62,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 - meowSub 全局 `bin/<命令名>` 会让不同组的同名命令争用路径。本项目默认导出
   `<系统>-<命令>`；当前没有短名别名配置，后续若增加需显式唯一。
 - `gateRedeploy`、`diffTree` 和 `master` 基线不采用。是否更新运行根由当前构建产物、
-  机器生命周期和任务完成状态决定；运行修改不会阻止更新或重新生成运行根。
+  机器生命周期和任务完成状态决定；运行修改不会阻止切换版本根。
 - meowSub 非交互命令把退出码写进响应文本。本项目协议保留数值退出码，CLI 正确
   返回该值，并区分 stdout/stderr。
 - meowSub `native` 模式缺少 `xdg-dbus-proxy` 时回退直连宿主总线。本项目校验依赖，
@@ -77,7 +77,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 ### 3.1 构建准备与启动完成共用版本体系
 
 数据流程为：`构建准备 → pending-inheritance → 启动前继承收尾 → complete/root
-→ 可写运行根 → nspawn 机器`。没有延后任务的版本从 `complete/root` 开始。
+→ nspawn 机器（直接使用该版本 root）`。没有延后任务的版本从 `complete/root` 开始。
 
 构建成功可以交付完整版本，也可以交付独立准备根和待办清单。正在运行的子系统
 继续使用现有运行根；下次冷启动或显式重启直接读取构建模块发布的当前产物引用。
@@ -91,7 +91,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 
 `start` 遇到已运行机器只复用；`shell`/应用请求复用现有机器，未运行时走完整启动流程。
 `restart` 先退出旧机器，再读取当前产物、完成待办和引导。停止本身不执行构建任务。
-新版本切换直接生成对应运行根，不扫描旧根，不因修改多少而暂停或要求确认。
+新版本切换直接使用对应版本根，不扫描旧根，不因修改多少而暂停或要求确认。
 
 任务时机沿用已有继承行为，明确区分“每次启动执行的准备入口”和“每版本一次的收尾”：
 
@@ -103,12 +103,12 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 | CoW 来源定位与身份固定、prepared-root/待办发布 | 常规构建阶段 | 复用 `deferred::prepare`；启动时才读取来源内容 |
 | 延后 CoW 继承、完整子卷树封存、最终 root 发布 | 当前产物首次用于启动/重启时 | 复用 `finalize_inheritance` 和提交恢复逻辑 |
 | 已完成继承的提交记录校验 | 后续启动/重启 | 不重新读取旧来源，不重复继承 |
-| 运行根、持久 bind 与启动配置准备 | 每次冷启动/重启 | 产物和启动配置相同时可复用现有运行根 |
+| 运行根、持久 bind 与启动配置准备 | 每次冷启动/重启 | 直接使用当前产物版本根；配置变化只更新启动参数 |
 | 调用者账户与会话资源 | 每次应用请求 | 核对 UID/GID、固定资源 inode 并修复过期绑定 |
 
-同产物和启动配置的普通重启保留运行根；换产物或挂载/tmpfs/GPU 配置时生成新根。
-复用由产物及启动配置摘要决定，授权/导出配置变化不重建根，也不检查运行内容。运行配置需要重建副本时直接重建；必须跨重建保留的数据
-通过声明的 CoW 继承或 Mount 管理，不自动保存全部运行修改。
+同版本重启以及挂载/tmpfs/GPU 配置变化都直接使用原版本根，保留运行修改，
+只重新生成启动参数。切换产物使用新版本根，旧版本及修改保留到显式 `clean`；
+跨版本共享的数据通过 Mount 管理，按配置复制的内容通过已有 CoW 继承处理。
 
 以后若增加其他延后构建任务，应将其作为显式版本待办，定义顺序、结果和幂等提交。
 第一版只接入已有 CoW 收尾；不自动把当前构建脚本改为每次开机运行的脚本。
@@ -116,7 +116,7 @@ RStarSleep `d3c747e` 和软链接 `meowSub -> ../meowSub/` 指向的 `32923ed`�
 ### 3.2 在宿主引导子系统前复用继承收尾
 
 主系统路径是 `initramfs → finalize_inheritance → 挂载正式根`；子系统路径是
-`宿主 daemon → finalize_inheritance → 准备运行根 → systemd-nspawn --boot`。
+`宿主 daemon → finalize_inheritance → systemd-nspawn --boot（版本 root）`。
 子系统共享数据与提交语义，不需要模拟内核启动，也不经过自己的 initramfs。
 
 `stages::inheritance_step` 已把通用的准备根/待办发布与主系统专属的
@@ -134,9 +134,9 @@ daemon 必须取得待办清单对应文件系统的 `subvolid=5` 顶层视图�
 重新从宿主 `/` 猜测来源，也不自动把旧子系统运行根替换为来源。若希望继承来自
 旧子系统，需显式登记旧运行根的实际 Btrfs 来源映射，并纳入待办来源保护。
 
-新代码已提供 `snapshot_recursive`，会保留脚本或继承创建的内部子卷，并分别控制
-父/子卷读写属性。直接复用它从完成版本生成可写运行根，避免重复实现子卷树复制。
-`DirectorySubvolume=yes/no` 的行为也原样保留。
+`snapshot_recursive` 继续用于构建缓存、版本发布和继承，保留内部子卷及读写属性。
+子系统启动直接使用完成版本的可写 `root`，不再创建额外运行快照；
+`DirectorySubvolume=yes/no` 的行为原样保留。
 
 运行挂载结构从版本冻结配置、已有继承记录和当前运行配置读取；仅对缺少的持久
 对象/目标映射增加版本级运行元数据，不用新的 `runtime-source.toml` 替代已有待办
@@ -162,21 +162,20 @@ systems/<系统>/
 │   └── root/                           # 收尾完成后发布的可写版本根
 ├── runtime/
 │   ├── activity.lock                   # 应用和启停活动锁 / Application and lifecycle activity lock
-│   ├── current.toml                    # 已同步存储代及启动配置摘要
-│   ├── transaction.toml                # 未完成的存储准备
+│   ├── current.toml                    # 格式 2：已准备版本及机器身份 / Schema 2: prepared version and machine identity
 │   ├── fstab                           # 注入客体的独立只读配置
 │   ├── exports-users.toml              # 主动集成入口的用户
 │   ├── jobs/                           # 管理任务状态、锁和日志 / Management jobs, locks and logs
-│   ├── console/                        # 原始 PTY 日志及启动记录 / Raw PTY log and boot records
-│   └── generations/<代>/root/          # 可写运行根；不建立比较基线
+│   └── console/                        # 原始 PTY 日志及启动记录 / Raw PTY log and boot records
 └── persistent/
 ```
 
-运行存储事务独立于版本继承提交记录。候选运行根完整同步后提交 `runtime/current.toml`，
-这个记录只表示存储已准备，不声称机器已运行。machined 注册和实际客体执行探针通过后，
+版本根完成收尾、挂载准备并同步后，原子提交格式 2 的 `runtime/current.toml`。
+它只记录已准备版本及机器身份，不声称机器已运行。machined 注册和实际客体执行探针通过后，
 才在 `/run/rstarsleep/<管理根摘要>/<系统>.origin.toml` 提交机器就绪来源。
 daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并检查残留应用服务。
-旧运行代保留到新机器就绪后再回收；仍被挂载或待办来源引用的根继续保留。
+启动新版本不自动清理旧版本。旧格式 1 记录可恢复、停止已有机器，下次启动改用版本根；
+已提交旧运行快照保留原处，不自动合并或回收，未完成的旧存储事务按原恢复规则收尾。
 
 收尾失败时不发布半成品根、不引导该产物，保留待办及错误，修复后重试或重新构建。
 不自动降级到历史产物；已准备的新根可在修复后重试引导。
@@ -185,8 +184,7 @@ daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并检查残�
 ### 3.3 持久挂载、锁与清理
 
 运行期 bind 合并版本的 Mount 与当前运行配置，对重复/相互包含目标及控制 socket、
-运行时目录等保留位置统一检查，文件 bind 也需覆盖。继承结果属于完成版本及运行
-副本，Mount 数据继续归 `persistent/`。
+运行时目录等保留位置统一检查，文件 bind 也需覆盖。继承结果和运行修改属于对应版本根，Mount 数据继续归 `persistent/`。
 
 以独立只读 fstab 覆盖移除主系统用的管理器挂载块，由 nspawn 注入 bind；
 保留支持的 tmpfs/bind 条目，其他宿主依赖条目明确报错。共享 `/etc` 和持久 fstab 不改写。
@@ -202,8 +200,8 @@ The daemon's in-memory map tracks SSH submissions for status and duplicate check
 Registrations survive SSH disconnects, end with the task, and are not restored from history after daemon restart.
 
 `clean` 沿用现有待办来源保护，再增加当前构建产物、当前运行版本、切换中的产物及
-恢复所需旧代引用。当前产物指向的版本在被新构建替换前不能删除。
-引用记录损坏时报错，实际机器发现补充检查 daemon 停止时的运行状态。删除运行代前
+恢复所需旧事务引用。当前产物指向的版本在被新构建替换前不能删除。
+引用记录损坏时报错，实际机器发现补充检查 daemon 停止时的运行状态。删除版本根前
 还需检查容器命名空间挂载和后代子卷；不能因不比较变更而跳过这些结构检查。
 
 应用租约和启停保留 activity 锁。配置编辑提交、SFTP 上传与构建输入冻结通过独立的
@@ -371,7 +369,7 @@ P0–P6 的代码均已落地；下表保留功能验收目标。自动化已覆
 | 阶段 | 交付内容 | 完成标准 |
 | --- | --- | --- |
 | P0：构建/启动契约 | 角色/运行配置；当前构建产物引用及原子发布；通用待办准备与 initramfs 集成解耦；复用递归快照与锁接口 | 成功构建更新引用、失败构建不更新；引用异常明确报错；子系统准备不依赖内核/initramfs；来源及清单固定正确 |
-| P1：启动前构建收尾 | daemon 前置收尾接口；待办来源保护；提交恢复；可写运行根和切换事务；清理运行引用 | 启动读取最新来源内容；同版本重启不重复继承；修改不阻止切换；运行修改不回写版本；故障不启动半成品；引用不可 clean |
+| P1：启动前构建收尾 | daemon 前置收尾接口；待办来源保护；提交恢复；直接使用可写版本根；清理运行引用 | 启动读取最新来源内容；同版本重启不重复继承；修改不阻止切换；运行修改直接保存在版本根；故障不启动半成品；引用不可 clean |
 | P2：常驻运行与执行 | daemon 安装/协议/鉴权；启动停止重启；状态/日志；非交互 `exec` | 普通授权用户正确 UID/GID 执行；实际退出码和双流传递；超时/异常启动可恢复；重启 daemon 能重建机器状态 |
 | P3：终端与按需生命周期 | PTY shell；窗口/信号处理；自启、显式、按需三来源；lease 与回收 | 两个并发会话复用一次启动；一个会话退出不误停；后台任务受跟踪；显式实例不闲置回收；断连能收尾 |
 | P4：图形与用户会话 | Wayland/X11/音频；isolated/native；登录后接入与重新登录修复 | 真实 GUI 出窗、有声音、文件路径可达；native 输入法可用；重登录后恢复；不带入其他用户会话；缺依赖明确失败 |
@@ -394,7 +392,7 @@ P6 已改用 SSH 配置管理，移除原 guest install/rebuild/restart/add-copy
 protocol/client/terminal、execution、session、desktop、exports、admin、console、
 management、ssh、daemon 和共享 filesystem/trust。复杂 daemon/session/management/ssh
 模块按职责拆为子目录；CLI 位于
-`src/cli/subsystem.rs`。复用 `controller::deferred` 收尾和递归快照接口；
+`src/cli/subsystem.rs`。复用 `controller::deferred` 收尾，直接使用其发布的版本根；
 没有为子系统另建一套版本继承状态。
 
 验证分三层：配置/产物引用/协议/desktop 的纯逻辑测试；可注入后端的收尾与切换故障、

@@ -291,11 +291,6 @@ impl Manager {
         }) {
             eprintln!("刷新子系统导出 {id} / subsystem export refresh {id}: {e}");
         }
-        if let Err(e) =
-            super::prune_with_backend(&self.store, id, &crate::controller::SystemBackend)
-        {
-            eprintln!("清理子系统运行环境 {id} / subsystem runtime retirement {id}: {e}");
-        }
         Ok(())
     }
 

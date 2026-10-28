@@ -134,7 +134,8 @@ pub(super) fn check_retained(store: &ConfigStore, id: &str, selected: &[String])
         let value: toml::Value =
             toml::from_str(&fs::read_to_string(&path).map_err(|e| disk::io(&path, e))?)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-        if value.get("schema_version").and_then(|v| v.as_integer()) != Some(1)
+        let schema = value.get("schema_version").and_then(|v| v.as_integer());
+        if !(schema == Some(1) || (name == "runtime/current.toml" && schema == Some(2)))
             || value.get("system_id").and_then(|v| v.as_str()) != Some(id)
             || value.get("version").and_then(|v| v.as_str()).is_none()
         {

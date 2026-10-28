@@ -26,5 +26,4 @@ pub use config::{ExportConfig, RuntimeMount, SubsystemConfig};
 pub(crate) use filesystem::open_guest;
 pub(crate) use filesystem::{atomic_write, checked, guest_path, read_record, write_record};
 pub use model::{Error, PreparedRuntime, Result, RuntimeRecord};
-pub use preparation::prune_with_backend;
 pub use preparation::{load_prepared, machine_name, prepare, prepare_with_backend};
