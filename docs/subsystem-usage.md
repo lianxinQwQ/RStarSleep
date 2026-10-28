@@ -280,7 +280,9 @@ daemon 重启会恢复注册机器并检查残留应用服务。
 
 会话只接入认证用户的 Wayland、X11 认证文件及音频 socket。重登录时核对 socket
 dev/inode 和容器可见挂载并重新绑定。isolated 使用容器私有用户总线；native 通过
-降权过滤代理只开放 Fcitx/IBus 输入法服务，不开放宿主 portal 或文件管理器。
+降权过滤代理只开放 Fcitx/IBus 输入法服务及其输入法 portal
+（`org.freedesktop.portal.Fcitx`、`org.freedesktop.portal.IBus`），
+不开放宿主桌面 portal（`org.freedesktop.portal.Desktop`）或文件管理器。
 off 禁用这些资源。本地文件参数要求容器实际可见；主客路径不一致时提示使用客体路径。
 当前本地 file URL 要求绝对未编码路径，portal 自动文件传递尚未支持。
 

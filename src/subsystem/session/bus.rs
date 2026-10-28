@@ -306,6 +306,10 @@ pub(super) fn proxy_command(bus: &File, uid: u32, gid: u32, output: &Path) -> Co
             "--talk=org.freedesktop.IBus",
             "--talk=org.fcitx.Fcitx",
             "--talk=org.fcitx.Fcitx5",
+            // Allow only input-method portals; desktop portals remain filtered.
+            // 仅允许输入法 portal；桌面 portal 继续受过滤限制。
+            "--talk=org.freedesktop.portal.Fcitx",
+            "--talk=org.freedesktop.portal.IBus",
         ]);
     // Credential changes happen here in the required order. Command::uid()
     // would drop privileges before a pre_exec closure could clear groups.

@@ -237,7 +237,9 @@ fn native_bus_uses_pinned_socket_and_fixed_policy() {
             "--filter",
             "--talk=org.freedesktop.IBus",
             "--talk=org.fcitx.Fcitx",
-            "--talk=org.fcitx.Fcitx5"
+            "--talk=org.fcitx.Fcitx5",
+            "--talk=org.freedesktop.portal.Fcitx",
+            "--talk=org.freedesktop.portal.IBus"
         ]
     );
     assert_eq!(command.get_envs().count(), 1);

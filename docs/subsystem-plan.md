@@ -245,7 +245,9 @@ journal 记录。启动成功需通过 machined 注册和容器内实际执行�
 ### 3.5 会话和应用入口
 
 图形接入已支持 `off`、默认 `isolated` 和 `native`：isolated 使用容器私有 D-Bus，
-native 通过降权代理只允许 IBus/Fcitx，不开放宿主 portal。需要输入法的系统显式配置
+native 通过降权代理只允许 IBus/Fcitx 及其输入法 portal
+（`org.freedesktop.portal.Fcitx`、`org.freedesktop.portal.IBus`），
+不开放宿主桌面 portal。需要输入法的系统显式配置
 `native`。`rw` 整个 runtime 目录直挂留到兼容扩展阶段。
 
 仅透传允许列表中的调用者环境，如 `XDG_RUNTIME_DIR`、`WAYLAND_DISPLAY`、
