@@ -257,10 +257,18 @@ def main():
     if request.get('schema_version') != 1 or any(not isinstance(request.get(k), list) or any(not isinstance(n, str) for n in request[k]) for k in ('users', 'groups')):
         raise ValueError('不支持的账户请求 / unsupported account request')
     old = load(work / 'old')
-    users, groups = selection(old, request)
     if args.preflight:
         if args.operation != 'check':
             raise ValueError('只有 check 支持预检 / only check supports preflight')
+        # Report missing selections structurally; the controller adds source-mount context.
+        # 结构化报告缺失用户，由控制器补充来源挂载背景。
+        missing_users = sorted(set(request['users']) - set(old['passwd']))
+        if missing_users:
+            print(json.dumps(dict(schema_version=1, consistent=False, missing_users=missing_users,
+                                  differences=[f'所选源用户不存在：{name} / selected source user does not exist: {name}' for name in missing_users])))
+            return
+    users, groups = selection(old, request)
+    if args.preflight:
         # A candidate-loss warning, not a claim about an unbuilt system.
         result = dict(schema_version=1, consistent=True, added_users=[], added_groups=[],
                       dropped_users=sorted(set(old['passwd']) - users), dropped_groups=sorted(set(old['group']) - groups), drifts=[], differences=[])

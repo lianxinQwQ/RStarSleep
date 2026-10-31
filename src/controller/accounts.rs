@@ -40,6 +40,10 @@ struct Check {
     drifts: Vec<Drift>,
     #[serde(default)]
     differences: Vec<String>,
+    /// Plugins identify missing users without exposing their account-file format.
+    /// 插件报告缺失用户，核心无需了解其账户文件格式。
+    #[serde(default)]
+    missing_users: Vec<String>,
 }
 
 fn parse_check(text: &str) -> Result<Check> {
@@ -133,6 +137,7 @@ pub(super) fn preflight(
     plugin: &LoadedPlugin,
     context: &BuildContext,
     source_root: &Path,
+    source_mounts_etc: bool,
     report: &mut preflight::Report,
 ) -> Result<()> {
     let Some(requirements) = &plugin.metadata.account_inheritance else {
@@ -163,10 +168,26 @@ pub(super) fn preflight(
         .map_err(|e| Error::Invalid(e.to_string()))?;
     capture(plugin, source_root, "old")?;
     let checked = parse_check(&call(plugin, context, source_root, "account_check", true)?)?;
-    if !checked.differences.is_empty() {
-        return Err(Error::Invalid(format!(
-            "账户来源预检失败: {0} / Account-source preflight failed: {0}",
+    if !checked.differences.is_empty() || !checked.missing_users.is_empty() {
+        let hint = if source_mounts_etc && !checked.missing_users.is_empty() {
+            format!(
+                "; 来源版本配置了 Mount=/etc/；用户 {0:?} 可能只存在于运行时的持久 /etc 挂载中，而不在继承来源版本根 {1} 内，因此后续 build 可能找不到这些用户。 / The source version configured Mount=/etc/; users {0:?} may exist only in the persistent runtime /etc mount, not in source version root {1}, so later builds may not find them.",
+                checked.missing_users,
+                source_root.display()
+            )
+        } else {
+            String::new()
+        };
+        let reason = if checked.differences.is_empty() {
+            format!(
+                "找不到来源用户 {0:?} / Missing source users {0:?}",
+                checked.missing_users
+            )
+        } else {
             checked.differences.join("; ")
+        };
+        return Err(Error::Invalid(format!(
+            "账户来源预检失败 / Account-source preflight failed: {reason}{hint}"
         )));
     }
     if !checked.dropped_users.is_empty() || !checked.dropped_groups.is_empty() {
@@ -187,10 +208,13 @@ pub(super) fn preflight(
         let overlaps: Vec<_> = targets
             .iter()
             .filter(|target| {
-                requirements
-                    .paths
-                    .iter()
-                    .any(|account| account.starts_with(target) || target.starts_with(account))
+                // The whole-/etc mount has separate advice without a countdown.
+                // 整个 /etc 的挂载使用单独提示，不计入倒计时。
+                !(kind == "Mount" && target.as_path() == Path::new("/etc/"))
+                    && requirements
+                        .paths
+                        .iter()
+                        .any(|account| account.starts_with(target) || target.starts_with(account))
             })
             .collect();
         if !overlaps.is_empty() {

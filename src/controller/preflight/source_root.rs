@@ -6,6 +6,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Inspect a source version's archived mounts without reading its runtime view.
+/// 检查来源版本留档的挂载配置，不读取其运行视图。
+pub(in crate::controller) fn mounts_etc(root: &Path) -> Result<bool> {
+    let Some(version) = root.parent().filter(|version| {
+        root.ends_with("root")
+            && version
+                .parent()
+                .is_some_and(|path| path.ends_with("versions"))
+    }) else {
+        return Ok(false);
+    };
+    let config = version.join("config");
+    if !disk::exists(&version.join("state.toml"))? || !disk::exists(&config)? {
+        return Ok(false);
+    }
+    let parameters = crate::config::read_plugin_parameters_at(&config)?;
+    Ok(crate::config::InheritanceConfig::read(&parameters)?
+        .mounts
+        .iter()
+        .any(|path| path == Path::new("/etc/")))
+}
+
 pub(in crate::controller) fn check_directory(root: &Path) -> Result<()> {
     disk::checked(root)?;
     if !fs::metadata(root).map_err(|e| disk::io(root, e))?.is_dir() {

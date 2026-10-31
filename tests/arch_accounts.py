@@ -52,8 +52,12 @@ class Accounts(unittest.TestCase):
         result = self.run_action('check', True)
         self.assertEqual(result['dropped_users'], ['retired', 'root'])
         self.assertNotIn('alice', result['dropped_groups'])
-        self.request(users=['missing'])
-        self.run_action('check', True, success=False)
+        self.request(users=['missing', 'another', 'missing'])
+        result = self.run_action('check', True)
+        self.assertFalse(result['consistent'])
+        self.assertEqual(result['missing_users'], ['another', 'missing'])
+        self.assertTrue(all('selected source user does not exist' in item for item in result['differences']))
+        self.run_action('prepare', success=False)
         self.assertFalse(any((self.work / 'output/etc').iterdir()))
 
     def test_merge_preserves_new_accounts_primary_group_and_memberships(self):

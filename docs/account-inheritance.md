@@ -72,7 +72,28 @@ Arch 未把账户字段加入基础、软件缓存选择器，因此这些字段
 
 配置了非空 RootPassword 时，它覆盖账户继承的 root 密码。用户脚本仍在后面执行。
 CopyOnWriteBoot 或 Mount 覆盖账户路径（包括其父目录，如 `/etc/`）时，预检明确警告并
-纳入同一次三秒等待；不改写普通继承语义，不在首次启动重跑账户插件或重新设置密码。
+纳入同一次三秒等待；其中 `Mount=/etc/` 使用单独的即时提示，不触发三秒等待。
+它可能遮蔽未来 build 自动创建的用户；运行时新增的用户也可能只保存在持久 `/etc` 中，
+后续 build 从裸版本根继承时找不到这些用户。来源版本留档配置包含 `Mount=/etc/`，
+且账户预检报告所选用户不存在时，错误会追加该原因提示，在版本分配和构建前退出。
+该诊断不从持久目录补读账户，也不改变原有继承来源。
+
+最佳实践是只对 `/etc` 中明确需要保留的内容做写时复制继承。必须继承整个 `/etc/`
+时，使用命名 CoW 分节，并通过 `Preserve` 排除旧账户文件，保留新构建的账户结果：
+
+```ini
+[Inheritance.CopyOnWriteBuild.etc]
+Path=/etc/
+# Keep newly built account files instead of overwriting them from the old /etc.
+# 保留新构建的账户文件，排除旧 /etc 对它们的覆盖。
+Preserve=passwd
+Preserve=group
+Preserve=shadow
+Preserve=gshadow
+```
+
+首次启动时复制可改用 `[Inheritance.CopyOnWriteBoot.etc]`，采用相同的相对例外路径。
+普通继承语义保持不变，不在首次启动重跑账户插件或重新设置密码。
 首次启动执行器与待办清单协议没有为账户继承增加特殊处理。
 
 ## 插件接口
@@ -129,6 +150,8 @@ old 输入在预检和实际拟继承之间保持固定，不在构建中途重�
 ```
 
 除 schema_version、consistent 外列表可省略。consistent 表示除允许的构建新增身份外一致。
+预检还可返回 `missing_users` 列表，配合 `consistent=false` 和 `differences` 说明缺失的
+所选用户；核心据此结合来源版本配置提供挂载提示，不解析发行版账户文件或匹配错误文本。
 漂移项形如 `{"kind":"uid","name":"alice","old_id":1000,"new_id":2000,"new_name":"alice"}`；
 kind 为 uid/gid，new_id、new_name 可为 null；编号被不同身份复用时 new_name 表示新身份。
 预检中的 dropped 列表是可能舍弃项，最终检查中的列表才是实际结果。

@@ -294,6 +294,113 @@ fn source_errors_fail_before_allocation_and_no_warning_wait() {
     );
 }
 
+/// Whole-/etc advice is logged before building and never requests a warning wait.
+/// 整个 /etc 挂载建议在构建前记录，且不要求警告等待。
+#[test]
+fn mounting_etc_reports_advice_without_a_countdown() {
+    use rstarsleep::controller::{BuildOptions, build_with_options_and_backend_and_warning};
+    use std::path::Path;
+
+    for account_plugin in [false, true] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        let source = fixture.store.root().parent().unwrap().join("source");
+        fs::create_dir_all(source.join("etc")).unwrap();
+        fs::write(source.join("etc/passwd"), "来源账户 / Source accounts").unwrap();
+        fs::write(source.join("etc/fstab"), "").unwrap();
+        if account_plugin {
+            fixture.account_plugin(Path::new("/etc/passwd"), EMPTY, EMPTY);
+        }
+        fs::write(
+            layout.config.join("build/inherit.conf"),
+            "[Inheritance]\nMount=/etc/\n",
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        let outcome = build_with_options_and_backend_and_warning(
+            &fixture.store,
+            Some("desktop"),
+            &BuildOptions {
+                inheritance_root: Some(source),
+            },
+            &backend,
+            |_| panic!("建议不应触发等待 / Advice must not request a wait"),
+        )
+        .unwrap()
+        .remove(0);
+        let log = fs::read_to_string(outcome.root.parent().unwrap().join("install.log")).unwrap();
+        let advice = log.find("[desktop:mount-etc]").unwrap();
+        assert!(advice < log.find("Build version v00000001").unwrap());
+        for text in [
+            "未来 build 自动创建的用户",
+            "users automatically created by future builds",
+            "Preserve=passwd",
+            "Preserve=group",
+            "Preserve=shadow",
+            "Preserve=gshadow",
+        ] {
+            assert!(log.contains(text), "缺少提示 / Missing advice: {text}");
+        }
+    }
+}
+
+/// Only missing users from a source version with the whole-/etc mount get the hint.
+/// 仅来源版本挂载整个 /etc 且缺少用户时追加说明。
+#[test]
+fn missing_source_users_explain_archived_etc_mount_before_build_allocation() {
+    use std::path::Path;
+
+    let missing = r#"{"schema_version":1,"consistent":false,"missing_users":["alice"],"differences":["所选源用户不存在 / selected source user does not exist: alice"]}"#;
+    let unrelated = r#"{"schema_version":1,"consistent":false,"differences":["来源格式无效 / Invalid source format"]}"#;
+    for (mount, response, expected_hint) in [
+        ("Mount=/etc/\n", missing, true),
+        ("Mount=/etc/app/\n", missing, false),
+        ("", missing, false),
+        ("Mount=/etc/\n", unrelated, false),
+    ] {
+        let fixture = Fixture::new();
+        fixture.system("desktop", &[]);
+        fixture.account_plugin(Path::new("/account-input"), response, EMPTY);
+        let layout = fixture.store.system_layout("desktop").unwrap();
+        let version = layout.versions.join("v00000001");
+        fs::create_dir_all(version.join("root")).unwrap();
+        fs::create_dir_all(version.join("config/build")).unwrap();
+        fs::write(version.join("root/account-input"), "来源 / Source").unwrap();
+        fs::write(
+            version.join("state.toml"),
+            "schema_version=1\nsystem_id='desktop'\nversion='v00000001'\nstate='complete'\n",
+        )
+        .unwrap();
+        fs::write(
+            version.join("config/build/inherit.conf"),
+            format!("[Inheritance]\n{mount}"),
+        )
+        .unwrap();
+        fs::write(
+            layout.config.join("build/accounts.conf"),
+            "[AccountInheritance]\nUsers=alice\n",
+        )
+        .unwrap();
+        let backend = SimulatedBackend::default();
+        let error = rstarsleep::controller::build_with_backend_and_warning(
+            &fixture.store,
+            Some("desktop"),
+            &backend,
+            |_| panic!("来源错误应在等待前退出 / Source errors must fail before waiting"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error.contains("source version configured Mount=/etc/"),
+            expected_hint,
+            "{error}"
+        );
+        assert!(backend.events.borrow().is_empty());
+        assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 1);
+    }
+}
+
 #[test]
 fn account_write_precedes_password_hook_and_source_changes_invalidate_script_reuse() {
     let fixture = Fixture::new();

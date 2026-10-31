@@ -254,7 +254,7 @@ fn build_with_sessions(
     for value in &pending {
         predownload_cache.check_plugin(&value.plugin)?;
     }
-    let warnings = warnings.messages();
+    let warnings = warnings.warnings();
     if !warnings.is_empty() {
         warning(&warnings)?;
     }
@@ -635,6 +635,19 @@ fn check_system(
     let environment = crate::config::read_environment_at(frozen)?;
     plugin.validate_parameter_lists(&input)?;
     let mut inheritance = crate::config::InheritanceConfig::read(&input)?;
+    if inheritance
+        .mounts
+        .iter()
+        .any(|path| path == Path::new("/etc/"))
+    {
+        warnings.info(id, "mount-etc", concat!(
+            "提示：Mount=/etc/ 可能遮蔽未来 build 自动创建的用户；运行时账户也可能只存在于持久挂载中，后续 build 从版本根继承时找不到这些用户。",
+            "最佳实践是只对 /etc 中明确需要继承的内容做写时复制继承；退而求其次，写时复制继承整个 /etc/，并在对应的 [Inheritance.CopyOnWriteBuild.etc] 或 [Inheritance.CopyOnWriteBoot.etc] 分节中设置 Path=/etc/，",
+            "分别使用 Preserve=passwd、Preserve=group、Preserve=shadow、Preserve=gshadow 排除旧账户文件，保留新构建的账户结果。此提示不触发三秒等待。 / ",
+            "Advice: Mount=/etc/ may hide users automatically created by future builds; runtime accounts may exist only in persistent storage and be missing when a later build inherits from the version root. ",
+            "Prefer CoW inheritance of explicitly selected /etc contents. Alternatively, inherit all of /etc/ through [Inheritance.CopyOnWriteBuild.etc] or [Inheritance.CopyOnWriteBoot.etc] with Path=/etc/ and separate Preserve=passwd, Preserve=group, Preserve=shadow and Preserve=gshadow entries to retain the newly built account files. This advice does not trigger the three-second wait."
+        ));
+    }
     if plugin.metadata.account_inheritance.is_some() {
         crate::config::AccountInheritanceConfig::read(&input)?;
     }
@@ -718,7 +731,15 @@ fn check_system(
         inherited_mounts: Vec::new(),
     };
     if let Some(inheritance_root) = &inheritance_root {
-        super::accounts::preflight(&plugin, &context, inheritance_root, warnings)?;
+        let source_mounts_etc = plugin.metadata.account_inheritance.is_some()
+            && super::preflight::source_root::mounts_etc(inheritance_root)?;
+        super::accounts::preflight(
+            &plugin,
+            &context,
+            inheritance_root,
+            source_mounts_etc,
+            warnings,
+        )?;
     }
     Ok(Pending {
         inputs,

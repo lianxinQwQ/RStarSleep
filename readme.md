@@ -305,6 +305,12 @@ persistent；继承 `/etc` 时把最终 fstab 同步回新根。Arch 在专用�
 重复调用替换标记块，保留块外配置。Arch 还接受自由列表 `[Content] FstabLines`
 写入完整 fstab 行；此字段无需配合 Mount 使用。
 
+`Mount=/etc/` 在构建预检时提示账户覆盖风险，不增加三秒等待：持久挂载可能遮蔽未来
+build 自动创建的用户，运行时用户也可能不在下一次 build 读取的裸版本根中。
+建议明确选择 `/etc` 中需要保留的内容做 CoW 继承；必须复制整个 `/etc/` 时，使用
+命名 CoW 分节，以 `Preserve` 保留新构建的 `passwd`、`group`、`shadow`、`gshadow`。
+配置示例与来源用户缺失诊断见[账户继承说明](docs/account-inheritance.md)。
+
 ## 主系统启动项
 
 主系统由全局 `main_system` 指定。成功构建主系统时，从该版本 `/boot/vmlinuz-linux` 和
