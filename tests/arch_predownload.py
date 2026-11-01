@@ -789,6 +789,7 @@ class Protocol(unittest.TestCase):
 
             p.pacman = Mock(side_effect=pacman)
             p.initialize, p.load_base, p.aur, p.ensure, p.clean_dependencies, p.finish = [Mock() for _ in range(6)]
+            p.prepare_environment = Mock()
             p.rpc = Mock(return_value=[{"PackageBase": "aur-tool"}])
             p.ensure.side_effect = lambda requirement: self.assertEqual(p.files, {"base", "desktop", "shared"})
             with patch.object(arch, "Preparer", return_value=p), patch.object(arch.sys, "argv", ["predownload.py", "aur-tool", "desktop", "desktop"]):
@@ -981,6 +982,7 @@ class OfflinePacman(unittest.TestCase):
         p.pacman = Mock(side_effect=pacman)
         p.fetch = Mock(side_effect=AssertionError("collector downloaded packages"))
         p.build = Mock(side_effect=AssertionError("collector compiled packages"))
+        p.prepare_environment = Mock()
         return p
 
     def test_forced_aur_wins_over_same_named_repository_package(self):
@@ -995,6 +997,24 @@ class OfflinePacman(unittest.TestCase):
         self.assertTrue(any("/paru" in value and value != "aur/paru"
                             for value in p.pacman.call_args.args[0]))
         self.assertNotIn("paru-9-1-x86_64.pkg.tar.zst", p.fetch.call_args.args[0])
+
+    def test_cumulative_conflict_detection_matches_actual_pacman_preparation(self):
+        p = self.plan_preparer([
+            ("alpha", "1-1", {"CONFLICTS": ["beta"]}),
+            ("beta", "1-1", {"CONFLICTS": ["alpha"]}),
+        ])
+        root = p.work / 'root'
+        root.mkdir()
+        def transaction(arguments, **kwargs):
+            return subprocess.run([*self.command, '--root', str(root), '--config', str(p.official_conf),
+                                   '--dbpath', str(p.db), '--logfile', '/dev/null', *arguments],
+                                  text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
+        p.pacman = Mock(side_effect=transaction)
+        manager = arch.build_environment.BuildEnvironment.__new__(arch.build_environment.BuildEnvironment)
+        manager.p, manager.error = p, arch.PreparationError
+        with self.assertRaises(arch.build_environment.DependencyConflict):
+            manager.transaction(['-S', '--noconfirm', '--', 'alpha', 'beta'], official=True)
+        self.assertFalse(any(path.is_dir() for path in (p.db / 'local').iterdir()))
 
     def test_plan_uses_explicit_official_provider_in_the_combined_transaction(self):
         p = self.plan_preparer([
@@ -1188,6 +1208,7 @@ class PackagePlans(unittest.TestCase):
         preparer = Mock(keyring_targets=[])
         preparer.collect.return_value = ["base"]
         preparer.prefetch.return_value = []
+        preparer.official.return_value = []
         workspaces = []
         with tempfile.TemporaryDirectory() as temporary:
             def initialize(workspace):
@@ -1274,6 +1295,7 @@ class PackagePlans(unittest.TestCase):
         preparer._plan_transaction = Mock(side_effect=plan_transaction)
         preparer.fetch = Mock(side_effect=AssertionError("collector downloaded packages"))
         preparer.build = Mock(side_effect=AssertionError("collector compiled an AUR package"))
+        preparer.prepare_environment = Mock()
         return preparer
 
     def test_group_base_and_runtime_closures_are_collected_without_package_downloads(self):

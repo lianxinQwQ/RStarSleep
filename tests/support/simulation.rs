@@ -670,6 +670,9 @@ impl BuildBackend for SimulatedBackend {
             }
             "predownload_install" | "predownload_update" | "prepare_inheritance_initramfs" => {}
             "predownload" => {
+                if plugin.metadata.predownload_retain_changes {
+                    packages.insert("build-dependency".into(), false);
+                }
                 if plugin.metadata.predownload_plans {
                     assert_eq!(args.len(), 2);
                     assert_eq!(args[0], "--systems-json");

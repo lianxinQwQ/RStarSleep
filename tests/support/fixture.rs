@@ -39,6 +39,23 @@ impl Fixture {
         Self::with_package_interfaces(false, true)
     }
 
+    /// Retain successful preparation mutations to exercise cumulative environments.
+    /// 保留成功准备后的变化，以验证累积式环境。
+    #[allow(dead_code)]
+    pub fn retain_predownload_changes(&self) {
+        let source = self._temporary.path().join("plugin-source");
+        let metadata = source.join("plugin.toml");
+        let text = fs::read_to_string(&metadata).unwrap().replace(
+            "predownload_retain_changes = false",
+            "predownload_retain_changes = true",
+        );
+        fs::write(metadata, text).unwrap();
+        let file = fs::File::create(self.store.plugins_path().join("arch.tar")).unwrap();
+        let mut archive = tar::Builder::new(file);
+        archive.append_dir_all(".", source).unwrap();
+        archive.finish().unwrap();
+    }
+
     /// Install a small host-side account protocol to exercise orchestration independently of NSS.
     #[allow(dead_code)]
     pub fn account_plugin(&self, input: &Path, preflight: &str, result: &str) {
@@ -87,6 +104,10 @@ impl Fixture {
         let metadata = source.join("plugin.toml");
         let text = fs::read_to_string(&metadata).unwrap();
         let mut text = text
+            .replace(
+                "predownload_retain_changes = true",
+                "predownload_retain_changes = false",
+            )
             .replace("predownload_plans = true", "predownload_plans = false")
             .replace("package_maintenance = true", "package_maintenance = false")
             .replace(

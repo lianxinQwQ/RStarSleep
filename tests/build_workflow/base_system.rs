@@ -19,6 +19,10 @@ pub(super) fn replace_resource(fixture: &Fixture, name: &str, contents: &[u8]) {
         let text = String::from_utf8(contents.to_vec())
             .unwrap()
             .replace("predownload = true", "predownload = false")
+            .replace(
+                "predownload_retain_changes = true",
+                "predownload_retain_changes = false",
+            )
             .replace("predownload_plans = true", "predownload_plans = false")
             .replace("package_maintenance = true", "package_maintenance = false");
         let mut metadata: toml::Value = toml::from_str(&text).unwrap();

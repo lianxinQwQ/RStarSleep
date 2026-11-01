@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.17.2"
+version = "0.18.0"
 # Bump only when the independent download environment becomes incompatible.
 # 仅在独立下载环境不兼容时递增。
 predownload_version = "1"
@@ -16,6 +16,7 @@ protected_packages = ["base"]
 # bootstrap 前检查的宿主必需工具。
 predownload = true
 predownload_plans = true
+predownload_retain_changes = true
 package_maintenance = true
 post_maintenance = true
 mount_inheritance = true

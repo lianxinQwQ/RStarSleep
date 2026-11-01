@@ -38,6 +38,9 @@ _metadata_spec.loader.exec_module(package_metadata)
 _verification_spec = importlib.util.spec_from_file_location("rstarsleep_official_cache", Path(__file__).with_name("official_cache.py"))
 official_cache = importlib.util.module_from_spec(_verification_spec)
 _verification_spec.loader.exec_module(official_cache)
+_environment_spec = importlib.util.spec_from_file_location("rstarsleep_build_environment", Path(__file__).with_name("build_environment.py"))
+build_environment = importlib.util.module_from_spec(_environment_spec)
+_environment_spec.loader.exec_module(build_environment)
 
 
 class PreparationError(Exception):
@@ -389,8 +392,10 @@ class Preparer:
                           "rstarsleep-makepkg", str(checkout), "--config", str(self.makepkg_conf), *argv],
                          capture=capture, stream=not capture)
 
-    def pacman(self, argv, isolated=False, capture=False, allowed=(0,)):
-        return run(["pacman", "--config", self.official_conf if isolated else self.build_conf,
+    def pacman(self, argv, isolated=False, capture=False, allowed=(0,), official_only=False):
+        # Stable preparation diagnostics distinguish dependency conflicts from commit failures.
+        # 稳定的准备阶段诊断用于区分依赖冲突和提交阶段失败。
+        return run(["env", "LC_ALL=C", "pacman", "--config", self.official_conf if isolated or official_only else self.build_conf,
                     "--dbpath", self.db if isolated else self.actual_db,
                     "--cachedir", self.cache, "--logfile", "/dev/null", *argv], capture=capture, allowed=allowed)
 
@@ -449,8 +454,8 @@ class Preparer:
         if planning:
             return
         self.baseline = set(self.pacman(["-Qq"], capture=True).stdout.splitlines())
-        log(f"预下载工作环境已就绪，基线含 {len(self.baseline)} 个软件包",
-            f"Predownload environment ready; baseline contains {len(self.baseline)} packages")
+        log(f"预下载工作环境已就绪，当前安装 {len(self.baseline)} 个软件包",
+            f"Predownload environment ready; currently contains {len(self.baseline)} packages")
 
     def official(self, requirement):
         source, _ = target_parts(requirement)
@@ -787,8 +792,12 @@ class Preparer:
         if filenames is not None:
             self.fetch(filenames)
             if install:
-                log(f"安装官方构建依赖：{requirement}", f"Install official build dependency: {requirement}")
-                self.pacman(["-S", "--needed", "--noconfirm", "--", requirement])
+                environment = getattr(self, "build_environment", None)
+                if environment is not None and not environment.fallback:
+                    environment.ensure_official(requirement)
+                else:
+                    log(f"安装官方构建依赖：{requirement}", f"Install official build dependency: {requirement}")
+                    self.pacman(["-S", "--needed", "--noconfirm", "--", requirement])
         else:
             base = self.aur(requirement)
             self.build(base)
@@ -797,10 +806,29 @@ class Preparer:
             if len(providers) != 1:
                 raise PreparationError(f'AUR 二进制软件包无法唯一满足依赖：{requirement} / AUR binaries do not uniquely satisfy {requirement}')
             if install:
-                log(f"安装 AUR 构建依赖：{requirement}", f"Install AUR build dependency: {requirement}")
-                self.pacman(["-U", "--needed", "--noconfirm", "--", self.repo / providers[0]["filename"]])
+                environment = getattr(self, "build_environment", None)
+                if environment is not None and not environment.fallback:
+                    environment.install_aur(providers[0])
+                else:
+                    log(f"安装 AUR 构建依赖：{requirement}", f"Install AUR build dependency: {requirement}")
+                    self.pacman(["-U", "--needed", "--noconfirm", "--", self.repo / providers[0]["filename"]])
         if install and self.pacman(["-T", target_parts(requirement)[1]], capture=True, allowed=(0, 127)).returncode:
             raise PreparationError(f'未满足的构建依赖：{requirement} / unsatisfied build dependency: {requirement}')
+
+    @timed_operation("完整构建依赖解析及环境维护", "Resolve complete build dependencies and maintain environment")
+    def prepare_environment(self, targets):
+        self.build_environment = build_environment.BuildEnvironment(
+            self, targets, error=PreparationError, log=log, write_json=atomic_json)
+        self.build_environment.prepare()
+
+    def prepare_targets(self, targets):
+        environment = getattr(self, "build_environment", None)
+        if environment is not None:
+            environment.build_targets(targets)
+        else:
+            for target in targets:
+                self.ensure(target)
+                self.clean_dependencies()
 
     @staticmethod
     def cache_options():
@@ -1161,6 +1189,9 @@ class Preparer:
         provided = set(base["packages"]) | {spec(p)[0] for values in base["provides"].values() for p in values}
         dependencies = list(dict.fromkeys(base["build"] + [dependency for dependency in base["build_runtime"]
                                                             if spec(dependency)[0] not in provided]))
+        environment = getattr(self, "build_environment", None)
+        if environment is not None and name in environment.plan.dependencies:
+            dependencies = environment.plan.dependencies[name]
         log(f"准备 {name} 的构建依赖：{len(dependencies)} 项",
                 f"Prepare build dependencies for {name} (requirements: {len(dependencies)})")
         self.prefetch(dependencies)
@@ -1175,6 +1206,10 @@ class Preparer:
                 self.user(["gpg", "--batch", "--keyserver", os.environ.get("RSTAR_AURKEYSERVER", "hkps://keyserver.ubuntu.com"), "--recv-keys", fingerprint])
         # A new output directory avoids stale binaries and supports dynamic VCS versions.
         output = self.outputs / name
+        # A conflict fallback can retry an interrupted pkgbase in this invocation.
+        # 冲突回退可能在本次调用内重试被中断的 pkgbase。
+        if output.exists():
+            shutil.rmtree(output)
         output.mkdir()
         os.chown(output, self.builder.pw_uid, self.builder.pw_gid)
         self.makepkg_conf.write_text(self.makepkg_conf.read_text() + f"\nPKGDEST={shlex.quote(str(output))}\n")
@@ -1262,6 +1297,9 @@ class Preparer:
         self.refresh_repo()
 
     def clean_dependencies(self):
+        environment = getattr(self, "build_environment", None)
+        if environment is not None and not environment.fallback:
+            return
         added = sorted(set(self.pacman(["-Qq"], capture=True).stdout.splitlines()) - self.baseline)
         if added:
             log(f"清理临时 AUR 构建依赖：{len(added)} 个包", f"Remove temporary AUR build dependencies: {len(added)} packages")
@@ -1353,11 +1391,13 @@ def prepare_systems(preparer, systems):
             aur_targets.update(selected)
         except PreparationError as error:
             raise PreparationError(f'系统 {system_id} 操作失败 / Operation failed for system {system_id}: {error}') from error
-    preparer.fetch(official_files)
+    targets = []
     for target in sorted(aur_targets):
         forced = any(f"aur/{target}" in values for values in requests.values())
-        preparer.ensure(f"aur/{target}" if forced else target)
-        preparer.clean_dependencies()
+        targets.append(f"aur/{target}" if forced else target)
+    preparer.prepare_environment(targets)
+    preparer.fetch(official_files)
+    preparer.prepare_targets(targets)
     # Only AUR transactions need a final plan after compiling: generated binary
     # dependencies and VCS versions can differ from their source recipe metadata.
     for system_id, requested in requests.items():
@@ -1404,14 +1444,18 @@ def main():
     with preparation_workspace("rstarsleep-predownload-") as preparer:
         preparer.initialize()
         requested = list(dict.fromkeys([*requested, *preparer.keyring_targets]))
-        aur_targets = preparer.prefetch(requested)
+        official_files, aur_targets = set(), []
+        for requirement in requested:
+            files = preparer.official(requirement)
+            if files is None:
+                aur_targets.append(requirement)
+            else:
+                official_files.update(files)
+        preparer.prepare_environment(aur_targets)
+        preparer.fetch(official_files)
         if aur_targets:
             log(f"解析并构建 AUR 软件：{len(aur_targets)} 项需求", f"Resolve and build AUR packages (requirements: {len(aur_targets)})")
-        for package in aur_targets:
-            preparer.aur(package)
-        for package in aur_targets:
-            preparer.ensure(package)
-            preparer.clean_dependencies()
+        preparer.prepare_targets(aur_targets)
         preparer.finish(requested)
 
 

@@ -927,6 +927,23 @@ fn requires_explicit_cache_dependencies_and_validates_selectors() {
 }
 
 #[test]
+fn retaining_preparation_changes_requires_downloads() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("plugin.tar");
+    fs::write(&path, tar_bytes(None, None, 3)).unwrap();
+    let plugin = load(&path).unwrap();
+    assert!(!plugin.metadata.predownload_retain_changes);
+    let mut metadata = plugin.metadata.clone();
+    metadata.predownload_retain_changes = true;
+    assert!(
+        validate_metadata(&metadata, plugin.root())
+            .unwrap_err()
+            .to_string()
+            .contains("requires predownload")
+    );
+}
+
+#[test]
 fn package_collection_requires_explicit_capability_and_safe_resolver_lifecycle() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("plugin.tar");

@@ -438,6 +438,57 @@ fn one_batch_union_is_prepared_before_any_target_and_environment_is_reused() {
 }
 
 #[test]
+fn cumulative_preparation_is_saved_reused_and_failed_mutations_are_discarded() {
+    let fixture = Fixture::with_unified_packages();
+    fixture.retain_predownload_changes();
+    fixture.system("desktop", &["editor"]);
+    let backend = SimulatedBackend::default();
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    let env = fs::read_dir(fixture.store.predownload_path().join("arch/1/x86_64"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let root = env.join("completed/root");
+    assert!(root.join(".download-work-only").exists());
+    assert_eq!(
+        SimulatedBackend::inventory(&root).get("build-dependency"),
+        Some(&false)
+    );
+    let saved = record(&env.join("completed/environment.toml"));
+    assert!(
+        saved["software"]["installed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|package| { package["name"].as_str() == Some("build-dependency") })
+    );
+    fs::write(
+        root.join(".download-work-only"),
+        "previous successful state",
+    )
+    .unwrap();
+    backend.events.borrow_mut().clear();
+    backend.fail_operation.borrow_mut().replace("predownload");
+    assert!(build_with_backend(&fixture.store, Some("desktop"), &backend).is_err());
+    assert_eq!(
+        fs::read_to_string(root.join(".download-work-only")).unwrap(),
+        "previous successful state"
+    );
+    assert!(!env.join("work-root").exists());
+    assert!(!env.join("pending").exists());
+    assert!(!env.join("previous").exists());
+    build_with_backend(&fixture.store, Some("desktop"), &backend).unwrap();
+    assert_eq!(backend.count("predownload_install"), 0);
+    assert_eq!(backend.count("predownload_update"), 2);
+    assert_eq!(
+        SimulatedBackend::inventory(&root).get("build-dependency"),
+        Some(&false)
+    );
+}
+
+#[test]
 fn failed_preparation_blocks_targets_and_rolls_back_shared_data_but_keeps_environment() {
     let fixture = Fixture::with_predownload(true);
     fixture.system("desktop", &["old"]);

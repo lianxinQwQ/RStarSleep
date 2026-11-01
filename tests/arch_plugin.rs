@@ -229,10 +229,7 @@ fn resolver_tools_install_after_base_update_and_reused_environment_updates_once(
     fs::write(&fixture.trace, "").unwrap();
     let output = fixture.run("predownload/update", &[], "");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fixture.trace(),
-        "-Syu --needed --noconfirm -- git base-devel python sudo\n"
-    );
+    assert_eq!(fixture.trace(), "-Sy --noconfirm\n");
 }
 
 /// Query all package-owned files, preserve spaces, and propagate database failure.
@@ -779,6 +776,7 @@ fn arch_preparation_protocol_handles_dependencies_providers_and_corruption() {
         "arch_official_cache.py",
         "arch_package_metadata.py",
         "arch_aur_cache.py",
+        "arch_build_environment.py",
         "arch_keyrings.py",
     ] {
         let output = Command::new("python3")

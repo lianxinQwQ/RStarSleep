@@ -51,6 +51,7 @@ pub(crate) fn fixture(host: &[&str], system: &[&str]) -> LoadedPlugin {
             protected_packages: vec![],
             predownload: false,
             predownload_plans: false,
+            predownload_retain_changes: false,
             package_maintenance: false,
             post_maintenance: false,
             account_inheritance: None,

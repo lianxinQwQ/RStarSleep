@@ -248,6 +248,10 @@ pub struct Metadata {
     /// 预下载接收各系统目标，并返回各自的安装计划。
     #[serde(default)]
     pub predownload_plans: bool,
+    /// Retain successful preparation changes in the independent environment cache.
+    /// 将成功准备后的环境变化保存在独立环境缓存中。
+    #[serde(default)]
+    pub predownload_retain_changes: bool,
     /// One plugin operation reconciles a complete target package plan.
     /// 由单个插件操作协调完整目标软件计划。
     #[serde(default)]

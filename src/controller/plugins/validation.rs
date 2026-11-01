@@ -27,6 +27,11 @@ pub(super) fn validate_metadata(metadata: &Metadata, root: &Path) -> Result<()> 
     }
     identifier(&metadata.id)?;
     identifier(&metadata.cache_format)?;
+    if metadata.predownload_retain_changes && !metadata.predownload {
+        return Err(Error::Invalid(
+            "predownload_retain_changes 需要启用 predownload / predownload_retain_changes requires predownload".into(),
+        ));
+    }
     if let Some(version) = &metadata.predownload_version {
         identifier(version).map_err(|error| {
             Error::Invalid(format!(

@@ -236,7 +236,43 @@ pub(super) fn with_environment<T>(
             "Environment ready; create the resolver work root",
         );
         backend.snapshot(&completed.join("root"), &work, false)?;
-        action(&work, &context)
+        let value = action(&work, &context)?;
+        if plugin.metadata.predownload_retain_changes {
+            progress::message(
+                "predownload",
+                "保存成功准备后的累积环境",
+                "Save the accumulated environment after successful preparation",
+            );
+            let software = PackageSession {
+                backend,
+                plugin,
+                root: &work,
+                context: &context,
+            }
+            .capture(Vec::new())?;
+            backend.check_no_nested_subvolumes(&work)?;
+            disk::directory(&pending)?;
+            backend.snapshot(&work, &readonly, true)?;
+            disk::write(
+                &pending.join("environment.toml"),
+                &Record {
+                    schema_version: 2,
+                    plugin_id: plugin.metadata.id.clone(),
+                    predownload_version: version.into(),
+                    architecture: architecture.clone(),
+                    distribution_sha256: options_hash.clone(),
+                    software,
+                },
+            )?;
+            // Publish through the same recoverable rename sequence as maintenance.
+            // 使用与环境维护相同的可恢复重命名顺序发布。
+            fs::rename(&completed, &old).map_err(|e| disk::io(&old, e))?;
+            disk::sync(&directory)?;
+            fs::rename(&pending, &completed).map_err(|e| disk::io(&completed, e))?;
+            disk::sync(&directory)?;
+            remove_environment(backend, &old)?;
+        }
+        Ok(value)
     })();
     let cleanup = progress::run(
         "predownload",
