@@ -79,6 +79,9 @@ elif name == "pacman":
     inventory_path = root / "inventory.json"
     inventory = json.loads(inventory_path.read_text()) if inventory_path.exists() else None
     targets = args[args.index("--") + 1:] if "--" in args else []
+    if "-S" in args and not targets:
+        print("error: no targets specified (use -h for help)", file=sys.stderr)
+        sys.exit(1)
     if "-Qlq" in args or "-Qql" in args:
         print("/usr/share/pacman/keyrings/custom.gpg")
         print("/usr/share/pacman/keyrings/custom-trusted")
@@ -106,7 +109,7 @@ elif name == "pacman":
         inventory_path.write_text(json.dumps(inventory))
     elif "-Sy" in args and os.environ.get("KEYRING_TEST_SYNC_FAILURE") == "1":
         sys.exit(84)
-    elif any(value in args for value in ("-S", "-Sy", "-Su", "-Syu")) and os.environ.get("KEYRING_TEST_PACKAGE_FAILURE") == "1":
+    elif any(value in args for value in ("-S", "-Sy", "-Su", "-Syu")) and os.environ.get("KEYRING_TEST_PACKAGE_FAILURE") in ("1", *targets):
         sys.exit(85)
     elif any(value in args for value in ("-S", "-Sy", "-Su", "-Syu")) and inventory is not None:
         for target in targets:
@@ -117,6 +120,16 @@ elif name == "pacman":
             if package == "custom-keyring" and "keyring-dependency" not in inventory["installed"]:
                 inventory["installed"].append("keyring-dependency")
         inventory_path.write_text(json.dumps(inventory))
+elif name == "id":
+    if args == ["-u", "rstar-build"]:
+        print("1000")
+    elif args == ["-gn", "rstar-build"]:
+        print("rstar-build")
+    else:
+        sys.exit(86)
+elif name == "install":
+    if args != ["-d", "-m", "0755", "-o", "rstar-build", "-g", "rstar-build", "/var/lib/rstarsleep-build"]:
+        sys.exit(87)
 '''
 
 
@@ -132,9 +145,11 @@ class RepositoryKeyrings(unittest.TestCase):
             shutil.copyfile(LIB / name, self.plugin / "lib" / name)
         for name in ("resolve_packages.sh", "maintain_packages.sh", "base_install.sh", "query_packages.sh"):
             shutil.copyfile(LIB.parent / name, self.plugin / name)
+        (self.plugin / "predownload").mkdir()
+        shutil.copyfile(LIB.parent / "predownload/update.sh", self.plugin / "predownload/update.sh")
         self.binary = self.root / "bin"
         self.binary.mkdir()
-        for command in ("gpg", "pacman-key", "pacman-conf", "pacman"):
+        for command in ("gpg", "pacman-key", "pacman-conf", "pacman", "id", "install"):
             path = self.binary / command
             path.write_text(MOCK)
             path.chmod(0o755)
@@ -172,6 +187,11 @@ class RepositoryKeyrings(unittest.TestCase):
 
     def run_script(self, name, arguments=(), **variables):
         return subprocess.run(["bash", str(self.plugin / name), *arguments],
+                              env=self.environment(**variables), text=True, capture_output=True, timeout=20)
+
+    def run_pacman(self, arguments, **variables):
+        return subprocess.run(["bash", "-c", 'source "$1"; shift; pacman "$@"',
+                               "keyring-wrapper-test", str(self.plugin / "lib/common.sh"), *arguments],
                               env=self.environment(**variables), text=True, capture_output=True, timeout=20)
 
     def inventory(self, obsolete=False):
@@ -355,6 +375,70 @@ class RepositoryKeyrings(unittest.TestCase):
         self.assertLess(populate[0], upgrade[0])
         self.assertIn("base", upgrade[1])
         self.assertFalse(self.operations("pacman", "-Syu"))
+
+    def test_predownload_update_refreshes_once_with_new_and_cached_keyrings(self):
+        """Run the real update entrypoint without modifying host users or paths.
+        执行真实更新入口，不修改宿主用户或路径。
+        """
+        for cached in (False, True):
+            with self.subTest(cached=cached):
+                (self.root / "trace").write_text("")
+                result = self.run_script("predownload/update.sh")
+                self.assert_success(result)
+                self.assertEqual(len(self.operations("pacman", "-Sy")), 1)
+                self.assertFalse(self.operations("pacman", "-S"))
+                self.assertFalse(self.operations("pacman", "-Su"))
+                self.assertEqual(len(self.operations("install")), 1)
+                if cached:
+                    self.assertIn("Reusing prepared repository signing keyrings", result.stderr)
+
+    def test_predownload_update_refreshes_without_configured_keyrings(self):
+        self.config.write_text("# 无额外仓库密钥环 / No additional repository keyrings\n")
+        result = self.run_script("predownload/update.sh")
+        self.assert_success(result)
+        refresh, = self.operations("pacman", "-Sy")
+        self.assertEqual(refresh[1][-2:], ["-Sy", "--noconfirm"])
+        self.assertFalse(self.operations("pacman-key"))
+        self.assertEqual(len(self.operations("install")), 1)
+
+    def test_predownload_update_refresh_failure_stops_before_builder_setup(self):
+        self.assert_success(self.run_helper("reuse"))
+        (self.root / "trace").write_text("")
+        result = self.run_script("predownload/update.sh", KEYRING_TEST_SYNC_FAILURE="1")
+        self.assertEqual(result.returncode, 84, result.stderr)
+        self.assertFalse(self.operations("pacman", "-S"))
+        self.assertFalse(self.operations("id"))
+        self.assertFalse(self.operations("install"))
+
+    def test_wrapper_sync_keeps_explicit_targets(self):
+        result = self.run_pacman(["-Sy", "--noconfirm", "--", "base"])
+        self.assert_success(result)
+        transactions = [args for _, args in self.operations("pacman") if "base" in args]
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(transactions[0][-2:], ["--", "base"])
+
+    def test_wrapper_sync_propagates_target_installation_failure(self):
+        self.assert_success(self.run_helper("reuse"))
+        (self.root / "trace").write_text("")
+        result = self.run_pacman(["-Sy", "--noconfirm", "--", "base"], KEYRING_TEST_PACKAGE_FAILURE="base")
+        self.assertEqual(result.returncode, 85, result.stderr)
+        self.assertTrue(any("base" in args for _, args in self.operations("pacman")))
+
+    def test_wrapper_keeps_force_refresh_requests(self):
+        self.assert_success(self.run_helper("reuse"))
+        for operation in ("-Syy", "-Syyu"):
+            with self.subTest(operation=operation):
+                (self.root / "trace").write_text("")
+                result = self.run_pacman([operation, "--noconfirm"])
+                self.assert_success(result)
+                self.assertEqual(len(self.operations("pacman", operation)), 1)
+                self.assertFalse(self.operations("pacman", "-S"))
+
+    def test_wrapper_does_not_ignore_targetless_install_errors(self):
+        self.assert_success(self.run_helper("reuse"))
+        result = self.run_pacman(["-S", "--noconfirm"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("no targets specified", result.stderr)
 
     def test_base_install_keeps_keyring_explicit_and_cleans_unrelated_bootstrap_orphan(self):
         self.inventory(obsolete=True)

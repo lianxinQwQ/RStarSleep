@@ -250,7 +250,25 @@ run_configured_pacman() {
         -S|-Su|-Syu|-Sy|-Syyu|-Syy|-Sw)
             [[ ${args[0]} != *y* ]] || keyring_mode=refresh
             prepare_repository_keyrings "$configuration" "$keyring_mode" || return
-            if (( repository_keyrings_refreshed )); then args[0]=${args[0]//y/}; fi
+            if (( repository_keyrings_refreshed )); then
+                case ${args[0]} in
+                    -Sy)
+                        # A plain refresh is complete; removing y would run a targetless -S.
+                        # 纯刷新已完成；删除 y 会执行没有目标的 -S。
+                        local refresh_only=1 option
+                        for option in "${args[@]:1}"; do
+                            case $option in
+                                --noconfirm|--confirm) ;;
+                                *) refresh_only=0; break ;;
+                            esac
+                        done
+                        if (( refresh_only )); then return 0; fi
+                        ;;
+                    # Reuse an ordinary refresh for upgrades; keep forced refreshes intact.
+                    # 升级复用普通刷新；强制刷新参数保持完整。
+                    -Syu) args[0]=-Su ;;
+                esac
+            fi
             ;;
     esac
     command pacman --config "$configuration" "${cache_options[@]}" "${args[@]}"
