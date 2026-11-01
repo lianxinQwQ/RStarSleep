@@ -1,5 +1,20 @@
 # 日常更新性能
 
+## 继承例外的批量复制 / Batched inheritance exception copies
+
+`Preserve` 保留的普通文件和目录使用单次 `cp --archive --preserve=xattr --reflink=auto` 归档复制，不添加 `--one-file-system`。
+复制在可用时使用 reflink，无法克隆的文件直接完整复制；硬链接保留，同一个源 inode 的数据只复制一次。
+这省去了元数据骨架、逐项 NOCOW 属性匹配和元数据还原，也避免逐文件启动 `cp` 及对应的持久日志写入，适用于将软件包数据库从 `/var/` 继承中排除等大量小文件场景。
+
+Ordinary files and directories selected by `Preserve` use one `cp --archive --preserve=xattr --reflink=auto` archive copy without `--one-file-system`.
+The copy uses reflinks when available and fully copies files that cannot be cloned; hardlinks are preserved, so each source inode's data is copied only once.
+This removes the metadata skeleton, per-entry NOCOW matching and metadata restoration, as well as per-file `cp` processes and their durable log writes, including for package databases excluded from `/var/` inheritance.
+
+捕获和还原各执行一次归档复制，保留内容、硬链接、符号链接、权限、时间戳及 xattr；不保证保留 NOCOW 属性，目标使用所在目录的继承属性。
+这仅调整 `Preserve` 的复制策略，`NocowHandling` 控制的来源继承策略不变。
+Capture and restore each perform one archive copy, preserving content, hardlinks, symbolic links, permissions, timestamps and xattrs; NOCOW flags are not guaranteed to match, and destinations use their parent directory's inherited flags.
+This changes only the `Preserve` copy strategy; source inheritance policies controlled by `NocowHandling` are unchanged.
+
 ## 软件数据库变更监听
 
 插件可声明 `package_database_paths = ["var/lib/pacman/local"]`，各路径是目标根内的相对数据库目录。控制器在创建脚本工作根后、构建期继承之前用 inotify 递归监听，覆盖插件后处理和用户脚本；数据库未变化时复用软件阶段的包清单和安装原因，保持后处理接口可以修改软件的语义。

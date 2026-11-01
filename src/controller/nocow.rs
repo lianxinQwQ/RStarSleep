@@ -151,21 +151,23 @@ pub(super) fn restore_directory_times(source: &Path, target: &Path) -> Result<()
     Ok(())
 }
 
-fn cp(
-    source: &Path,
-    target: &Path,
-    attributes_only: bool,
-    reflink: &str,
-    directory: bool,
-) -> Result<()> {
+enum CopyMode {
+    Attributes,
+    Reflink,
+    Full,
+    Auto,
+}
+
+fn cp(source: &Path, target: &Path, mode: CopyMode, directory: bool) -> Result<()> {
     let mut command = Command::new("cp");
     command.args(["--archive", "--preserve=xattr"]);
-    if attributes_only {
-        command.arg("--attributes-only");
-    } else {
-        command.arg(format!("--reflink={reflink}"));
-    }
-    if directory {
+    command.arg(match mode {
+        CopyMode::Attributes => "--attributes-only",
+        CopyMode::Reflink => "--reflink=always",
+        CopyMode::Full => "--reflink=never",
+        CopyMode::Auto => "--reflink=auto",
+    });
+    if directory && !matches!(mode, CopyMode::Auto) {
         command.arg("--one-file-system");
     }
     let input = if directory {
@@ -177,7 +179,7 @@ fn cp(
     let output = super::logging::command(&mut command).map_err(|e| disk::io(target, e))?;
     if !output.status.success() {
         return Err(Error::Command {
-            command: format!("cp NOCOW inheritance {}", source.display()),
+            command: format!("cp 继承复制 / inheritance copy: {}", source.display()),
             status: output.status.to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).into(),
         });
@@ -185,24 +187,36 @@ fn cp(
     Ok(())
 }
 
-/// Build a metadata skeleton, copy each inode exactly once, then restore metadata.
-pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Result<()> {
-    copy_inner(source, target, policy, false)
-}
-
-/// Fully copy preserved build output without an implicit reflink fallback.
-/// 完整复制需保留的构建产物，不隐式回退 reflink 策略。
-pub(super) fn copy_full(source: &Path, target: &Path) -> Result<()> {
-    let info = fs::symlink_metadata(source).map_err(|e| disk::io(source, e))?;
-    if info.file_type().is_symlink() {
-        disk::checked_entry(source)?;
-        disk::checked(target)?;
-        return cp(source, target, false, "never", false);
+fn check_empty_target(target: &Path, directory: bool) -> Result<()> {
+    if disk::exists(target)?
+        && (!directory
+            || fs::read_dir(target)
+                .map_err(|e| disk::io(target, e))?
+                .next()
+                .is_some())
+    {
+        return Err(Error::Invalid(
+            "继承复制目标必须为空 / Inheritance copy target must be empty".into(),
+        ));
     }
-    copy_inner(source, target, NocowHandling::Copy, true)
+    Ok(())
 }
 
-fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -> Result<()> {
+/// Archive preserved output in one pass, using reflinks when available.
+/// 单次归档复制例外产物，在可用时使用 reflink。
+pub(super) fn copy_preserved(source: &Path, target: &Path) -> Result<()> {
+    disk::checked_entry(source)?;
+    disk::checked(target)?;
+    let directory = fs::symlink_metadata(source)
+        .map_err(|e| disk::io(source, e))?
+        .is_dir();
+    check_empty_target(target, directory)?;
+    cp(source, target, CopyMode::Auto, directory)
+}
+
+/// Build a metadata skeleton, copy each inode exactly once, then restore metadata.
+/// 创建元数据骨架，每个 inode 只复制一次，再还原元数据。
+pub(super) fn copy(source: &Path, target: &Path, policy: NocowHandling) -> Result<()> {
     if !matches!(policy, NocowHandling::Reflink | NocowHandling::Copy) {
         return Err(Error::Invalid(
             "NOCOW 复制策略不允许自动降级 / NOCOW copy policy does not permit automatic fallback"
@@ -214,19 +228,9 @@ fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -
     let directory = fs::symlink_metadata(source)
         .map_err(|e| disk::io(source, e))?
         .is_dir();
-    if disk::exists(target)?
-        && (!directory
-            || fs::read_dir(target)
-                .map_err(|e| disk::io(target, e))?
-                .next()
-                .is_some())
-    {
-        return Err(Error::Invalid(
-            "NOCOW 复制目标必须为空 / NOCOW copy target must be empty".into(),
-        ));
-    }
+    check_empty_target(target, directory)?;
     let entries = entries(source)?;
-    cp(source, target, true, "always", directory)?;
+    cp(source, target, CopyMode::Attributes, directory)?;
     // cp -a has already restored potentially unwritable source modes.
     for entry in &entries {
         if entry.info.is_dir() || entry.info.is_file() {
@@ -235,8 +239,8 @@ fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -
                 .map_err(|e| disk::io(&path, e))?;
         }
     }
-    // Btrfs refuses NOCOW cloning into a multiply-linked destination inode.
-    // Temporarily unlink secondary skeleton names; rebuild links after cloning.
+    // Keep one destination name per inode during NOCOW cloning, then rebuild hardlinks.
+    // NOCOW 克隆期间每个目标 inode 只保留一个名称，随后重建硬链接。
     let mut representatives: BTreeMap<(u64, u64), PathBuf> = BTreeMap::new();
     let mut secondary = Vec::new();
     for entry in &entries {
@@ -263,18 +267,12 @@ fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -
             continue;
         }
         set_nocow(&path, entry.nocow)?;
-        let mode = if full || (policy == NocowHandling::Copy && entry.nocow) {
-            "never"
+        let mode = if policy == NocowHandling::Copy && entry.nocow {
+            CopyMode::Full
         } else {
-            "always"
+            CopyMode::Reflink
         };
-        cp(
-            &entry_path(source, &entry.relative),
-            &path,
-            false,
-            mode,
-            false,
-        )?;
+        cp(&entry_path(source, &entry.relative), &path, mode, false)?;
         let actual = fs::symlink_metadata(&path).map_err(|e| disk::io(&path, e))?;
         groups.insert(key, (actual.dev(), actual.ino()));
     }
@@ -298,7 +296,7 @@ fn copy_inner(source: &Path, target: &Path, policy: NocowHandling, full: bool) -
                 .map_err(|e| disk::io(&path, e))?;
         }
     }
-    cp(source, target, true, "always", directory)?;
+    cp(source, target, CopyMode::Attributes, directory)?;
     for entry in &entries {
         if !entry.info.is_file() {
             continue;
@@ -353,6 +351,142 @@ pub(super) mod tests {
         fs::write(source.join(".hidden"), b"hidden").unwrap();
         symlink("journal/system.journal", source.join("link")).unwrap();
         source
+    }
+
+    /// Database-sized trees must use one archive command and retain their hardlinks.
+    /// 数据库规模的目录树必须只执行一条归档命令，并保留硬链接。
+    #[test]
+    fn preserved_archive_batches_database_files_and_preserves_hardlinks() {
+        let tree = tempfile::tempdir().unwrap();
+        let source = tree.path().join("source");
+        for package in 0..64 {
+            let directory = source.join(format!("package-{package}"));
+            fs::create_dir_all(&directory).unwrap();
+            for name in ["desc", "files", "mtree"] {
+                fs::write(directory.join(name), format!("{package}: {name}")).unwrap();
+            }
+        }
+        fs::hard_link(source.join("package-0/desc"), source.join("linked-desc")).unwrap();
+        symlink("package-0/desc", source.join("link")).unwrap();
+        fs::create_dir(source.join("empty")).unwrap();
+        let expected =
+            super::super::inheritance_inputs::migration_hash(&SystemBackend, &source).unwrap();
+        let path = tree.path().join("inheritance.log");
+        let log = super::super::logging::BuildLog::append(&path).unwrap();
+        let _scope = super::super::logging::enter([log.clone()]);
+        let target = tree.path().join("target");
+        let started = std::time::Instant::now();
+        copy_preserved(&source, &target).unwrap();
+        log.check().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let commands = text.matches("命令 / Command: ").count();
+        eprintln!(
+            "例外归档复制 / Preserve archive copy: {commands} commands, {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            super::super::inheritance_inputs::migration_hash(&SystemBackend, &target).unwrap(),
+            expected
+        );
+        assert_eq!(commands, 1);
+        assert!(text.contains("--reflink=auto"));
+        assert!(!text.contains("--one-file-system"));
+    }
+
+    /// Archive mixed CoW/NOCOW data and read-only metadata using the destination's flags.
+    /// 使用目标的属性归档混合 CoW/NOCOW 数据及只读元数据。
+    #[test]
+    fn preserved_archive_copies_mixed_flags_and_readonly_metadata() {
+        let Some(tree) = btrfs_fixture() else {
+            return;
+        };
+        set_nocow(tree.path(), false).unwrap();
+        let source = source_tree(tree.path());
+        let file = source.join("journal/system.journal");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::set_permissions(source.join("journal"), fs::Permissions::from_mode(0o555)).unwrap();
+        let expected =
+            super::super::inheritance_inputs::migration_hash(&SystemBackend, &source).unwrap();
+        for existing in [false, true] {
+            let target = tree.path().join(format!("archive-{existing}"));
+            if existing {
+                fs::create_dir(&target).unwrap();
+                set_nocow(&target, true).unwrap();
+            }
+            copy_preserved(&source, &target).unwrap();
+            for relative in [
+                "",
+                ".hidden",
+                "journal",
+                "journal/system.journal",
+                "journal/ordinary",
+                "journal-link",
+                "link",
+            ] {
+                let original = source.join(relative);
+                let copied = target.join(relative);
+                let before = fs::symlink_metadata(&original).unwrap();
+                let after = fs::symlink_metadata(&copied).unwrap();
+                assert_eq!(before.mode(), after.mode(), "{existing}: {relative}");
+                assert_eq!(before.uid(), after.uid(), "{existing}: {relative}");
+                assert_eq!(before.gid(), after.gid(), "{existing}: {relative}");
+                assert_eq!(before.mtime(), after.mtime(), "{existing}: {relative}");
+                assert_eq!(
+                    before.mtime_nsec(),
+                    after.mtime_nsec(),
+                    "{existing}: {relative}"
+                );
+                if before.is_file() {
+                    assert_eq!(fs::read(&original).unwrap(), fs::read(&copied).unwrap());
+                    assert_ne!(before.ino(), after.ino());
+                }
+                if before.is_file() || before.is_dir() {
+                    assert_eq!(is_nocow(&copied).unwrap(), existing);
+                }
+            }
+            assert_eq!(
+                fs::metadata(target.join("journal/system.journal"))
+                    .unwrap()
+                    .ino(),
+                fs::metadata(target.join("journal-link")).unwrap().ino()
+            );
+            assert_eq!(
+                fs::read_link(target.join("link")).unwrap(),
+                Path::new("journal/system.journal")
+            );
+            fs::set_permissions(target.join("journal"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(
+            super::super::inheritance_inputs::migration_hash(&SystemBackend, &source).unwrap(),
+            expected
+        );
+        fs::set_permissions(source.join("journal"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Reject occupied destinations before any archive command can merge or replace entries.
+    /// 在归档命令合并或替换条目前拒绝已占用的目标。
+    #[test]
+    fn preserved_archive_rejects_occupied_targets_before_copying() {
+        let tree = tempfile::tempdir().unwrap();
+        let source = tree.path().join("source");
+        let target = tree.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(source.join("built"), "built").unwrap();
+        fs::write(target.join("existing"), "existing").unwrap();
+        let path = tree.path().join("inheritance.log");
+        let log = super::super::logging::BuildLog::append(&path).unwrap();
+        let _scope = super::super::logging::enter([log.clone()]);
+        assert!(copy_preserved(&source, &target).is_err());
+        assert!(copy_preserved(&source.join("built"), &target.join("existing")).is_err());
+        assert_eq!(fs::read(target.join("existing")).unwrap(), b"existing");
+        assert!(!target.join("built").exists());
+        log.check().unwrap();
+        assert!(
+            !fs::read_to_string(path)
+                .unwrap()
+                .contains("命令 / Command: ")
+        );
     }
 
     #[test]

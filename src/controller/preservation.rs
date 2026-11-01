@@ -782,7 +782,7 @@ mod tests {
     /// 在可写 Btrfs 目录显式执行，不分配真实子卷。
     #[test]
     #[ignore = "需要可写 Btrfs 工作区 / Requires a writable Btrfs workspace"]
-    fn native_nocow_full_copy_preserves_data_and_attributes() {
+    fn native_preserve_archive_copies_nocow_data_using_target_flags() {
         let tree = tempfile::Builder::new()
             .prefix(".preserve-test-")
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
@@ -791,13 +791,20 @@ mod tests {
         fs::write(&source, "").unwrap();
         super::super::nocow::set_nocow(&source, true).unwrap();
         fs::write(&source, "nocow-built").unwrap();
-        let target = tree.path().join("target");
-        Files.copy_preserved(&source, &target).unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "nocow-built");
-        assert!(super::super::nocow::is_nocow(&target).unwrap());
-        assert_ne!(
-            fs::metadata(&source).unwrap().ino(),
-            fs::metadata(&target).unwrap().ino()
-        );
+        for nocow in [false, true] {
+            let parent = tree.path().join(format!("parent-{nocow}"));
+            fs::create_dir(&parent).unwrap();
+            super::super::nocow::set_nocow(&parent, nocow).unwrap();
+            let target = parent.join("target");
+            Files.copy_preserved(&source, &target).unwrap();
+            assert_eq!(fs::read_to_string(&target).unwrap(), "nocow-built");
+            assert_eq!(super::super::nocow::is_nocow(&target).unwrap(), nocow);
+            assert_ne!(
+                fs::metadata(&source).unwrap().ino(),
+                fs::metadata(&target).unwrap().ino()
+            );
+            fs::write(&target, "changed").unwrap();
+            assert_eq!(fs::read_to_string(&source).unwrap(), "nocow-built");
+        }
     }
 }

@@ -346,10 +346,10 @@ pub trait BuildBackend {
         ))
     }
 
-    /// Fully archive preserved output, including NOCOW attributes, without policy fallback.
-    /// 完整归档例外产物，包括 NOCOW 属性，不进行策略回退。
+    /// Archive preserved output in one pass, using reflinks when available without matching NOCOW.
+    /// 单次归档例外产物，在可用时使用 reflink，不匹配 NOCOW 属性。
     fn copy_preserved(&self, source: &Path, target: &Path) -> Result<()> {
-        super::nocow::copy_full(source, target)
+        super::nocow::copy_preserved(source, target)
     }
 
     /// Execute exactly the selected policy; backends must opt into NOCOW adaptation.
