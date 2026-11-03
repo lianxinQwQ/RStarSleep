@@ -131,12 +131,14 @@ pub fn command_arguments(
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned(),
     )]);
     for (key, value) in environment {
-        if matches!(key.as_str(), "LANG" | "LANGUAGE" | "TERM" | "COLORTERM")
-            || (key.starts_with("LC_") && key.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
-        {
+        if matches!(key.as_str(), "TERM" | "COLORTERM") {
             values.insert(key.clone(), value.clone());
         }
     }
+    values.extend(super::environment::language(
+        &runtime.config.environment,
+        environment,
+    )?);
     if runtime.config.session_mode != "off" {
         let host = PathBuf::from(format!("/run/user/{uid}"));
         values.insert(

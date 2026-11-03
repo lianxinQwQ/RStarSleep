@@ -127,6 +127,7 @@ fn environment() -> BTreeMap<String, String> {
                     | "PULSE_SERVER"
                     | "PIPEWIRE_REMOTE"
                     | "LANG"
+                    | "LANGUAGE"
                     | "TERM"
                     | "COLORTERM"
                     | "GTK_IM_MODULE"

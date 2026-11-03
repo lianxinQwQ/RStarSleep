@@ -27,6 +27,7 @@ pub use build::{
     read_environment_at, read_plugin_parameters_at,
 };
 pub use environment::Environment;
+pub(crate) use environment::resolve_with as resolve_environment_with;
 pub use filesystem::with_current_system_top_level;
 pub use inheritance::{InheritanceConfig, NocowHandling, inheritance_name};
 pub(crate) use inheritance::{validate_inheritance_type, validate_preserve_paths};

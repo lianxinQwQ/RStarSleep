@@ -339,6 +339,7 @@ fn prepare_config(
     filesystem_root: Option<&Path>,
     config: SubsystemConfig,
 ) -> Result<PreparedRuntime> {
+    let timezone = super::environment::timezone(&config.environment)?;
     let layout = store.system_layout(id)?;
     let artifact = controller::read_current_build(store, id)?;
     let runtime = layout.root.join("runtime");
@@ -375,6 +376,14 @@ fn prepare_config(
     backend.check_subvolume(&root, false)?;
     fs::create_dir_all(&runtime)?;
     let mut boot_args = mount_arguments(store, id, &root, &config, &mounts)?;
+    let localtime = runtime.join("localtime");
+    super::atomic_write(&localtime, &timezone, 0o644)?;
+    boot_args.push("--timezone=off".into());
+    boot_args.push(bind_argument(&RuntimeMount {
+        source: localtime,
+        target: "/etc/localtime".into(),
+        read_only: true,
+    })?);
     boot_args.extend(super::network::boot_arguments(
         store,
         id,

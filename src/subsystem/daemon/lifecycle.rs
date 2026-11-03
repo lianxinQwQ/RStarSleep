@@ -428,6 +428,7 @@ impl Manager {
         self.start(id, &mut state, StartOrigin::Demand)?;
         let mut runtime = state.runtime.as_ref().unwrap().clone();
         runtime.config.allowed_uids = config.allowed_uids;
+        runtime.config.environment = config.environment;
         state.leases += 1;
         let generation = state.generation;
         drop(state);

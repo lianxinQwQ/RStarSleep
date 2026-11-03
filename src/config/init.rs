@@ -66,7 +66,16 @@ schema_version = 1\n\
 # allowed_uids = [1000]\n\
 # autostart = false\n\
 # idle_timeout_seconds = 30\n\
-# session_mode = \"isolated\"\n";
+# session_mode = \"isolated\"\n\
+\n\
+# Locale forwarding is opt-in; timezone defaults to UTC.\n\
+# 语言转发须显式启用；时区默认为 UTC。\n\
+[Environment]\n\
+# LANG = \"$LANG\"\n\
+# LC_MESSAGES = \"zh_CN.UTF-8\"\n\
+# TZ = \"UTC\"\n\
+# TZ = \"$TZ\" inherits the host system timezone from /etc/localtime.\n\
+# TZ = \"$TZ\" 从 /etc/localtime 继承宿主系统时区。\n";
 
 /// Create or reuse `@RStarSleep` within the mounted Btrfs top-level tree (ID 5).
 /// 在已挂载的 Btrfs 顶层树（标识为 5）中创建或复用 `@RStarSleep`。

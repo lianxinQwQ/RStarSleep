@@ -7,6 +7,7 @@ mod config;
 pub mod console;
 pub mod daemon;
 pub mod desktop;
+mod environment;
 mod execution;
 pub mod exports;
 mod filesystem;

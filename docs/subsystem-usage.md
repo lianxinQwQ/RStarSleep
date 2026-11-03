@@ -73,6 +73,61 @@ sudo systemctl enable --now rstarsleep-subsystem-<管理根摘要>.service
 开发时可使用 `sudo RStarSleep daemon run --root /rstarsleep` 在前台运行。
 daemon 诊断进入服务 journal；机器原始控制台、管理任务日志和继承错误保留在管理根。
 
+### 语言环境与时区 / Locale and timezone
+
+在 `systems/apps/config/subsystem/config.toml` 中使用 `[Environment]` 字符串表。
+语言环境默认不转发，子系统保留自身的语言设置；时区默认使用 UTC。
+终端变量 `TERM`、`COLORTERM` 继续自动转发，不受语言配置影响。
+Use an `[Environment]` string table in the subsystem configuration. Locale variables
+are not forwarded by default; the guest keeps its own locale settings. The default
+timezone is UTC. `TERM` and `COLORTERM` are still forwarded automatically.
+
+```toml
+[Environment]
+# Inherit the local application caller's language. / 继承本地应用调用者的语言。
+LANG = "$LANG"
+LANGUAGE = "$LANGUAGE"
+# Assign a locale independently of the caller. / 指定语言值，不依赖调用者。
+LC_MESSAGES = "zh_CN.UTF-8"
+# Select one timezone setting. / 选择一种时区设置。
+TZ = "Asia/Shanghai"
+# TZ = "UTC"
+# TZ = "$TZ"
+```
+
+支持 `LANG`、`LANGUAGE`、`LC_*` 和 `TZ`，不接受任意程序环境变量。
+语言值沿用 build `[Environment]` 的赋值语法：普通字符串为字面值，`$LANG`、
+`$LANGUAGE`、`$LC_*` 从调用者提供的对应语言变量继承，来源未提供时不转发该变量，
+`$$` 开头表示字面量 `$`；空字符串仍是显式空值。不执行 shell 展开。
+只有配置过的语言变量会传给通过 RStarSleep 启动的应用和 shell，不修改客体的全局语言
+配置；语言数据须由客体自身安装。远程管理 root shell 不提供本地调用者语言变量，
+但仍应用指定的字面值。语言配置变更对后续应用和 shell 请求生效。
+Only `LANG`, `LANGUAGE`, `LC_*` and `TZ` are supported. Locale assignments follow
+the build syntax: literal strings, `$LANG`/`$LANGUAGE`/`$LC_*` references to caller
+locale variables, and `$$` for a literal dollar sign. Missing references are not
+forwarded; empty strings remain explicit empty values. No shell expansion occurs.
+Configured locales apply to applications and shells launched through RStarSleep,
+and require the guest's locale data; they do not change guest-wide locale settings.
+Remote administrative root shells supply no caller locale variables, but receive
+configured literals. Locale policy edits apply to subsequent application and shell requests.
+
+`TZ` 的字面值是时区数据库名称，指定时区从宿主 `/usr/share/zoneinfo/` 读取；
+`TZ = "$TZ"` 特指从宿主 `/etc/localtime` 继承**系统时区**，不读取调用者或 daemon 的
+`TZ` 环境变量。这是相对于 build 变量继承语法的时区专用语义。默认 UTC 使用内置数据，
+无需宿主或客体安装时区数据库。指定来源不存在或格式无效时在准备阶段报错，不改用其他时区。
+启动时冻结时区数据并只读挂载到客体 `/etc/localtime`，关闭 nspawn 的隐式时区同步，
+因此也作用于客体系统服务；不能再通过 `[[mounts]]` 单独挂载 `/etc/localtime`。
+时区配置或宿主时区变更在下一次冷启动或 `restart` 生效。
+`TZ` literals name entries in the host's `/usr/share/zoneinfo/` database.
+`TZ = "$TZ"` specifically inherits the **system timezone** from host `/etc/localtime`,
+rather than a caller or daemon environment variable; this is a timezone-specific
+extension of the build assignment syntax. Built-in UTC requires no timezone package.
+Missing or malformed sources fail during preparation without selecting another zone.
+Frozen timezone data is mounted read-only at guest `/etc/localtime`, with nspawn's
+implicit synchronization disabled, so guest system services also use it. A separate
+`[[mounts]]` entry for `/etc/localtime` is rejected. Timezone
+changes apply at the next cold start or `restart`.
+
 ### 固定 SOCKS5/HTTP 代理出口 / Fixed SOCKS5/HTTP proxy egress
 
 在 `systems/apps/config/subsystem/config.toml` 中加入以下配置。子系统使用独立网络，

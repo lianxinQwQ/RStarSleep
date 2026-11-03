@@ -33,7 +33,7 @@ fn valid_name(name: &str) -> bool {
 /// # Arguments
 /// - `assignments`: Merged assignment lists. 合并后的赋值列表。
 /// - `lookup`: Source-variable reader. 来源变量读取函数。
-fn resolve_with(
+pub(crate) fn resolve_with(
     assignments: &BTreeMap<String, Vec<String>>,
     mut lookup: impl FnMut(&str) -> Option<OsString>,
 ) -> Result<Environment> {

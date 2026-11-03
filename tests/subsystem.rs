@@ -41,6 +41,56 @@ fn enable(fixture: &Fixture) {
     .unwrap();
 }
 
+/// Publish UTC system timezone data and disable nspawn's implicit host synchronization.
+/// 发布 UTC 系统时区数据，并关闭 nspawn 的隐式宿主同步。
+#[test]
+fn default_timezone_is_bound_read_only() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let runtime =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    let layout = f.store.system_layout("desktop").unwrap();
+    let localtime = layout.root.join("runtime/localtime");
+    let data = fs::read(&localtime).unwrap();
+    assert_eq!(&data[..4], b"TZif");
+    assert!(runtime.boot_args.iter().any(|a| a == "--timezone=off"));
+    let expected = format!("--bind-ro={}:/etc/localtime", localtime.display());
+    assert!(
+        runtime
+            .boot_args
+            .iter()
+            .any(|a| a.to_str() == Some(&expected))
+    );
+    assert_eq!(&data[44..48], &0_i32.to_be_bytes());
+    assert!(runtime.config.environment.is_empty());
+}
+
+/// A missing named timezone fails before storage inspection or runtime publication.
+/// 指定时区缺失时，先于存储检查和运行发布失败。
+#[test]
+fn timezone_source_is_checked_before_preparation() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    let layout = f.store.system_layout("desktop").unwrap();
+    fs::write(
+        layout.config.join("subsystem/config.toml"),
+        "schema_version=1\n[Environment]\nTZ='RStarSleepMissing/Timezone'\n",
+    )
+    .unwrap();
+    let error =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap_err();
+    assert!(error.to_string().contains("RStarSleepMissing/Timezone"));
+    assert!(b.filesystem_inspections.borrow().is_empty());
+    assert!(b.events.borrow().is_empty());
+    assert!(!layout.root.join("runtime/current.toml").exists());
+    assert!(!layout.root.join("runtime/localtime").exists());
+}
+
 /// Recovery preserves the boot policy and rejects a missing snapshot instead of using host networking.
 /// 恢复保留启动策略；缺少快照时报错，不使用宿主网络。
 #[test]

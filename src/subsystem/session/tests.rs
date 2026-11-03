@@ -197,6 +197,46 @@ fn headless_environment_is_filtered() {
     assert!(validate_files(&runtime, &["https://example.com/file".into()]).is_ok());
 }
 
+/// Locale forwarding is opt-in while terminal variables remain automatic.
+/// 语言转发必须显式启用，终端变量仍自动传递。
+#[test]
+fn locale_policy_applies_to_application_commands() {
+    let mut runtime = PreparedRuntime {
+        system_id: "test".into(),
+        version: "v1".into(),
+        root: "/guest".into(),
+        machine: "test-locale-policy".into(),
+        config: super::super::SubsystemConfig::default(),
+        boot_args: Vec::new(),
+    };
+    runtime.config.session_mode = "off".into();
+    let caller = BTreeMap::from([
+        ("LANG".into(), "zh_CN.UTF-8".into()),
+        ("LC_ALL".into(), "C".into()),
+        ("TERM".into(), "xterm-256color".into()),
+        ("COLORTERM".into(), "truecolor".into()),
+    ]);
+    let args = command_arguments(&runtime, 0, &caller, &[]).unwrap();
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.starts_with("--setenv=LANG=") || a.starts_with("--setenv=LC_"))
+    );
+    assert!(args.contains(&"--setenv=TERM=xterm-256color".into()));
+    assert!(args.contains(&"--setenv=COLORTERM=truecolor".into()));
+    runtime.config.environment = BTreeMap::from([
+        ("LANG".into(), "$LANG".into()),
+        ("LC_MESSAGES".into(), "en_US.UTF-8".into()),
+    ]);
+    let args = command_arguments(&runtime, 0, &caller, &[]).unwrap();
+    assert!(args.contains(&"--setenv=LANG=zh_CN.UTF-8".into()));
+    assert!(args.contains(&"--setenv=LC_MESSAGES=en_US.UTF-8".into()));
+    assert!(!args.contains(&"--setenv=LC_ALL=C".into()));
+    let args = command_arguments(&runtime, 0, &BTreeMap::new(), &[]).unwrap();
+    assert!(!args.iter().any(|a| a.starts_with("--setenv=LANG=")));
+    assert!(args.contains(&"--setenv=LC_MESSAGES=en_US.UTF-8".into()));
+}
+
 /// A pinned Unix socket address still reaches its inode after its name is replaced.
 /// 固定 Unix socket 地址在名称替换后仍连接原 inode。
 /// # Arguments

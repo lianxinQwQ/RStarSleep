@@ -4,7 +4,7 @@ use super::{Error, Result, checked};
 use crate::config::ConfigStore;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -45,6 +45,8 @@ pub struct SubsystemConfig {
     pub exports: ExportConfig,
     pub tmp_size_bytes: u64,
     pub gpu: bool,
+    #[serde(rename = "Environment")]
+    pub environment: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<super::network::NetworkConfig>,
 }
@@ -66,6 +68,7 @@ impl Default for SubsystemConfig {
             exports: ExportConfig::default(),
             tmp_size_bytes: 0,
             gpu: false,
+            environment: BTreeMap::new(),
             network: None,
         }
     }
@@ -140,6 +143,7 @@ impl SubsystemConfig {
     /// # Errors
     /// Returns invalid or conflicting settings. 返回无效或冲突设置。
     pub fn validate(&self) -> Result<()> {
+        super::environment::validate(&self.environment)?;
         if let Some(network) = &self.network {
             network.validate()?;
         }
@@ -167,6 +171,11 @@ impl SubsystemConfig {
         for (i, mount) in self.mounts.iter().enumerate() {
             absolute(&mount.source, false)?;
             absolute(&mount.target, false)?;
+            if mount.target.starts_with("/etc/localtime") {
+                return Err(Error::Invalid(
+                    "时区挂载由 [Environment] TZ 管理 / timezone mount is managed by [Environment] TZ".into(),
+                ));
+            }
             for reserved in ["/run", "/dev", "/proc", "/sys", "/rstarsleep"] {
                 if mount.target.starts_with(reserved)
                     || Path::new(reserved).starts_with(&mount.target)
@@ -247,5 +256,37 @@ mod tests {
         c = old;
         c.allowed_uids = vec![1000];
         assert!(c.allows(1000));
+    }
+
+    /// Parse the case-sensitive Environment table and reject unsupported policies early.
+    /// 解析大小写敏感的 Environment 表，并提前拒绝不支持的策略。
+    #[test]
+    fn validates_environment_table() {
+        let config: SubsystemConfig = toml::from_str(
+            "schema_version=1\n[Environment]\nLANG='$LANG'\nLC_MESSAGES='zh_CN.UTF-8'\nTZ='Asia/Shanghai'\n",
+        ).unwrap();
+        config.validate().unwrap();
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: SubsystemConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(config.environment, decoded.environment);
+        for text in [
+            "[environment]\nLANG='C'\n",
+            "[Environment]\nLANG=true\n",
+            "[Environment]\nLANG='C'\nLANG='$LANG'\n",
+        ] {
+            assert!(toml::from_str::<SubsystemConfig>(text).is_err());
+        }
+        for text in [
+            "[Environment]\nPATH='/host/bin'\n",
+            "[Environment]\nTZ='../UTC'\n",
+            "[[mounts]]\nsource='/tmp/file'\ntarget='/etc/localtime'\n",
+        ] {
+            assert!(
+                toml::from_str::<SubsystemConfig>(text)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
     }
 }
