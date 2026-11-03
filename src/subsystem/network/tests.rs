@@ -20,6 +20,14 @@ impl Drop for Process {
     }
 }
 
+/// Allow compatibility runs against a separately downloaded Xray without replacing host tools.
+/// 允许使用单独下载的 Xray 进行兼容性验证，无需替换宿主工具。
+fn xray_executable() -> PathBuf {
+    std::env::var_os("RSTAR_TEST_XRAY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/bin/xray"))
+}
+
 fn command(program: &str, args: &[&str]) -> Output {
     let output = Command::new(program).args(args).output().unwrap();
     assert!(
@@ -206,6 +214,88 @@ fn routing_table_identifiers() {
     assert_eq!(table_id(&serde_json::json!(u64::MAX)), None);
 }
 
+/// Validate the reported SOCKS policy with the real Xray parser, without network setup.
+/// 使用真实 Xray 解析器校验所报告的 SOCKS 策略，不创建网络。
+#[test]
+fn reported_socks_policy_passes_xray_validation() {
+    let xray = xray_executable();
+    if !xray.exists() {
+        assert!(
+            std::env::var_os("RSTAR_TEST_XRAY").is_none(),
+            "指定的 Xray 不存在 / selected Xray does not exist"
+        );
+        eprintln!("跳过 Xray 配置测试，工具缺失 / skipping Xray configuration test, missing tool");
+        return;
+    }
+    let config: crate::subsystem::SubsystemConfig = toml::from_str(
+        r#"
+[network]
+mode = "proxy"
+[network.proxy]
+protocol = "socks5"
+address = "127.0.0.1"
+port = 10808
+[network.dns]
+address = "8.8.8.8"
+port = 53
+"#,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = ConfigStore::new(directory.path()).unwrap();
+    let config = config.network.unwrap();
+    let plan = Plan::configured(&store, "abc", &config).unwrap();
+    let path = directory.path().join("xray.json");
+    let rendered = plan.xray(&config);
+    let dns = &rendered["outbounds"][1];
+    assert!(dns.get("proxySettings").is_none());
+    assert_eq!(dns["streamSettings"]["sockopt"]["dialerProxy"], "fixed");
+    fs::write(&path, serde_json::to_vec(&rendered).unwrap()).unwrap();
+    check_xray(&xray, &path, &config).unwrap();
+    eprintln!("所报告配置通过 Xray 预检 / reported configuration passed Xray preflight");
+}
+
+/// Preserve actionable parser errors and exit status while suppressing credential-bearing output.
+/// 保留可操作的解析错误及退出状态，同时抑制含凭据输出。
+#[test]
+fn xray_diagnostics_preserve_failure_and_protect_credentials() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut config: NetworkConfig = toml::from_str(
+        r#"
+mode = "proxy"
+[proxy]
+protocol = "socks5"
+address = "127.0.0.1"
+port = 10808
+[dns]
+address = "8.8.8.8"
+port = 53
+"#,
+    )
+    .unwrap();
+    let output = Output {
+        status: std::process::ExitStatus::from_raw(23 << 8),
+        stdout: b"Failed to build config".to_vec(),
+        stderr: b"unsupported field".to_vec(),
+    };
+    let error = xray_check_error(Path::new("/usr/bin/xray"), &output, &config).to_string();
+    assert!(error.contains("Xray configuration preflight failed"));
+    assert!(error.contains("23"));
+    assert!(error.contains("Failed to build config"));
+    assert!(error.contains("unsupported field"));
+    config.proxy.username = Some("private-user".into());
+    config.proxy.password = Some("private-password".into());
+    let output = Output {
+        stderr: b"private-user private-password".to_vec(),
+        ..output
+    };
+    let error = xray_check_error(Path::new("/usr/bin/xray"), &output, &config).to_string();
+    assert!(error.contains("23"));
+    assert!(!error.contains("private-user"));
+    assert!(!error.contains("private-password"));
+}
+
 /// The parent never touches host networking; every mutation occurs after unshare.
 /// 父进程不修改宿主网络；所有变更均在 unshare 后执行。
 #[test]
@@ -334,7 +424,7 @@ fn isolated_fixed_proxy_path() {
             tools: Tools {
                 ip: "/usr/bin/ip".into(),
                 nft: "/usr/bin/nft".into(),
-                xray: "/usr/bin/xray".into(),
+                xray: xray_executable(),
                 sysctl: "/usr/bin/sysctl".into(),
             },
             namespace_inode: None,

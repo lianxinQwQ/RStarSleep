@@ -125,6 +125,40 @@ fn checked(program: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Identify parser failures; never expose arbitrary parser output when credentials are present.
+/// 标明解析器失败；含凭据时绝不披露任意解析器输出。
+fn check_xray(program: &Path, path: &Path, config: &NetworkConfig) -> Result<()> {
+    let output = run(program, &["run", "-test", "-c", path.to_str().unwrap()])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(xray_check_error(program, &output, config))
+}
+
+fn xray_check_error(program: &Path, output: &Output, config: &NetworkConfig) -> Error {
+    let detail = if config.proxy.username.is_some() || config.proxy.password.is_some() {
+        "外部诊断已隐藏以保护代理凭据 / external diagnostics hidden to protect proxy credentials"
+            .into()
+    } else {
+        [output.stdout.as_slice(), output.stderr.as_slice()]
+            .into_iter()
+            .map(|bytes| String::from_utf8_lossy(bytes))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .take(4096)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    Error::Invalid(format!(
+        "Xray 配置预检失败 / Xray configuration preflight failed ({}, {}): {detail}",
+        program.display(),
+        output.status
+    ))
+}
+
 fn json(program: &Path, args: &[&str]) -> Result<Value> {
     let output = run(program, args)?;
     if !output.status.success() {
@@ -230,7 +264,7 @@ pub(crate) fn preflight(
         &serde_json::to_vec(&plan.xray(config)).unwrap(),
         0o600,
     )?;
-    checked(&tools.xray, &["run", "-test", "-c", xray.to_str().unwrap()])?;
+    check_xray(&tools.xray, &xray, config)?;
     let rules = directory.path().join("policy.nft");
     subsystem::atomic_write(
         &rules,

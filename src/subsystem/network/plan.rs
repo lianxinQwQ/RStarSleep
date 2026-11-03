@@ -149,6 +149,8 @@ impl Plan {
         } else {
             config.dns.address.to_string()
         };
+        // DNS uses transport dialer chaining; newer cores reject outbound proxySettings.
+        // DNS 使用传输层拨号链；新版核心拒绝出站 proxySettings。
         json!({
             "log": {"loglevel": "none", "access": "none", "dnsLog": false},
             "dns": {"tag": "dns-upstream", "disableCache": true, "disableFallback": true,
@@ -160,7 +162,7 @@ impl Plan {
                     "streamSettings": {"sockopt": {"mark": config.outbound_mark}}},
                 {"tag": "dns-forward", "protocol": "dns", "settings": {
                     "network": "tcp", "address": config.dns.address.to_string(), "port": config.dns.port,
-                    "nonIPQuery": "skip"}, "proxySettings": {"tag": "fixed"}},
+                    "nonIPQuery": "skip"}, "streamSettings": {"sockopt": {"dialerProxy": "fixed"}}},
                 {"tag": "blocked", "protocol": "blackhole"}
             ],
             "routing": {"domainStrategy": "AsIs", "rules": [
