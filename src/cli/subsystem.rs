@@ -9,7 +9,73 @@ use crate::{
 };
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-const USAGE: &str = "用法：RStarSleep subsystem list|status [ID]|start ID|stop ID|restart ID|shell ID|exec [--pty] ID -- COMMAND [ARG...]|open [--wait] ID TARGET [-- ARG...]|run-desktop ID PATH [-- ARG...]|sync-exports [ID] [--root PATH] / Usage: RStarSleep subsystem list|status [ID]|start ID|stop ID|restart ID|shell ID|exec [--pty] ID -- COMMAND [ARG...]|open [--wait] ID TARGET [-- ARG...]|run-desktop ID PATH [-- ARG...]|sync-exports [ID] [--root PATH]";
+const USAGE: &str = "用法 / Usage: RStarSleep subsystem <COMMAND> [ARGS...] [--root PATH]
+运行 RStarSleep subsystem --help 查看命令与示例。
+Run RStarSleep subsystem --help for commands and examples.";
+
+const HELP: &str = "子系统管理与应用运行 / Subsystem management and application execution
+
+用法 / Usage:
+  RStarSleep subsystem <COMMAND> [ARGS...] [--root PATH]
+
+状态查询 / Status:
+  list                              列出有权访问的子系统 / List accessible subsystems
+  status [ID]                       查看指定或全部子系统状态 / Show one or all statuses
+
+生命周期（需要 root） / Lifecycle (requires root):
+  start ID                          显式启动子系统 / Start a subsystem explicitly
+  stop ID                           正常关闭子系统 / Shut down a subsystem gracefully
+  restart ID                        重启并使用当前成功构建 / Restart with the current build
+
+终端与应用 / Terminals and applications:
+  shell ID
+    以调用者身份打开交互式 /bin/sh -l，分配伪终端。
+    Open an interactive /bin/sh -l as the caller with a pseudo-terminal.
+  exec [--pty] ID -- COMMAND [ARG...]
+    按字面参数执行命令并等待退出；--pty 分配伪终端。
+    Execute literal arguments and wait for exit; --pty allocates a pseudo-terminal.
+  open [--wait] ID TARGET [-- ARG...]
+    启动程序名、客体可执行文件绝对路径或 .desktop 入口。
+    Launch a program name, absolute guest executable path, or .desktop entry.
+  run-desktop [--wait] ID PATH [-- ARG...]
+    运行客体中的 .desktop 文件；文件名相对于 /usr/share/applications 解析。
+    Run a guest .desktop file; filenames resolve under /usr/share/applications.
+
+用户入口 / User exports:
+  sync-exports [ID]
+    为当前用户同步命令和桌面入口；省略 ID 时同步全部有权访问的子系统。
+    Sync command and desktop entries for the caller; omit ID for all accessible subsystems.
+
+选项与参数 / Options and arguments:
+  --root PATH                       管理根绝对路径，默认 /rstarsleep。
+                                    Absolute management root; default: /rstarsleep.
+  -h, --help                        显示此帮助 / Show this help
+  ID                                全局配置中 subsystems 登记的系统标识。
+                                    System ID registered in the global subsystems list.
+  --                                结束管理器参数，后续参数原样传给应用。
+                                    End manager arguments; pass the rest to the application.
+
+说明 / Notes:
+  --root 可用于所有命令，必须放在 -- 之前；--pty、--wait 放在 ID 之前。
+  --root applies to every command and must precede --; put --pty and --wait before ID.
+  open 和 run-desktop 默认后台运行；--wait 等待退出，Terminal=true 的入口始终等待。
+  open and run-desktop detach by default; --wait or Terminal=true waits for exit.
+  shell、exec、open、run-desktop 会按需启动子系统；需要已运行的 daemon。
+  shell, exec, open and run-desktop start subsystems on demand; a running daemon is required.
+  普通用户须在 allowed_uids 中获授权；应用和用户入口应以目标用户身份运行。
+  Non-root callers need allowed_uids authorization; run apps and exports as the intended user.
+  exec 不解析 shell 语法；需要管道或重定向时，请显式执行 /bin/sh -c。
+  exec does not interpret shell syntax; invoke /bin/sh -c explicitly for pipes or redirection.
+
+示例（apps 为子系统标识） / Examples (apps is a subsystem ID):
+  RStarSleep subsystem list
+  RStarSleep subsystem status apps --root /rstarsleep
+  sudo RStarSleep subsystem start apps
+  RStarSleep subsystem shell apps
+  RStarSleep subsystem exec --pty apps -- /usr/bin/top
+  RStarSleep subsystem open --wait apps firefox -- https://example.org
+  RStarSleep subsystem run-desktop apps /usr/share/applications/firefox.desktop
+  RStarSleep subsystem sync-exports apps";
 
 /// Extract fixed manager options before the application's delimiter.
 /// 在应用参数分隔符前提取固定管理器选项。
@@ -111,7 +177,7 @@ fn exited(code: i32) -> super::Result<()> {
 /// 返回协议、授权或实际应用退出错误。
 pub(super) fn run(arguments: &[OsString]) -> super::Result<()> {
     if arguments == [OsString::from("--help")] || arguments == [OsString::from("-h")] {
-        println!("{USAGE}");
+        println!("{HELP}");
         return Ok(());
     }
     let (store, args) = parse(arguments)?;
