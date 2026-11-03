@@ -51,6 +51,7 @@ pub(crate) struct Service {
     pub identity: String,
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
+    pub restart_on_failure: bool,
 }
 
 pub(crate) trait Supervisor: Send + Sync {

@@ -24,6 +24,17 @@ struct Transaction {
     previous_version: Option<String>,
 }
 
+/// Runtime records can contain proxy secrets; parser excerpts must stay private.
+/// 运行记录可能包含代理凭据；解析器摘录必须保密。
+fn runtime_record(path: &Path) -> Result<RuntimeRecord> {
+    read_record(path).map_err(|error| match error {
+        Error::Invalid(_) => Error::Invalid(
+            "运行记录语法或字段无效 / invalid runtime record syntax or fields".into(),
+        ),
+        error => error,
+    })
+}
+
 /// Produce a deterministic machine name bounded by systemd's naming limit.
 /// 生成满足 systemd 长度限制的确定机器名称。
 /// # Arguments
@@ -59,14 +70,31 @@ fn validate_record(record: &RuntimeRecord, store: &ConfigStore, id: &str) -> Res
             record.generation.starts_with("g-")
                 && record.config_sha256.len() == 64
                 && record.config_sha256.bytes().all(|v| v.is_ascii_hexdigit())
+                && record.network.is_none()
         }
-        2 => record.generation.is_empty() && record.config_sha256.is_empty(),
+        2 => {
+            record.generation.is_empty()
+                && record.config_sha256.is_empty()
+                && record.network.is_none()
+        }
+        3 => {
+            record.generation.is_empty()
+                && record.config_sha256.is_empty()
+                && record.network.is_some()
+        }
         _ => false,
     };
     if !valid_storage || record.system_id != id || record.machine != machine_name(store, id) {
         return Err(Error::Invalid(
             "运行记录身份或格式不匹配 / runtime record identity or format mismatch".into(),
         ));
+    }
+    if let Some(policy) = record
+        .network
+        .as_ref()
+        .and_then(|snapshot| snapshot.policy.as_ref())
+    {
+        policy.validate()?;
     }
     Ok(())
 }
@@ -111,7 +139,7 @@ fn recover(store: &ConfigStore, id: &str, backend: &impl BuildBackend) -> Result
     }
     let current_path = runtime.join("current.toml");
     let committed = if exists(&current_path)? {
-        let current: RuntimeRecord = read_record(&current_path)?;
+        let current = runtime_record(&current_path)?;
         validate_record(&current, store, id)?;
         current.schema_version == 1 && current.generation == tx.generation
     } else {
@@ -159,7 +187,12 @@ pub(crate) fn load_for_drain(store: &ConfigStore, id: &str) -> Result<PreparedRu
         .system_layout(id)?
         .config
         .join("subsystem/config.toml");
-    let config: SubsystemConfig = read_record(&path)?;
+    let config: SubsystemConfig = read_record(&path).map_err(|error| match error {
+        Error::Invalid(_) => Error::Invalid(
+            "运行配置语法或字段无效 / invalid runtime configuration syntax or fields".into(),
+        ),
+        error => error,
+    })?;
     config.validate()?;
     load_with_config(store, id, config)
 }
@@ -171,11 +204,14 @@ pub(crate) fn load_for_drain(store: &ConfigStore, id: &str) -> Result<PreparedRu
 fn load_with_config(
     store: &ConfigStore,
     id: &str,
-    config: SubsystemConfig,
+    mut config: SubsystemConfig,
 ) -> Result<PreparedRuntime> {
     let layout = store.system_layout(id)?;
-    let record: RuntimeRecord = read_record(&layout.root.join("runtime/current.toml"))?;
+    let record = runtime_record(&layout.root.join("runtime/current.toml"))?;
     validate_record(&record, store, id)?;
+    // Older records describe shared host networking, even if current policy was edited.
+    // 即使当前策略已编辑，旧记录仍表示共享宿主网络。
+    config.network = record.network.and_then(|snapshot| snapshot.policy);
     // Legacy roots are resolved only to recover and drain machines created before the upgrade.
     // 旧根仅用于恢复并排空升级前创建的机器。
     let root = if record.schema_version == 1 {
@@ -269,7 +305,9 @@ impl Drop for TopLevel {
 /// # Errors
 /// Returns artifact, deferred-task or runtime publication failures. 返回产物、延后任务或运行发布错误。
 pub fn prepare(store: &ConfigStore, id: &str) -> Result<PreparedRuntime> {
-    prepare_with_backend(store, id, &SystemBackend, None)
+    let config = SubsystemConfig::read(store, id)?;
+    super::network::preflight(store, id, config.network.as_ref())?;
+    prepare_config(store, id, &SystemBackend, None, config)
 }
 
 /// Prepare the version root with injectable storage and an optional top-level view.
@@ -289,13 +327,25 @@ pub fn prepare_with_backend(
     filesystem_root: Option<&Path>,
 ) -> Result<PreparedRuntime> {
     let config = SubsystemConfig::read(store, id)?;
+    prepare_config(store, id, backend, filesystem_root, config)
+}
+
+/// Carry the same validated policy through preparation without reopening edited input.
+/// 准备过程沿用同一份已校验策略，不重新读取可能被编辑的输入。
+fn prepare_config(
+    store: &ConfigStore,
+    id: &str,
+    backend: &impl BuildBackend,
+    filesystem_root: Option<&Path>,
+    config: SubsystemConfig,
+) -> Result<PreparedRuntime> {
     let layout = store.system_layout(id)?;
     let artifact = controller::read_current_build(store, id)?;
     let runtime = layout.root.join("runtime");
     checked(&runtime)?;
     let current_path = runtime.join("current.toml");
     if exists(&current_path)? {
-        let record: RuntimeRecord = read_record(&current_path)?;
+        let record = runtime_record(&current_path)?;
         validate_record(&record, store, id)?;
     }
     let mounts = runtime_mounts(store, id, &artifact.version, &config)?;
@@ -324,15 +374,24 @@ pub fn prepare_with_backend(
     checked(&root)?;
     backend.check_subvolume(&root, false)?;
     fs::create_dir_all(&runtime)?;
-    let boot_args = mount_arguments(store, id, &root, &config, &mounts)?;
+    let mut boot_args = mount_arguments(store, id, &root, &config, &mounts)?;
+    boot_args.extend(super::network::boot_arguments(
+        store,
+        id,
+        config.network.as_ref(),
+        &root,
+    )?);
     backend.sync_filesystem(&root)?;
     let record = RuntimeRecord {
-        schema_version: 2,
+        schema_version: 3,
         system_id: id.into(),
         version: artifact.version.clone(),
         generation: String::new(),
         config_sha256: String::new(),
         machine: machine_name(store, id),
+        network: Some(super::NetworkSnapshot {
+            policy: config.network.clone(),
+        }),
     };
     write_record(&current_path, &record)?;
     Ok(PreparedRuntime {

@@ -24,6 +24,17 @@ impl Manager {
             eprintln!("子系统导出授权 {id} / subsystem export authorization {id}: {error}");
         }
         self.recover(id, state)?;
+        if let Some(runtime) = state.runtime.as_ref()
+            && state.origin.is_some()
+            && runtime.config.network.is_some()
+        {
+            super::super::network::verify(
+                &self.store,
+                id,
+                runtime.config.network.as_ref(),
+                Some(commands::leader(runtime)?),
+            )?;
+        }
         if let Some(runtime) = state.runtime.as_ref() {
             let recorder = console::Recorder::new(&self.store, id, runtime)?;
             let service = recorder.status(self.supervisor.as_ref())?;

@@ -60,7 +60,7 @@ desktop_files = []
 
 本地 Unix socket 接口中，root 可以管理所有子系统；其他 UID 必须显式授权，只能以自己的 UID/GID 执行。
 已有容器账户的 UID/GID 冲突会报错。授权对新请求立即生效；挂载、tmpfs 和 GPU
-设置在下一次启动生效。初版共享宿主网络；nspawn 的 UID 也与宿主一致。
+设置在下一次启动生效。不配置 `network` 时共享宿主网络；nspawn 的 UID 与宿主一致。
 
 ```sh
 sudo RStarSleep build apps --root /rstarsleep
@@ -72,6 +72,71 @@ sudo systemctl enable --now rstarsleep-subsystem-<管理根摘要>.service
 `daemon install` 生成服务并重载 systemd，启用服务由上面的明确命令执行。
 开发时可使用 `sudo RStarSleep daemon run --root /rstarsleep` 在前台运行。
 daemon 诊断进入服务 journal；机器原始控制台、管理任务日志和继承错误保留在管理根。
+
+### 固定 SOCKS5/HTTP 代理出口 / Fixed SOCKS5/HTTP proxy egress
+
+在 `systems/apps/config/subsystem/config.toml` 中加入以下配置。子系统使用独立网络，
+由宿主透明接管普通应用连接，不需要在客体设置环境变量或系统代理。
+Add this section to the subsystem configuration. An isolated network transparently sends
+application traffic through the host relay; guest proxy settings are unnecessary.
+
+```toml
+[network]
+mode = "proxy"
+# 可选：与宿主透明分流约定的出站 socket mark。 / Optional outbound socket mark agreed with host routing.
+# outbound_mark = 255
+# 可选：默认网段冲突时指定私有 /30 与 ULA /64。 / Optional private /30 and ULA /64 when defaults overlap.
+# ipv4_subnet = "10.97.0.0/30"
+# ipv6_subnet = "fd97::/64"
+
+[network.proxy]
+protocol = "socks5" # 或 http（普通 HTTP CONNECT）。 / Or http (ordinary HTTP CONNECT).
+address = "127.0.0.1" # 回环指宿主；也可填外部 IP 或主机名。 / Loopback means host; external IP or hostname also accepted.
+port = 1080
+# 可选认证，两个字段须同时填写或同时省略。 / Optional credentials; provide both fields or omit both.
+# username = "example"
+# password = "replace-me"
+
+[network.dns]
+address = "9.9.9.9" # 数值 IP，经固定代理访问。 / Numeric IP, reached through the fixed proxy.
+port = 53
+```
+
+启用时宿主还需 `ip`、`nft`、`sysctl`、`xray`，内核需支持网络命名空间、veth、
+nftables TPROXY 和 IPv6；管理进程需具备 `SYS_ADMIN`、`NET_ADMIN`。工具从标准的
+管理员所有目录查找，不依赖当前 shell 的 PATH。Xray 配置语法、依赖、权限及地址/资源
+冲突在版本继承和网络创建前检查，不会连接远端代理。默认网段若与已有路由重叠会报错，
+可用上述子网字段指定其他网段。
+The host additionally needs these tools, network namespaces, veth, nftables TPROXY,
+IPv6, and the stated capabilities. Local prerequisites and conflicts are checked before
+inheritance and network creation, without connecting to the remote proxy.
+
+TCP 支持 IPv4/IPv6；SOCKS5 的 UDP 依赖服务端 UDP ASSOCIATE 支持，普通 HTTP CONNECT
+模式阻断 UDP/QUIC。常规 UDP/TCP 53 端口 DNS 查询统一转为 TCP，经相同代理访问配置的
+DNS 上游；应用自带 DoH/DoT 按普通连接处理。ICMP 等其他业务协议阻断。
+TCP supports IPv4/IPv6. SOCKS5 UDP requires server support; ordinary HTTP CONNECT blocks
+UDP/QUIC. UDP/TCP port-53 DNS uses the same proxy with a TCP upstream. Other protocols are blocked.
+
+每个实例使用独立的 Xray systemd 临时服务。代理不可达、认证失败或本地接管进程退出时，
+连接自然失败，阻断规则保留，不探活、不切出口、不回退直连。网络设置在下一次冷启动或
+`restart` 生效；daemon 重启恢复冻结的运行快照，不应用中途编辑的新出口。
+Each instance has an independent Xray transient service. Connection failures never select
+another route. Policy changes apply on the next cold start or restart; daemon recovery uses
+the frozen runtime snapshot.
+
+宿主已有 Xray/dae 必须排除专属 `rs…` veth 的原始报文，并按需排除上述出站 socket mark，
+避免提前接管、二次分流或循环。`outbound_mark` 默认 `0`，管理器不修改宿主既有代理配置。
+若代理地址使用主机名，其初始解析使用宿主解析路径。这些宿主集成约定需管理员配置；
+设置 mark 本身不会自动让 dae 绕过流量。
+Existing host Xray/dae rules must exclude the dedicated veth traffic and, where needed,
+the outbound socket mark. The manager does not edit host proxy policies. Proxy hostnames
+bootstrap through host name resolution; setting a mark alone does not configure dae exclusions.
+
+代理凭据和运行快照含敏感信息，配置文件应限制为管理员可读；生成的网络配置和记录
+使用私有权限。恢复发现资源漂移时会报错，并关闭能够核实归属的 veth；不要手动删除
+阻断规则绕过检查。更多实现说明见[固定代理网络](subsystem-network-plan.md)。
+Restrict credential-bearing configuration to administrators. Recovery reports resource drift
+and closes an authenticated owned veth; do not remove blocking rules to bypass verification.
 
 ### 控制台记录器监督与升级
 
@@ -333,12 +398,13 @@ Terminal 等主组信息；Exec 字段按参数展开，不交给 shell 解析�
 
 ## 恢复和验证范围
 
-`build-current.toml` 保存当前成功构建引用；`runtime/current.toml` 使用格式 2，保存
-已准备的版本和机器身份，直接解析到该版本的 `root`。机器就绪由单独的启动来源记录
+`build-current.toml` 保存当前成功构建引用；`runtime/current.toml` 使用格式 3，保存
+已准备的版本、机器身份及显式网络快照，直接解析到该版本的 `root`。机器就绪由单独的启动来源记录
 提交；引导失败不声称机器运行，也不把已完成的继承改回待办。版本清理保护当前构建、
 已登记运行版本、实际运行根、挂载及待办继承来源，不在新机器启动后自动删除旧版本。
 
-升级前的格式 1 运行记录仍可用于恢复、停止已有机器。下一次冷启动或重启改用版本根；
+升级前的格式 1/2 运行记录仍可用于恢复、停止已有机器，网络视为共享宿主；格式 3 缺失网络快照会报错。
+下一次冷启动或重启改用版本根；
 旧 `runtime/generations/<代>/root` 中的修改保留原处，不自动合并到版本根，也不自动
 回收已提交的旧运行快照。旧存储准备事务仍按原恢复规则收尾，新启动不创建运行代或存储准备事务。
 
@@ -348,6 +414,13 @@ inode 和所有权协调。SSH/SFTP 测试覆盖真实回环握手、公钥认�
 二进制上传；工作区与终端测试覆盖路径边界、事务写入、并发保存、UTF-8 编辑和 TUI 返回。
 真实 Btrfs+nspawn 引导、远程 root shell、重建重启闭环、图形出窗、音频与重登录
 仍需在可执行特权操作的隔离环境完成验收。测试结果以实际命令输出为准。
+
+固定代理测试在可丢弃 user/mount/network/PID 命名空间内运行真实 Xray、nftables 和策略路由，
+验证 SOCKS5/HTTP、IPv4/IPv6、UDP、DNS、上游断开与本地进程退出后的无直连行为，
+以及路由漂移和残留任务时的清理保护。该测试需要 `unshare`、`mount`、`python3` 和上述网络工具，
+不修改宿主网络；完整 systemd+nspawn 生命周期仍需在专用环境验收。
+The isolated datapath test uses real Xray and kernel networking without modifying host
+networking. Full systemd+nspawn lifecycle acceptance still requires a dedicated environment.
 
 `cargo test --test session_mounts -- --include-ignored` 在独立 user/mount 命名空间中
 验证真实 Unix socket 跨命名空间接入、源路径替换、只读绑定和固定挂载清理；需要启用

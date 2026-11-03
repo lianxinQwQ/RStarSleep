@@ -65,8 +65,8 @@ pub struct RuntimeRecord {
     pub schema_version: u32,
     pub system_id: String,
     pub version: String,
-    /// Legacy snapshot identity; absent for direct version roots (schema 2).
-    /// 旧快照身份；直接版本根（格式 2）不含此字段。
+    /// Legacy snapshot identity; absent for direct version roots (schema 2/3).
+    /// 旧快照身份；直接版本根（格式 2/3）不含此字段。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub generation: String,
     /// Legacy launch-policy digest; absent for direct version roots.
@@ -74,4 +74,17 @@ pub struct RuntimeRecord {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config_sha256: String,
     pub machine: String,
+    /// Schema 3 freezes network policy independently of subsequent configuration edits.
+    /// 格式 3 冻结网络策略，不受后续配置编辑影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkSnapshot>,
+}
+
+/// Explicit host/proxy snapshot; a missing schema-3 snapshot is an error.
+/// 显式宿主/代理快照；格式 3 缺少快照时报错。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<super::network::NetworkConfig>,
 }

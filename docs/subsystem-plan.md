@@ -162,7 +162,7 @@ systems/<系统>/
 │   └── root/                           # 收尾完成后发布的可写版本根
 ├── runtime/
 │   ├── activity.lock                   # 应用和启停活动锁 / Application and lifecycle activity lock
-│   ├── current.toml                    # 格式 2：已准备版本及机器身份 / Schema 2: prepared version and machine identity
+│   ├── current.toml                    # 格式 3：版本、机器身份及网络快照 / Schema 3: version, machine identity and network snapshot
 │   ├── fstab                           # 注入客体的独立只读配置
 │   ├── exports-users.toml              # 主动集成入口的用户
 │   ├── jobs/                           # 管理任务状态、锁和日志 / Management jobs, locks and logs
@@ -170,7 +170,7 @@ systems/<系统>/
 └── persistent/
 ```
 
-版本根完成收尾、挂载准备并同步后，原子提交格式 2 的 `runtime/current.toml`。
+版本根完成收尾、挂载准备并同步后，原子提交格式 3 的 `runtime/current.toml`。
 它只记录已准备版本及机器身份，不声称机器已运行。machined 注册和实际客体执行探针通过后，
 才在 `/run/rstarsleep/<管理根摘要>/<系统>.origin.toml` 提交机器就绪来源。
 daemon 恢复核对 leader、实际根 dev/inode 与来源记录，并检查残留应用服务。
@@ -314,7 +314,8 @@ desktop_files = []
 
 默认仅管理员可用，显式登记允许 UID 后向普通用户开放。挂载、tmpfs 和 GPU 在下次
 启动生效；授权立即应用到新请求，autostart 由后台协调应用；入口配置通过显式同步刷新。
-初期网络沿用 nspawn 宿主网络模式，记录其共享边界；私有网络后续扩展。
+省略 `network` 时沿用 nspawn 宿主网络模式；显式配置后采用独立网络与固定 SOCKS5/HTTP
+代理出口，不探测远端在线状态、不自动回退；详见[子系统固定代理出口](subsystem-network-plan.md)。
 孤立图形模式的 D-Bus、原生模式的代理及容器启动依赖要在操作前检查。
 
 宿主本地操作使用 `subsystem` 命令组：
@@ -386,7 +387,7 @@ P6 已改用 SSH 配置管理，移除原 guest install/rebuild/restart/add-copy
 流程，不加入运行修改确认。
 
 当前 P0–P6 覆盖本轮功能目标，真实环境尚需验证完整闭环。同一系统并行多个实例、
-私有网络、整目录 `rw` 会话、portal、短名别名及持久数据快照/回滚留作后续扩展。
+整目录 `rw` 会话、portal、短名别名及持久数据快照/回滚留作后续扩展。
 
 ## 6. 代码组织与验证方式
 

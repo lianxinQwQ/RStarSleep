@@ -134,6 +134,7 @@ impl Manager {
                 self.save_origin(id, state)?;
             }
         } else if !service.live() {
+            super::super::network::cleanup(&self.store, id)?;
             let had_origin = state.origin.take().is_some();
             let had_invocation = state.invocation.take().is_some();
             if had_origin || had_invocation {
@@ -190,6 +191,17 @@ impl Manager {
             .query(&console::unit_name(&self.store, id)?)?;
         let _activity = super::filesystem::activity(&self.store, id, false)?;
         self.recover(id, state)?;
+        if let Some(runtime) = state.runtime.as_ref()
+            && state.origin.is_some()
+            && runtime.config.network.is_some()
+        {
+            super::super::network::verify(
+                &self.store,
+                id,
+                runtime.config.network.as_ref(),
+                Some(commands::leader(runtime)?),
+            )?;
+        }
         let mut reuse = false;
         if let Some(runtime) = state.runtime.as_ref() {
             let recorder = console::Recorder::new(&self.store, id, runtime)?;
@@ -223,6 +235,7 @@ impl Manager {
             // Retain the prepared identity even if service submission or readiness fails.
             // 即使服务提交或就绪失败，也保留已准备身份。
             state.runtime = Some(runtime.clone());
+            super::super::network::start(&self.store, id, runtime.config.network.as_ref())?;
             let recorder = console::Recorder::new(&self.store, id, &runtime)?;
             recorder.launch(
                 self.supervisor.as_ref(),
@@ -271,6 +284,16 @@ impl Manager {
             }
             thread::sleep(Duration::from_millis(150));
         };
+        super::super::network::verify(
+            &self.store,
+            id,
+            runtime.config.network.as_ref(),
+            if runtime.config.network.is_some() {
+                Some(commands::leader(&runtime)?)
+            } else {
+                None
+            },
+        )?;
         state.runtime = Some(runtime);
         let recovered_origin = run.origin.ok_or_else(|| {
             Error::Invalid("启动记录缺少来源 / boot record missing start origin".into())
@@ -348,6 +371,7 @@ impl Manager {
             }
             self.wait_drained(id, runtime, Duration::from_secs(35))?;
             session::cleanup(runtime)?;
+            super::super::network::cleanup(&self.store, id)?;
         }
         state.origin = None;
         state.invocation = None;
@@ -367,6 +391,17 @@ impl Manager {
         let slot = self.slot(id)?;
         let mut state = lock(&slot.state)?;
         self.recover(id, &mut state)?;
+        if let Some(runtime) = state.runtime.as_ref()
+            && state.origin.is_some()
+            && runtime.config.network.is_some()
+        {
+            super::super::network::verify(
+                &self.store,
+                id,
+                runtime.config.network.as_ref(),
+                Some(commands::leader(runtime)?),
+            )?;
+        }
         Ok(Status {
             id: id.into(),
             machine: state.runtime.as_ref().map(|r| r.machine.clone()),

@@ -402,6 +402,7 @@ impl Recorder {
             identity: self.identity.clone(),
             executable: binary,
             arguments: vec!["__console-recorder".into(), path.into_os_string()],
+            restart_on_failure: false,
         })
     }
 }

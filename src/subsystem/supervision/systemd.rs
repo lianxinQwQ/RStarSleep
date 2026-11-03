@@ -90,10 +90,15 @@ fn launch(service: &Service) -> Command {
         .args(["--quiet", "--expand-environment=no", "--service-type=exec"])
         .arg(format!("--unit={}", service.name))
         .arg(format!("--description={}", service.identity))
+        .arg(if service.restart_on_failure {
+            "--property=Restart=on-failure"
+        } else {
+            "--property=Restart=no"
+        })
+        .arg("--property=RestartSec=1s")
         .args([
             "--property=User=root",
             "--property=Group=root",
-            "--property=Restart=no",
             "--property=Delegate=yes",
             "--property=KillMode=control-group",
             "--property=StandardInput=null",
@@ -231,6 +236,7 @@ mod tests {
             identity: "identity".into(),
             executable: "/opt/a b/$BIN%tool".into(),
             arguments: vec!["/a b/$(literal)".into()],
+            restart_on_failure: false,
         };
         let command = launch(&service);
         let args = command.get_args().collect::<Vec<_>>();
@@ -241,6 +247,12 @@ mod tests {
             !args.iter().any(|a| a.to_string_lossy().contains("PartOf=")
                 || a.to_string_lossy().contains("BindsTo="))
         );
+        let mut service = service;
+        service.restart_on_failure = true;
+        let command = launch(&service);
+        let args = command.get_args().collect::<Vec<_>>();
+        assert!(args.contains(&std::ffi::OsStr::new("--property=Restart=on-failure")));
+        assert!(args.contains(&std::ffi::OsStr::new("--property=RestartSec=1s")));
     }
     fn output(code: i32, stdout: &str) -> Output {
         use std::os::unix::process::ExitStatusExt;
@@ -257,6 +269,7 @@ mod tests {
             identity: "owned".into(),
             executable: "/bin/true".into(),
             arguments: Vec::new(),
+            restart_on_failure: false,
         }
     }
 
@@ -363,6 +376,7 @@ mod tests {
             identity: "RStarSleep console supervision integration test".into(),
             executable: "/usr/bin/sleep".into(),
             arguments: vec!["10".into()],
+            restart_on_failure: false,
         };
         let barrier = std::sync::Barrier::new(4);
         std::thread::scope(|scope| {

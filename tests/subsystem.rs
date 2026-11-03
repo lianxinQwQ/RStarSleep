@@ -41,6 +41,58 @@ fn enable(fixture: &Fixture) {
     .unwrap();
 }
 
+/// Recovery preserves the boot policy and rejects a missing snapshot instead of using host networking.
+/// 恢复保留启动策略；缺少快照时报错，不使用宿主网络。
+#[test]
+fn runtime_network_is_frozen_until_the_next_preparation() {
+    let f = Fixture::new();
+    f.system("desktop", &[]);
+    enable(&f);
+    let b = SimulatedBackend::default();
+    build_with_backend(&f.store, Some("desktop"), &b).unwrap();
+    let layout = f.store.system_layout("desktop").unwrap();
+    subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    let proxy = "schema_version=1\n[network]\nmode='proxy'\nipv4_subnet='10.97.0.0/30'\nipv6_subnet='fd97::/64'\n[network.proxy]\nprotocol='socks5'\naddress='127.0.0.1'\nport=1080\nusername='private-user'\npassword='private-password'\n[network.dns]\naddress='9.9.9.9'\nport=53\n";
+    fs::write(layout.config.join("subsystem/config.toml"), proxy).unwrap();
+    assert!(
+        subsystem::load_prepared(&f.store, "desktop")
+            .unwrap()
+            .config
+            .network
+            .is_none()
+    );
+    let prepared =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    assert!(
+        prepared
+            .boot_args
+            .iter()
+            .any(|a| a.to_string_lossy().starts_with("--network-namespace-path="))
+    );
+    assert!(!format!("{prepared:?}").contains("private-password"));
+    fs::write(
+        layout.config.join("subsystem/config.toml"),
+        proxy.replace("port=1080", "port=1082"),
+    )
+    .unwrap();
+    let restored = subsystem::load_prepared(&f.store, "desktop").unwrap();
+    assert_eq!(restored.config.network.unwrap().proxy.port, 1080);
+    let path = layout.root.join("runtime/current.toml");
+    let mut record: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record.as_table_mut().unwrap().remove("network");
+    fs::write(path, toml::to_string(&record).unwrap()).unwrap();
+    assert!(subsystem::load_prepared(&f.store, "desktop").is_err());
+    fs::write(
+        layout.config.join("subsystem/config.toml"),
+        "[network]\npassword='private-password'\n",
+    )
+    .unwrap();
+    let error = subsystem::SubsystemConfig::read(&f.store, "desktop")
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("private-password"));
+}
+
 /// Publish only successful artifacts and never substitute history for broken references.
 /// 只发布成功产物，绝不以历史替代损坏引用。
 /// # Arguments
@@ -322,7 +374,7 @@ fn direct_version_root_survives_policy_changes_without_snapshots() {
     let record: toml::Value =
         toml::from_str(&fs::read_to_string(layout.root.join("runtime/current.toml")).unwrap())
             .unwrap();
-    assert_eq!(record["schema_version"].as_integer(), Some(2));
+    assert_eq!(record["schema_version"].as_integer(), Some(3));
     assert!(record.get("generation").is_none());
     assert_eq!(
         subsystem::load_prepared(&f.store, "desktop").unwrap().root,
@@ -389,6 +441,7 @@ fn legacy_runtime_is_readable_and_retained_when_switching_to_version_root() {
         generation: "g-legacy".into(),
         config_sha256: "a".repeat(64),
         machine: subsystem::machine_name(&f.store, "desktop"),
+        network: None,
     };
     fs::write(
         layout.root.join("runtime/current.toml"),
@@ -489,6 +542,7 @@ fn corrupt_runtime_record_is_rejected_before_finalization() {
         generation: String::new(),
         config_sha256: String::new(),
         machine: subsystem::machine_name(&f.store, "desktop"),
+        network: None,
     };
     fs::write(
         layout.root.join("runtime/current.toml"),

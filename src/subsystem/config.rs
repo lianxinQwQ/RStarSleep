@@ -45,6 +45,8 @@ pub struct SubsystemConfig {
     pub exports: ExportConfig,
     pub tmp_size_bytes: u64,
     pub gpu: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<super::network::NetworkConfig>,
 }
 
 impl Default for SubsystemConfig {
@@ -64,6 +66,7 @@ impl Default for SubsystemConfig {
             exports: ExportConfig::default(),
             tmp_size_bytes: 0,
             gpu: false,
+            network: None,
         }
     }
 }
@@ -120,8 +123,12 @@ impl SubsystemConfig {
             path: path.clone(),
             source,
         })?;
-        let config: Self = toml::from_str(&text)
-            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+        let config: Self = toml::from_str(&text).map_err(|_| {
+            Error::Invalid(format!(
+                "运行配置语法或字段无效: {0} / invalid runtime configuration syntax or fields: {0}",
+                path.display()
+            ))
+        })?;
         config.validate()?;
         Ok(config)
     }
@@ -133,6 +140,9 @@ impl SubsystemConfig {
     /// # Errors
     /// Returns invalid or conflicting settings. 返回无效或冲突设置。
     pub fn validate(&self) -> Result<()> {
+        if let Some(network) = &self.network {
+            network.validate()?;
+        }
         if self.schema_version != 1
             || self.session_user != "caller"
             || !matches!(self.session_mode.as_str(), "off" | "isolated" | "native")
