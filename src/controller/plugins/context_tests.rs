@@ -744,7 +744,7 @@ fn unified_download_keeps_legacy_environment_and_package_arguments() {
             ("Architecture".into(), "x86_64".into()),
             ("AurKeyserver".into(), "hkps://example.invalid".into()),
             ("AurDevel".into(), "false".into()),
-            ("AurRebuild".into(), "sample\nother".into()),
+            ("AurRebuild".into(), "true".into()),
         ]),
         config: root.clone(),
         persistent_mounts: Vec::new(),

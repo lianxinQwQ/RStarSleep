@@ -33,7 +33,7 @@ class Incremental(unittest.TestCase):
     def preparer(self, **options):
         self.generation += 1
         p = arch.Preparer.__new__(arch.Preparer)
-        p.arch, p.aur_devel, p.aur_rebuild = "x86_64", True, set()
+        p.arch, p.aur_devel, p.aur_rebuild = "x86_64", True, False
         p.states, p.stack, p.artifacts = {}, [], {}
         p.cache_counts, p.cache_records = dict(reused=0, built=0), None
         p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
@@ -217,7 +217,7 @@ class Incremental(unittest.TestCase):
         first = self.preparer()
         first.build(self.recipe())
         for options, commit in [({}, "recipe-2"), ({"config_sha256": "different"}, "recipe-2"),
-                                ({"aur_rebuild": {"sample"}}, "recipe-2"), ({"aur_rebuild": {"all"}}, "recipe-2")]:
+                                ({"aur_rebuild": True}, "recipe-2")]:
             with self.subTest(options=options):
                 p = self.preparer(**options)
                 p.build(self.recipe(commit=commit))
@@ -289,15 +289,56 @@ class Incremental(unittest.TestCase):
             p.makepkg.assert_not_called()
             self.assertFalse((p.repo / ".aur-builds.json").exists())
 
-    def test_unsupported_vcs_and_unchecked_http_sources_never_hit(self):
-        for source in ("hg+https://example.invalid/repo", "https://example.invalid/latest.tar.gz"):
+    def test_unsupported_vcs_sources_never_hit(self):
+        for source in ("hg+https://example.invalid/repo", "svn+https://example.invalid/repo"):
             base = self.recipe()
-            base["sources"], base["unchecked_sources"] = [source], [source]
+            base["sources"] = [source]
             for _ in range(2):
                 p = self.preparer()
                 p.build(copy.deepcopy(base))
                 self.assertEqual(p.cache_counts["built"], 1)
                 self.assertNotIn("sample", p.load_cache())
+
+    def test_unchecked_downloads_reuse_and_boolean_rebuild_forces_compilation(self):
+        """无校验和下载可复用，布尔开关强制重编。 / Reuse unchecked downloads; a boolean forces rebuilding."""
+        for index, (field, checksum) in enumerate((("source", ""), ("source", "sha256sums = SKIP\n"),
+                                                  ("source_x86_64", "sha256sums_x86_64 = SKIP\n"))):
+            with self.subTest(field=field, checksum=checksum):
+                text = f"{field} = archive::https://example.invalid/latest.tar.gz\n{checksum}" + protocol.RECIPE
+                base = self.recipe(name=f"unchecked{index}", text=text)
+                self.preparer().build(copy.deepcopy(base))
+                second = self.preparer()
+                second.build(copy.deepcopy(base))
+                second.makepkg.assert_not_called()
+                second.ensure.assert_called_once_with("generated-runtime")
+                forced = self.preparer(aur_rebuild=True)
+                forced.build(copy.deepcopy(base))
+                self.assertEqual(forced.cache_counts, dict(reused=0, built=1))
+                resumed = self.preparer(aur_devel=False, aur_rebuild=False)
+                resumed.build(copy.deepcopy(base))
+                resumed.makepkg.assert_not_called()
+                base["commit"] = "recipe-2"
+                changed = self.preparer()
+                changed.build(copy.deepcopy(base))
+                self.assertEqual(changed.cache_counts["built"], 1)
+
+    def test_unchecked_download_does_not_disable_git_update_checks(self):
+        """混合来源仍检查 Git 更新。 / Mixed sources still check Git updates."""
+        source = "git+https://example.invalid/repo.git"
+        text = (f"source = {source}\nsource = https://example.invalid/latest.tar.gz\n"
+                "sha256sums = SKIP\nsha256sums = SKIP\n" + protocol.RECIPE)
+        base = self.recipe(text=text)
+        with patch.object(arch.aur_cache, "remote_revisions", return_value={source: "a" * 40}), \
+                patch.object(arch.aur_cache, "actual_revisions", return_value={source: "a" * 40}):
+            self.preparer().build(copy.deepcopy(base))
+            reused = self.preparer()
+            reused.build(copy.deepcopy(base))
+            reused.makepkg.assert_not_called()
+        with patch.object(arch.aur_cache, "remote_revisions", return_value={source: "b" * 40}), \
+                patch.object(arch.aur_cache, "actual_revisions", return_value={source: "b" * 40}):
+            changed = self.preparer()
+            changed.build(copy.deepcopy(base))
+            self.assertEqual(changed.cache_counts["built"], 1)
 
     def test_aur_build_dependency_change_invalidates_parent_without_installing_on_hit(self):
         dependency = self.recipe("compiler")
@@ -406,14 +447,14 @@ class SourceTracking(unittest.TestCase):
         actual = arch.aur_cache.actual_revisions(self.user, specs[:1], self.root)
         self.assertEqual(actual[sources[0]], after)
 
-    def test_source_checksum_and_architecture_classification(self):
+    def test_source_architecture_and_git_classification(self):
         base = arch.srcinfo("pkgbase = sample\npkgver = 1\npkgrel = 1\n"
             "source = https://example.invalid/fixed.tar.gz\nsha256sums = abc\n"
             "source_x86_64 = git+https://example.invalid/repo.git\nsha256sums_x86_64 = SKIP\npkgname = sample\n", "x86_64")
-        specs, reason = arch.aur_cache.source_specs(base["sources"], base["unchecked_sources"])
+        specs, reason = arch.aur_cache.source_specs(base["sources"])
         self.assertIsNone(reason)
         self.assertEqual(len(specs), 1)
-        self.assertEqual(base["unchecked_sources"], ["git+https://example.invalid/repo.git"])
+        self.assertEqual(base["sources"], ["https://example.invalid/fixed.tar.gz", "git+https://example.invalid/repo.git"])
         for source in ("../escape::git+https://example.invalid/r.git", "git+https://example.invalid/r.git#commit=short",
                        "fossil+https://example.invalid/repo"):
             self.assertIsNotNone(arch.aur_cache.source_specs([source])[1])
@@ -494,16 +535,34 @@ package() {{
 
 class Options(unittest.TestCase):
     def test_legacy_and_canonical_configuration_and_invalid_values(self):
+        """布尔配置兼容两种传递名称并拒绝旧枚举。 / Boolean settings support both names and reject old enums."""
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(arch.Preparer.cache_options(), (True, False))
         for prefix in ("RSTAR_", "RSTAR_DISTRIBUTION_"):
-            with patch.dict(os.environ, {prefix + "AURDEVEL": "false", prefix + "AURREBUILD": "sample\nother"}, clear=True):
-                self.assertEqual(arch.Preparer.cache_options(), (False, {"sample", "other"}))
-        for value in ("../sample", "all sample", "none sample"):
-            with patch.dict(os.environ, {"RSTAR_AURREBUILD": value}, clear=True):
-                with self.assertRaises(arch.PreparationError):
-                    arch.Preparer.cache_options()
-        with patch.dict(os.environ, {"RSTAR_AURDEVEL": "maybe"}, clear=True):
-            with self.assertRaises(arch.PreparationError):
-                arch.Preparer.cache_options()
+            for devel, rebuild in (("true", "false"), ("false", "true")):
+                with patch.dict(os.environ, {prefix + "AURDEVEL": devel, prefix + "AURREBUILD": rebuild}, clear=True):
+                    self.assertEqual(arch.Preparer.cache_options(), (devel == "true", rebuild == "true"))
+            for key in ("AURDEVEL", "AURREBUILD"):
+                for value in ("", "maybe", "none", "all", "sample", "true\nfalse"):
+                    with self.subTest(prefix=prefix, key=key, value=value), \
+                            patch.dict(os.environ, {prefix + key: value}, clear=True):
+                        with self.assertRaises(arch.PreparationError):
+                            arch.Preparer.cache_options()
+
+    def test_invalid_boolean_is_rejected_before_preparation_side_effects(self):
+        """配置错误先于用户、挂载及工作区操作。 / Reject configuration before user, mount or workspace operations."""
+        with patch.dict(os.environ, {"RSTAR_DISTRIBUTION_AURREBUILD": "all"}, clear=True), \
+                patch.object(arch.os, "geteuid") as geteuid, patch.object(arch.pwd, "getpwnam") as getpwnam:
+            with self.assertRaisesRegex(arch.PreparationError, "AurRebuild"):
+                arch.Preparer("/unused")
+            geteuid.assert_not_called()
+            getpwnam.assert_not_called()
+
+    def test_canonical_booleans_take_precedence_over_legacy_settings(self):
+        """规范配置优先于旧环境名称。 / Canonical settings override legacy environment names."""
+        with patch.dict(os.environ, {"RSTAR_DISTRIBUTION_AURDEVEL": "false", "RSTAR_AURDEVEL": "true",
+                                     "RSTAR_DISTRIBUTION_AURREBUILD": "true", "RSTAR_AURREBUILD": "all"}, clear=True):
+            self.assertEqual(arch.Preparer.cache_options(), (False, True))
 
 
 if __name__ == "__main__":

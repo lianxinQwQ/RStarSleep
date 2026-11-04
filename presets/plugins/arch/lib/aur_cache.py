@@ -6,8 +6,8 @@ from urllib.parse import urlsplit
 REVISION = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
-def source_specs(sources, unchecked=()):
-    """Return supported Git sources and a reason when reuse cannot be verified."""
+def source_specs(sources):
+    """跟踪 Git 来源；普通下载按配方复用。 / Track Git sources; reuse ordinary downloads by recipe."""
     result, aliases = [], set()
     for source in sources:
         alias, separator, url = source.partition("::")
@@ -17,8 +17,7 @@ def source_specs(sources, unchecked=()):
         if protocol.startswith(("svn", "hg", "bzr", "fossil")):
             return [], '不支持的 VCS 来源 / unsupported VCS source'
         if protocol != "git" and not protocol.startswith("git+"):
-            if "://" in url and source in unchecked:
-                return [], '远程来源没有固定校验和 / remote source without a fixed checksum'
+            # 普通来源信任配方的发布版本，包括 SKIP。 / Trust recipe releases for ordinary sources, including SKIP.
             continue
         url = url.removeprefix("git+")
         # makepkg accepts ?signed following the reference, not a general URL query.

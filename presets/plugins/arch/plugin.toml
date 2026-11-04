@@ -3,7 +3,7 @@
 schema_version = 1
 api_version = 3
 id = "arch"
-version = "0.18.0"
+version = "0.18.1"
 # Bump only when the independent download environment becomes incompatible.
 # 仅在独立下载环境不兼容时递增。
 predownload_version = "1"
@@ -120,7 +120,8 @@ kind = "enum-single"
 values = ["true", "false"]
 
 [config.constraints.RSTAR_DISTRIBUTION_AURREBUILD]
-kind = "free-list"
+kind = "enum-single"
+values = ["true", "false"]
 
 [config.constraints.RSTAR_ACCOUNTINHERITANCE_USERS]
 kind = "free-list"

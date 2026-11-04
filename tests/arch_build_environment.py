@@ -151,7 +151,7 @@ class CumulativeEnvironment(unittest.TestCase):
         p.makepkg_conf = self.root / 'makepkg.conf'
         p.makepkg_conf.write_text('')
         p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
-        p.aur_devel, p.aur_rebuild, p.resolutions = True, set(), {}
+        p.aur_devel, p.aur_rebuild, p.resolutions = True, False, {}
         p.cache_counts = dict(reused=0, built=0)
         p.source_state = Mock(return_value=([], None, 'fixture rebuild'))
         p.makepkg, p.publish, p.remember_build, p.save_progress = Mock(), Mock(), Mock(), Mock()

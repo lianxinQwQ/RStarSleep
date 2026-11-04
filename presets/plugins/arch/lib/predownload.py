@@ -248,17 +248,8 @@ def srcinfo(text, architecture):
     version = "{}-{}".format(base.get("pkgver", [""])[0], base.get("pkgrel", [""])[0])
     if base.get("epoch", ["0"])[0] != "0":
         version = base["epoch"][0] + ":" + version
-    sources = values(base, "source")
-    unchecked = set()
-    for suffix in ("", f"_{architecture}"):
-        entries = base.get("source" + suffix, [])
-        checksums = [base[key + suffix] for key in ("md5sums", "sha1sums", "sha224sums", "sha256sums", "sha384sums", "sha512sums", "b2sums")
-                     if key + suffix in base]
-        for index, source in enumerate(entries):
-            if not any(index < len(sums) and sums[index] != "SKIP" for sums in checksums):
-                unchecked.add(source)
     return dict(name=name, packages=packages, version=version, runtime_by_package=runtime_by_package,
-                sources=sources, unchecked_sources=sorted(unchecked),
+                sources=values(base, "source"),
                 runtime=list(dict.fromkeys(runtime)),
                 build=list(dict.fromkeys(build)), build_runtime=[v for v in values(base, "depends") if v], provides=provides, conflicts=conflicts, keys=base.get("validpgpkeys", []))
 
@@ -317,6 +308,7 @@ def timed_operation(chinese, english):
 
 class Preparer:
     def __init__(self, workspace):
+        self.aur_devel, self.aur_rebuild = self.cache_options()
         if os.geteuid() != 0:
             raise PreparationError('准备阶段需要 root 权限；AUR 编译使用非特权用户 / preparation requires root; AUR compilation uses an unprivileged user')
         self.builder = pwd.getpwnam("rstar-build")
@@ -377,7 +369,6 @@ class Preparer:
         self.official_metadata = {}
         self.verification = official_cache.OfficialPackageCache(self.repo, self.arch, self.official_conf, run, self.cached_digest)
         self.planned_transactions = {}
-        self.aur_devel, self.aur_rebuild = self.cache_options()
         self.cache_records = None
         self.cache_counts = dict(reused=0, built=0)
         self.refresh_repo()
@@ -832,16 +823,12 @@ class Preparer:
 
     @staticmethod
     def cache_options():
-        def option(name, default):
-            return os.environ.get("RSTAR_DISTRIBUTION_" + name, os.environ.get("RSTAR_" + name, default)).strip()
-        devel = option("AURDEVEL", "true").lower()
-        if devel not in ("true", "false"):
-            raise PreparationError('AurDevel 必须为 true 或 false / AurDevel must be true or false')
-        rebuild = set(option("AURREBUILD", "none").split())
-        if (any(not NAME.fullmatch(name) for name in rebuild)
-                or (rebuild & {"none", "all"} and len(rebuild) != 1)):
-            raise PreparationError('AurRebuild 必须为 none、all 或 pkgbase 名称 / AurRebuild must be none, all, or pkgbase names')
-        return devel == "true", rebuild - {"none"}
+        def boolean(name, key, default):
+            value = os.environ.get("RSTAR_DISTRIBUTION_" + key, os.environ.get("RSTAR_" + key, default)).strip().lower()
+            if value not in ("true", "false"):
+                raise PreparationError(f'{name} 必须为 true 或 false / {name} must be true or false')
+            return value == "true"
+        return boolean("AurDevel", "AURDEVEL", "true"), boolean("AurRebuild", "AURREBUILD", "false")
 
     @staticmethod
     def configuration_fingerprint(configuration):
@@ -874,7 +861,7 @@ class Preparer:
         return self.cache_records
 
     def source_state(self, base):
-        specs, reason = aur_cache.source_specs(base.get("sources", []), base.get("unchecked_sources", []))
+        specs, reason = aur_cache.source_specs(base.get("sources", []))
         if reason:
             return specs, None, reason
         if not self.aur_devel:
@@ -993,7 +980,7 @@ class Preparer:
             _, source_revisions, reason = self.source_state(recipe)
             cached, _ = (None, reason) if reason else self.cached_artifacts(recipe, source_revisions, (*visiting, name))
             if (cached is None or [{key: p[key] for key in ("name", "sha256")} for p in cached] != dependency.get("artifacts")
-                    or recipe["name"] in self.aur_rebuild or "all" in self.aur_rebuild):
+                    or self.aur_rebuild):
                 return None, 'AUR 构建依赖已更改 / AUR build dependency changed'
             dependency_artifacts.extend(cached)
         # Versioned SONAME requirements may stop resolving after an official ABI transition.
@@ -1172,7 +1159,7 @@ class Preparer:
         if self.states.get(name) == "building":
             raise PreparationError(f"AUR 依赖循环：{' -> '.join(self.stack + [name])} / AUR dependency cycle: {' -> '.join(self.stack + [name])}")
         specs, revisions, reason = self.source_state(base)
-        if "all" in self.aur_rebuild or name in self.aur_rebuild:
+        if self.aur_rebuild:
             artifacts, reason = None, '强制重新构建 / forced rebuild'
         elif reason:
             artifacts = None
@@ -1215,7 +1202,7 @@ class Preparer:
         self.makepkg_conf.write_text(self.makepkg_conf.read_text() + f"\nPKGDEST={shlex.quote(str(output))}\n")
         log(f"下载并校验 {name} 的源码", f"Download and verify sources for {name}")
         self.makepkg(base["checkout"], ["--verifysource", "--noconfirm"])
-        cacheable = aur_cache.source_specs(base.get("sources", []), base.get("unchecked_sources", []))[1] is None
+        cacheable = aur_cache.source_specs(base.get("sources", []))[1] is None
         actual = {}
         if cacheable and specs:
             try:

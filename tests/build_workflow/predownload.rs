@@ -274,7 +274,7 @@ fn unsafe_retired_version_aborts_all_cleanup() {
 #[test]
 fn different_aur_policies_keep_preparation_groups_separate() {
     let fixture = Fixture::with_predownload(true);
-    for (id, rebuild) in [("desktop", "none"), ("server", "all")] {
+    for (id, rebuild) in [("desktop", "false"), ("server", "true")] {
         fixture.system(id, &["editor"]);
         let directory = fixture.store.system_layout(id).unwrap().config;
         fs::write(
@@ -295,7 +295,10 @@ fn different_aur_policies_keep_preparation_groups_separate() {
         .iter()
         .map(|event| event.distribution_options["AurRebuild"].as_str())
         .collect();
-    assert_eq!(policies, std::collections::BTreeSet::from(["all", "none"]));
+    assert_eq!(
+        policies,
+        std::collections::BTreeSet::from(["false", "true"])
+    );
 }
 
 /// Prevent one system's proxy from being used for a different download batch.

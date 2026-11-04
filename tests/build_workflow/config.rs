@@ -11,12 +11,12 @@ fn aur_policy_changes_preserve_base_and_package_caches() {
     fixture.system("desktop", &["editor"]);
     let layout = fixture.store.system_layout("desktop").unwrap();
     let path = layout.config.join("build/aur.conf");
-    fs::write(&path, "[Distribution]\nAurDevel=true\nAurRebuild=none\n").unwrap();
+    fs::write(&path, "[Distribution]\nAurDevel=true\nAurRebuild=false\n").unwrap();
     let backend = SimulatedBackend::default();
     let first = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
         .remove(0);
-    fs::write(&path, "[Distribution]\nAurDevel=false\nAurRebuild=all\n").unwrap();
+    fs::write(&path, "[Distribution]\nAurDevel=false\nAurRebuild=true\n").unwrap();
     backend.events.borrow_mut().clear();
     let second = build_with_backend(&fixture.store, Some("desktop"), &backend)
         .unwrap()
@@ -31,8 +31,36 @@ fn aur_policy_changes_preserve_base_and_package_caches() {
     }
     assert!(backend.events.borrow().iter().all(|event| {
         event.parameters["RSTAR_DISTRIBUTION_AURDEVEL"] == "false"
-            && event.parameters["RSTAR_DISTRIBUTION_AURREBUILD"] == "all"
+            && event.parameters["RSTAR_DISTRIBUTION_AURREBUILD"] == "true"
     }));
+}
+
+/// Reject invalid AUR boolean settings before allocating a version or invoking plugins.
+/// 分配版本或调用插件前，拒绝无效的 AUR 布尔配置。
+#[test]
+fn invalid_aur_boolean_policies_fail_before_build_operations() {
+    for key in ["AurDevel", "AurRebuild"] {
+        for value in ["none", "all", "sample", "1", "true\n    false"] {
+            let fixture = Fixture::with_predownload(true);
+            fixture.system("desktop", &["editor"]);
+            let layout = fixture.store.system_layout("desktop").unwrap();
+            fs::write(
+                layout.config.join("build/aur.conf"),
+                format!("[Distribution]\n{key}={value}\n"),
+            )
+            .unwrap();
+            let backend = SimulatedBackend::default();
+            let error = build_with_backend(&fixture.store, Some("desktop"), &backend)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&key.to_uppercase()),
+                "{key}={value}: {error}"
+            );
+            assert!(backend.events.borrow().is_empty());
+            assert_eq!(fs::read_dir(&layout.versions).unwrap().count(), 0);
+        }
+    }
 }
 
 /// Freeze environment assignments from merged INI files before execution.

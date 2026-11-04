@@ -1,5 +1,7 @@
 # Arch Linux 预设插件
 
+0.18.1 允许无固定校验和的普通远程来源按配方复用；AurRebuild 改为布尔开关，默认 false。
+
 0.18.0 将 AUR 构建环境改为跨轮保留依赖、构建前动态维护；完整构建依赖提前解析，
 仅依赖冲突时以三秒警告回退到逐目标维护。
 
@@ -29,7 +31,7 @@ Architecture=x86_64
 # Mirror=https://geo.mirror.pkgbuild.com/$repo/os/$arch
 # AurKeyserver=hkps://keyserver.ubuntu.com
 # AurDevel=true
-# AurRebuild=none
+# AurRebuild=false
 ```
 
 元数据必须显式声明全部统一参数，以及基础和软件缓存检测字段：
@@ -75,7 +77,7 @@ software = []
 | Mirror | RSTAR_DISTRIBUTION_MIRROR | 使用全局 `persistent/arch-data/mirrorlist` 的工作副本 |
 | AurKeyserver | RSTAR_DISTRIBUTION_AURKEYSERVER | `hkps://keyserver.ubuntu.com` |
 | AurDevel | RSTAR_DISTRIBUTION_AURDEVEL | `true`，检查 Git 源码更新 |
-| AurRebuild | RSTAR_DISTRIBUTION_AURREBUILD | `none`，按记录增量复用；可设 `all` 或 pkgbase 列表 |
+| AurRebuild | RSTAR_DISTRIBUTION_AURREBUILD | `false`，按记录增量复用；`true` 强制重建本批全部 AUR |
 | [Content] RootPassword | RSTAR_CONTENT_ROOTPASSWORD | 未配置或为空时不修改软件阶段输出中的密码 |
 
 ### 软件源配置模板
@@ -437,29 +439,30 @@ repository 持久卷的 `.aur-space-failures.json` 按架构/pkgbase 保存曾�
 与本次 `.prepared.json` 清单独立，移出目标后再次加入也能复用。
 升级前的缓存缺少完整记录，首次按需重建一次，随后增量复用。
 
-普通归档有固定校验和时按配方身份复用，配方改动即使未涨版本也重建。
+普通远程来源按配方身份复用，包括没有校验和或校验和为 `SKIP` 的下载。
+配方改动即使未涨版本也重建；配方未变时信任其发布版本，不额外下载普通来源以比较内容。
 默认检查 source 中的 Git HEAD、branch、tag 或固定完整 commit；不靠包名后缀识别。
 动态 pkgver 不单独触发重建。先下载/验证并记录本地源码快照，再用 `--holdver` 编译，
 避免 prepare() 新增提交被误当作上游更新。查询失败中止并丢弃最近一次保存后的修改，不宣称已是最新。
-其他 VCS、无法识别的 Git 引用及无固定校验和的远程来源保守重建。
-固定校验和的归档按配方复用，无法发现维护者未修改配方的远端文件替换。
+其他 VCS、无法识别的 Git 引用仍保守重建。
+按配方复用无法发现维护者未修改配方的远端文件替换；源码校验和和 PGP 验证仍由 makepkg 按配方执行。
 
 在 `[Distribution]` 中可配置：
 
 ```ini
+# Check Git source updates.
+# 检查 Git 源码更新。
 AurDevel=true
-AurRebuild=none
+# Force rebuilding every requested AUR package and AUR build dependency.
+# 强制重建本批 AUR 包及 AUR 构建依赖。
+AurRebuild=false
 ```
 
 `AurDevel=false` 关闭 Git 上游检查，仍检查配方和产物。
-`AurRebuild=all` 强制构建本批全部 AUR；也可用多行/重复赋值列出 pkgbase：
-
-```ini
-AurRebuild=sample
-AurRebuild=other
-```
-
-`all`、`none` 必须单独使用。配置会持续生效，完成强制重建后应恢复 `none`。
+`AurRebuild=false` 默认按记录复用；`AurRebuild=true` 强制构建本批全部 AUR，包括 AUR 构建依赖。
+两个选项均通过 `[Distribution]` 布尔配置传递，不增加命令行参数。
+配置会持续生效，完成强制重建后应恢复 `false`。
+旧的 `AurRebuild=none/all/pkgbase 列表` 不再接受，须改为布尔值；非法值在准备操作开始前报错。
 统一下载入口兼容旧变量 `RSTAR_AURDEVEL`、`RSTAR_AURREBUILD`。
 日志报告复用/重建数量及每个重建原因。
 

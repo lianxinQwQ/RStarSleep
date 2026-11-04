@@ -872,7 +872,7 @@ class Protocol(unittest.TestCase):
             root = Path(temporary)
             p = arch.Preparer.__new__(arch.Preparer)
             p.states, p.stack, p.artifacts = {}, [], {}
-            p.arch, p.aur_devel, p.aur_rebuild = "x86_64", True, set()
+            p.arch, p.aur_devel, p.aur_rebuild = "x86_64", True, False
             p.config_sha256, p.cache_counts = "fixture", dict(reused=0, built=0)
             p.builder = Mock(pw_uid=os.getuid(), pw_gid=os.getgid())
             p.outputs, p.repo, p.cache = root / "outputs", root / "repo", root / "cache"
