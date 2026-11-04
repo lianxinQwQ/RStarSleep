@@ -179,6 +179,29 @@ Each instance has an independent Xray transient service. Connection failures nev
 another route. Policy changes apply on the next cold start or restart; daemon recovery uses
 the frozen runtime snapshot.
 
+例如，将普通配置中的端口从 `10808` 改为 `10888` 后，仍在运行的实例会继续使用
+`10808`；重启 daemon 不会重启子系统，也不会重新生成其 Xray 配置。执行以下命令
+重启子系统后才会使用新端口，无需重新 build：
+For example, changing the configured port from `10808` to `10888` leaves a running
+instance on `10808`. Restarting the daemon neither restarts the guest nor regenerates
+its Xray configuration. Restart the subsystem to apply the new port; no rebuild is needed:
+
+```bash
+sudo RStarSleep subsystem restart apps --root /rstarsleep
+```
+
+实际出口记录在 `systems/apps/runtime/current.toml` 的 `network.policy.proxy` 和
+`systems/apps/runtime/network/xray.json` 的 `fixed` 出站中；这些文件可能含密码，
+诊断时只检查地址与端口。即使应用使用 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY`，
+其连接环境代理的流量也必须先经过固定出口。验证阻断前，应确认运行记录已经使用新端口，
+再关闭该端口的监听，并在子系统内用 `curl --noproxy '*' --max-time 10 -I https://example.com`
+建立新连接；连接应失败。
+The effective endpoint appears in `network.policy.proxy` in the runtime record and
+the `fixed` outbound in the generated Xray configuration. Both files may contain secrets;
+inspect only addresses and ports. Application environment proxies must also be reached
+through the fixed exit. To verify blocking, first confirm that the runtime uses the new
+port, stop its listener, and run the command above inside the guest; the new connection must fail.
+
 宿主已有 Xray/dae 必须排除专属 `rs…` veth 的原始报文，并按需排除上述出站 socket mark，
 避免提前接管、二次分流或循环。`outbound_mark` 默认 `0`，管理器不修改宿主既有代理配置。
 若代理地址使用主机名，其初始解析使用宿主解析路径。这些宿主集成约定需管理员配置；

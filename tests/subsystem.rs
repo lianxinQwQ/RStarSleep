@@ -127,6 +127,11 @@ fn runtime_network_is_frozen_until_the_next_preparation() {
     .unwrap();
     let restored = subsystem::load_prepared(&f.store, "desktop").unwrap();
     assert_eq!(restored.config.network.unwrap().proxy.port, 1080);
+    let restarted =
+        subsystem::prepare_with_backend(&f.store, "desktop", &b, Some(Path::new("/"))).unwrap();
+    assert_eq!(restarted.config.network.unwrap().proxy.port, 1082);
+    let restored = subsystem::load_prepared(&f.store, "desktop").unwrap();
+    assert_eq!(restored.config.network.unwrap().proxy.port, 1082);
     let path = layout.root.join("runtime/current.toml");
     let mut record: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     record.as_table_mut().unwrap().remove("network");

@@ -169,10 +169,58 @@ fn proxy_connection(mut stream: TcpStream, requests: Arc<Mutex<Vec<(String, u16)
         }
     } else {
         let mut probe = [0; 64];
-        if stream.read(&mut probe).is_ok() {
-            let _ = stream.write_all(b"via-fixed-tcp");
+        if let Ok(size) = stream.read(&mut probe) {
+            let response: &[u8] = if probe[..size].starts_with(b"GET ") {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nvia-fixed-tcp"
+            } else {
+                b"via-fixed-tcp"
+            };
+            let _ = stream.write_all(response);
         }
     }
+}
+
+/// Real clients may select an environment proxy; that connection must still use the fixed exit.
+/// 真实客户端可能选择环境代理；该连接仍必须经过固定出口。
+fn environment_proxy(plan: &Plan, variable: &str) -> Output {
+    let mut cmd = Command::new("ip");
+    cmd.args(["netns", "exec", &plan.namespace]);
+    if variable == "HTTP_PROXY" {
+        // curl intentionally ignores uppercase HTTP_PROXY; urllib supports it outside CGI.
+        // curl 有意忽略大写 HTTP_PROXY；urllib 在非 CGI 环境支持它。
+        cmd.args([
+            "python3", "-c",
+            "import urllib.request; print(urllib.request.urlopen('http://example.invalid/', timeout=2).read().decode(), end='')",
+        ]);
+    } else {
+        cmd.args([
+            "curl",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "2",
+            if variable == "HTTPS_PROXY" {
+                "https://example.invalid/"
+            } else {
+                "http://example.invalid/"
+            },
+        ]);
+    }
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "REQUEST_METHOD",
+    ] {
+        cmd.env_remove(key);
+    }
+    cmd.env(variable, "http://198.18.0.100:8080");
+    cmd.output().unwrap()
 }
 
 fn guest(plan: &Plan, script: &str, args: &[&str]) -> Output {
@@ -301,7 +349,9 @@ port = 53
 #[test]
 fn isolated_fixed_proxy_path() {
     if std::env::var_os("RSTAR_PROXY_TEST_CHILD").is_none() {
-        for name in ["xray", "ip", "nft", "python3", "unshare", "mount", "sysctl"] {
+        for name in [
+            "xray", "ip", "nft", "python3", "curl", "unshare", "mount", "sysctl",
+        ] {
             if Command::new("sh")
                 .args(["-c", "command -v \"$1\"", "sh", name])
                 .output()
@@ -439,6 +489,9 @@ fn isolated_fixed_proxy_path() {
             Command::new(&state.tools.xray)
                 .args(["run", "-c"])
                 .arg(state.plan.directory.join("xray.json"))
+                .env("HTTP_PROXY", "http://198.18.0.100:8080")
+                .env("HTTPS_PROXY", "http://198.18.0.100:8080")
+                .env("ALL_PROXY", "http://198.18.0.100:8080")
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -506,8 +559,34 @@ fn isolated_fixed_proxy_path() {
                 .iter()
                 .any(|(host, port)| host == "198.18.0.53" && *port == 53)
         );
+        for variable in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            let before = requests.lock().unwrap().len();
+            let response = environment_proxy(&state.plan, variable);
+            if variable != "HTTPS_PROXY" {
+                assert!(
+                    response.status.success(),
+                    "{variable}: {}",
+                    String::from_utf8_lossy(&response.stderr)
+                );
+                assert_eq!(response.stdout, b"via-fixed-tcp");
+            }
+            // HTTPS cannot negotiate TLS with this fixture, but its CONNECT must reach the fixed exit.
+            // HTTPS 无法与此夹具协商 TLS，但其 CONNECT 必须到达固定出口。
+            assert!(
+                requests.lock().unwrap()[before..]
+                    .iter()
+                    .any(|(host, port)| host == "198.18.0.100" && *port == 8080),
+                "{variable}"
+            );
+        }
+        assert!(sentinel.accept().is_err());
         stopped.store(true, Ordering::SeqCst);
         proxy.join().unwrap();
+        for variable in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            let response = environment_proxy(&state.plan, variable);
+            assert!(!response.status.success(), "{variable}");
+            assert!(response.stdout.is_empty(), "{variable}");
+        }
         let unavailable = guest(&state.plan, TCP, &["198.18.0.100", "8080"]);
         assert!(unavailable.stdout.is_empty());
         relay.0.kill().unwrap();
